@@ -1,0 +1,41 @@
+version: '3.9'
+
+services:
+  rabbitmq:
+    image: "rabbitmq:management-alpine"
+    environment:
+      RABBITMQ_DEFAULT_USER: "user"
+      RABBITMQ_DEFAULT_PASS: "password"
+    ports:
+      - '5552:5552' # RabbitMQ stream port
+      - "5672:5672" # RabbitMQ server
+      - "15672:15672" # Management console
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4096M
+        reservations:
+          cpus: '0.25'
+          memory: 1024M
+  pg:
+    image: postgres:17-bullseye
+    environment:
+      POSTGRES_PASSWORD: ''
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: test
+      PGDATA: '/var/lib/postgresql/data'
+    ports:
+      - '5432:5432'
+    command: -c config_file=/etc/postgresql.conf
+    volumes:
+      - ./dev/pg.conf:/etc/postgresql.conf
+      - ./dev/pg_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4096M
+        reservations:
+          cpus: '0.25'
+          memory: 1024M

@@ -1,0 +1,40 @@
+{
+  "name": "@haathie/pgmb",
+  "version": "1.1.1",
+  "description": "Postgres Message Broker",
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "TZ=UTC NODE_ENV=test jest",
+    "prepare": "tsc",
+    "build": "tsc",
+    "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
+    "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx"
+  },
+  "devDependencies": {
+    "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",
+    "@swc-node/register": "^1.10.10",
+    "@swc/core": "^1.11.24",
+    "@swc/jest": "^0.2.38",
+    "@types/amqplib": "^0.10.0",
+    "@types/chance": "^1.1.6",
+    "@types/jest": "^27.0.0",
+    "@types/node": "^14.14.35",
+    "@types/pg": "^8.11.14",
+    "amqplib": "^0.10.7",
+    "chance": "^1.1.12",
+    "dotenv": "^16.0.1",
+    "eslint": "^8.19.0",
+    "jest": "^27.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "lib"
+  ],
+  "keywords": [],
+  "author": "Adhiraj Singh",
+  "license": "ISC",
+  "dependencies": {
+    "pg": "^8.15.6",
+    "pino": "^8.4.1"
+  }
+}
