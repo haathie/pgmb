@@ -9,7 +9,7 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 	assertQueues,
 	logger
 }) => {
-	const uri = 'postgres://postgres:@localhost:5432'
+	const uri = 'postgres://postgres:@localhost:5432/test'
 	const poolSize = Math.max(1, publishers, consumers.length)
 	const pool = new Pool({
 		max: poolSize,

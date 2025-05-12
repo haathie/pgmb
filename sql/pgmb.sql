@@ -11,7 +11,7 @@ CREATE TYPE pgmb.publish_msg AS (
 );
 -- type to store an existing message record
 CREATE TYPE pgmb.msg_record AS (
-	id VARCHAR(32), message BYTEA, headers JSONB
+	id VARCHAR(22), message BYTEA, headers JSONB
 );
 CREATE TYPE pgmb.queue_ack_setting AS ENUM ('archive', 'delete');
 
@@ -78,7 +78,7 @@ CREATE OR REPLACE FUNCTION pgmb.create_queue_table(
 BEGIN
 	-- create the live_messages table
 	EXECUTE 'CREATE TABLE ' || quote_ident(schema_name) || '.live_messages (
-		id VARCHAR(32) DEFAULT pgmb.create_message_id() PRIMARY KEY,
+		id VARCHAR(22) DEFAULT pgmb.create_message_id() PRIMARY KEY,
 		message BYTEA NOT NULL,
 		headers JSONB NOT NULL DEFAULT ''{}''::JSONB,
 		created_at TIMESTAMPTZ DEFAULT NOW()
@@ -114,7 +114,7 @@ BEGIN
 	PERFORM pgmb.create_queue_table(queue_name, schema_name);
 	-- create the consumed_messages table
 	EXECUTE 'CREATE TABLE ' || quote_ident(schema_name) || '.consumed_messages (
-		id VARCHAR(32) PRIMARY KEY,
+		id VARCHAR(22) PRIMARY KEY,
 		message BYTEA NOT NULL,
 		headers JSONB NOT NULL DEFAULT ''{}''::JSONB,
 		success BOOLEAN NOT NULL,
@@ -176,17 +176,17 @@ CREATE OR REPLACE FUNCTION pgmb.create_message_id(
 	dt timestamptz DEFAULT clock_timestamp(),
 	rand bigint DEFAULT pgmb.create_random_bigint()
 )
-RETURNS VARCHAR(32) AS $$
+RETURNS VARCHAR(22) AS $$
 BEGIN
 	-- create a unique message ID, 16 chars of hex-date
 	-- some additional bytes of randomness
 	-- ensure the string is always, at most 32 bytes
 	RETURN substr(
-		'pqm_'
+		'pm'
 		|| substr(lpad(to_hex((extract(epoch from dt) * 1000000)::bigint), 14, '0'), 1, 14)
 		|| lpad(to_hex(rand), 14, '0'),
 		1,
-		32
+		22
 	);
 END
 $$ LANGUAGE plpgsql VOLATILE LEAKPROOF PARALLEL SAFE;
@@ -196,7 +196,7 @@ CREATE OR REPLACE FUNCTION pgmb.extract_date_from_message_id(message_id VARCHAR(
 RETURNS TIMESTAMPTZ AS $$
 BEGIN
 	-- convert it to a timestamp
-	RETURN to_timestamp(('0x' || substr(message_id, 5, 14))::numeric / 1000000);
+	RETURN to_timestamp(('0x' || substr(message_id, 3, 14))::numeric / 1000000);
 END
 $$ LANGUAGE plpgsql IMMUTABLE LEAKPROOF PARALLEL SAFE;
 
@@ -205,7 +205,7 @@ CREATE OR REPLACE FUNCTION pgmb.send_to_queue(
 	queue_name VARCHAR(64),
 	messages pgmb.enqueue_msg[]
 )
-RETURNS SETOF VARCHAR(32) AS $$
+RETURNS SETOF VARCHAR(22) AS $$
 DECLARE
 	-- check if the queue already exists
 	schema_name VARCHAR(64);
@@ -249,7 +249,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION pgmb.ack_msgs(
 	queue_name VARCHAR(64),
 	success BOOLEAN,
-	ids VARCHAR(32)[]
+	ids VARCHAR(22)[]
 )
 RETURNS VOID AS $$
 DECLARE
@@ -356,7 +356,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION pgmb.publish(
 	messages pgmb.publish_msg[]
 )
-RETURNS SETOF VARCHAR(32) AS $$
+RETURNS SETOF VARCHAR(22) AS $$
 DECLARE
 	update_count INTEGER;
 BEGIN
