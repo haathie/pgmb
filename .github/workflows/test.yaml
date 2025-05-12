@@ -11,15 +11,6 @@ jobs:
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v2
-      with:
-        token: ${{ secrets.GH_TOKEN }}
-
-    - name: Config GitHub
-      run: |
-        echo -e "machine github.com\nlogin ${{ secrets.GH_TOKEN }}\npassword x-oauth-basic" > $HOME/.netrc
-        chmod 600 $HOME/.netrc
-        git config --global user.email "ci@cd.com"
-        git config --global user.name "CI Bot"
       
     - name: Run Dependencies
       run: docker compose -f docker-compose.yaml up -d
