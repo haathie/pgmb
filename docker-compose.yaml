@@ -1,23 +1,6 @@
 version: '3.9'
 
 services:
-  rabbitmq:
-    image: "rabbitmq:management-alpine"
-    environment:
-      RABBITMQ_DEFAULT_USER: "user"
-      RABBITMQ_DEFAULT_PASS: "password"
-    ports:
-      - '5552:5552' # RabbitMQ stream port
-      - "5672:5672" # RabbitMQ server
-      - "15672:15672" # Management console
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4096M
-        reservations:
-          cpus: '0.25'
-          memory: 1024M
   pg:
     image: postgres:17-bullseye
     environment:
