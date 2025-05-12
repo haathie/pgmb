@@ -1,6 +1,6 @@
 import type { Notification, Pool, PoolClient } from 'pg'
 import type { Logger } from 'pino'
-import type { PgEnqueueMsg, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PGMBNotificationData, PgPublishMsg } from './types'
+import type { PgEnqueueMsg, PGMBAssertQueueOpts, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PGMBNotificationData, PgPublishMsg } from './types'
 import { delay, getChannelNameForQueue, getQueueNameFromChannel, serialisePgMsgConstructorsIntoSql } from './utils'
 
 export class PGMBClient {
@@ -8,7 +8,7 @@ export class PGMBClient {
 	#pool: Pool
 	#consumers: PGMBConsumer[]
 	#logger: Logger
-	#listener: PGMBListener | undefined
+	#listener: PGMBListener
 
 	constructor({
 		pool,
@@ -17,27 +17,34 @@ export class PGMBClient {
 	}: PGMBClientOpts) {
 		this.#pool = pool
 		this.#consumers = consumers.map(s => (
-			new PGMBConsumer(
-				this.#pool,	s, logger.child({ queue: s.queueName }),
-			)
+			new PGMBConsumer(this.#pool,	s, logger.child({ queue: s.queueName }))
 		))
 		this.#logger = logger
 		this.#onNotification = this.#onNotification.bind(this)
+		this.#listener
+			= new PGMBListener(this.#pool, this.#onNotification, this.#logger)
 	}
 
-	async open() {
-		const subQueues = this.#consumers
-			.map(s => s.getSubscription().queueName)
-		if(!this.#listener && subQueues.length) {
-			this.#listener = new PGMBListener(
-				this.#pool,
-				this.#onNotification,
-				this.#logger,
-			)
-			await this.#listener.setSubscriptions(...subQueues)
+	async listen() {
+		const subQueues = this.#consumers.map(s => s.getOpts().queueName)
+		if(!subQueues.length) {
+			return
 		}
 
-		this.#logger.info({ queues: subQueues.length }, 'opened client')
+		await this.#listener.close()
+		await this.#listener.subscribe(...subQueues)
+		this.#logger.info({ queues: subQueues.length }, 'listening to queues')
+	}
+
+	async replaceSubscriptions(...subs: PGMBConsumerOpts[]) {
+		for(const cons of this.#consumers) {
+			await cons.close()
+		}
+
+		this.#consumers = subs.map(s => (
+			new PGMBConsumer(this.#pool, s, this.#logger.child({ queue: s.queueName }))
+		))
+		await this.listen()
 	}
 
 	async close() {
@@ -45,15 +52,23 @@ export class PGMBClient {
 		await Promise.all(
 			this.#consumers.map(s => s.close())
 		)
-
-		this.#listener = undefined
 	}
 
-	async assertQueue(name: string) {
+	async assertQueue({
+		name,
+		ackSetting = 'delete',
+		defaultHeaders = {}
+	}: PGMBAssertQueueOpts) {
 		const { rows: [{ created }] } = await this.#pool.query(
-			'SELECT pgmb.assert_queue($1) AS "created"', [name]
+			'SELECT pgmb.assert_queue($1, $2, $3) AS "created"',
+			[name, ackSetting, JSON.stringify(defaultHeaders)]
 		)
+		this.#logger.debug({ name, created }, 'asserted queue')
 		return created as boolean
+	}
+
+	async purgeQueue(name: string) {
+		await this.#pool.query('SELECT pgmb.purge_queue($1)', [name])
 	}
 
 	async sendToQueue(queueName: string, ...messages: PgEnqueueMsg[]) {
@@ -75,14 +90,14 @@ export class PGMBClient {
 
 		const [arraySql, params] = serialisePgMsgConstructorsIntoSql(messages, [])
 		const { rows } = await this.#pool
-			.query(`SELECT pgmb.publish_to_exchange(${arraySql})`, params)
+			.query(`SELECT pgmb.publish(${arraySql})`, params)
 		return rows
 	}
 
 	#onNotification = (notif: PGMBNotification) => {
 		if(notif.type === 'message') {
 			for(const sub of this.#consumers) {
-				if(sub.getSubscription().queueName === notif.queueName) {
+				if(sub.getOpts().queueName === notif.queueName) {
 					sub.onMessage(notif.data.count)
 				}
 			}
@@ -104,12 +119,29 @@ class PGMBConsumer {
 		private logger: Logger,
 	) {}
 
-	getSubscription() {
+	getOpts() {
 		return this.opts
 	}
 
 	onMessage(count: number) {
 		this.#pendingCount += count
+		if(!this.opts.debounceIntervalMs) {
+			return this.consume()
+		}
+
+		if(this.#pendingCount >= this.opts.batchSize) {
+			return this.consume()
+		}
+
+		if(this.#consumeDebounce) {
+			return
+		}
+
+		this.#consumeDebounce = setTimeout(
+			() => this.consume(),
+			this.opts.debounceIntervalMs
+		)
+		this.logger.trace({ count }, 'scheduled consume')
 	}
 
 	close() {
@@ -154,6 +186,8 @@ class PGMBConsumer {
 			if(rowsDone) {
 				this.logger.info({ rowsDone }, 'done consuming')
 			}
+		} catch(err) {
+			this.logger.error({ err }, 'error consuming messages')
 		} finally {
 			this.#consuming = false
 			this.#pendingCount = 0
@@ -165,9 +199,10 @@ class PGMBConsumer {
 		await client.query('BEGIN')
 
 		const { rows } = await client.query(
-			'SELECT * FROM pgmb.read_from_queue($1, $2) AS id',
+			'SELECT * FROM pgmb.read_from_queue($1, $2)',
 			[this.opts.queueName, this.opts.batchSize]
 		)
+		const msgIds = rows.map((row) => row.id)
 		if(!rows.length) {
 			await client.query('COMMIT')
 			return 0
@@ -175,7 +210,7 @@ class PGMBConsumer {
 
 		let success = false
 		try {
-			await this.opts.onMessage(rows)
+			await this.opts.onMessage(this.opts.queueName, rows)
 			success = true
 		} catch(err) {
 			this.logger.error({ err }, 'error processing messages')
@@ -183,15 +218,11 @@ class PGMBConsumer {
 
 		await client.query(
 			'SELECT pgmb.ack_msgs($1, $2, $3)',
-			[
-				this.opts.queueName,
-				success,
-				`{${rows.map((row) => row.id).join(',')}}`
-			]
+			[this.opts.queueName, success, `{${msgIds.join(',')}}`]
 		)
 		await client.query('COMMIT')
 
-		this.logger.debug({ rows: rows.map(r => r.id) }, 'acknowledged messages')
+		this.logger.debug({ success, msgIds }, 'acked messages')
 
 		return rows.length
 	}
@@ -214,7 +245,7 @@ class PGMBListener {
 		this.#onListenerError = this.#onListenerError.bind(this)
 	}
 
-	async setSubscriptions(...queueNames: string[]) {
+	async subscribe(...queueNames: string[]) {
 		queueNames = Array.from(new Set(queueNames))
 		this.#subscribedQueues = queueNames
 		this.#client = await this.#assertConnection()
@@ -223,6 +254,8 @@ class PGMBListener {
 		for(const queueName of queueNames) {
 			await this.#client.query(`LISTEN ${getChannelNameForQueue(queueName)}`)
 		}
+
+		this.#client.release()
 	}
 
 	async close() {
@@ -235,13 +268,6 @@ class PGMBListener {
 		this.#client.off('notification', this.#onNotification)
 		try {
 			await this.#client.query('UNLISTEN *')
-			this.#client?.release()
-		} catch(err) {
-			if(err.message.includes('already been released')) {
-				return
-			}
-
-			throw err
 		} finally {
 			this.#client = undefined
 		}
@@ -275,7 +301,7 @@ class PGMBListener {
 		this.#client = undefined
 		this.#reconnectAttempt ++
 
-		this.setSubscriptions(...this.#subscribedQueues)
+		this.subscribe(...this.#subscribedQueues)
 			// swallow errors
 			.catch(() => { })
 	}

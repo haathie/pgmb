@@ -39,8 +39,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION pgmb.subscribe_to_exchange(
-	exchange VARCHAR(64), queue_name VARCHAR(64)
+CREATE OR REPLACE FUNCTION pgmb.bind_queue(
+	queue_name VARCHAR(64), exchange VARCHAR(64) 
 )
 RETURNS VOID AS $$
 BEGIN
@@ -50,8 +50,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION pgmb.unsubscribe_from_exchange(
-	exchange VARCHAR(64), queue_name VARCHAR(64)
+CREATE OR REPLACE FUNCTION pgmb.unbind_queue(
+	queue_name VARCHAR(64), exchange VARCHAR(64)
 )
 RETURNS VOID AS $$
 BEGIN
@@ -353,7 +353,7 @@ $$ LANGUAGE plpgsql;
 -- fn to publish a message to 1 or more exchanges.
 -- Will find all queues subscribed to it and insert the message into
 -- each of them.
-CREATE OR REPLACE FUNCTION pgmb.publish_to_exchange(
+CREATE OR REPLACE FUNCTION pgmb.publish(
 	messages pgmb.publish_msg[]
 )
 RETURNS SETOF VARCHAR(32) AS $$

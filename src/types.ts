@@ -12,7 +12,7 @@ export type PGMBClientOpts = {
 	 * Add consumers to the client. This will automatically
 	 * start consuming messages.
 	 * Note: Ensure the queues set here are created before
-	 * calling `client.open()`
+	 * calling `client.listen()`
 	 */
 	consumers?: PGMBConsumerOpts[]
 }
@@ -33,12 +33,11 @@ export type PGMBConsumerOpts = {
 	 * Process messages in the queue. Rejecting a message will
 	 * automatically nack it, resolving it will ack it.
 	 */
-	onMessage(msgs: PgIncomingMessage[]): Promise<void>
+	onMessage(queueName: string, msgs: PgIncomingMessage[]): Promise<void> | void
 }
 
 export type PgIncomingMessage = {
 	id: string
-	queueName: string
 	message: Uint8Array
 	headers: Record<string, any>
 }
@@ -64,4 +63,10 @@ export type PGMBNotification = {
 	data: PGMBNotificationData
 } | {
 	type: 'connection'
+}
+
+export type PGMBAssertQueueOpts = {
+	name: string
+	ackSetting?: 'archive' | 'delete'
+	defaultHeaders?: { [key: string]: any }
 }

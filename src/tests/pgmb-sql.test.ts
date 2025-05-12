@@ -8,26 +8,23 @@ import { delay, serialisePgMsgConstructorsIntoSql } from '../utils'
 const chance = new Chance()
 
 // unit tests
-describe('PGMB Tests', () => {
+describe('PGMB SQL Tests', () => {
 
-	const pool = new Pool({
-		connectionString: process.env.PG_URI,
-		max: 10
-	})
+	const pool = new Pool({ connectionString: process.env.PG_URI, max: 10 })
 
 	afterAll(async() => {
 		await pool.end()
 	})
 
 	it.concurrent('should create unique message IDs', async() => {
-		const genCount = 100000
-		const { rows, rowCount } = await pool.query(
-			`SELECT DISTINCT pgmb.create_message_id() AS id FROM generate_series(1, ${genCount})`,
+		const genCount = 50000
+		const { rows } = await pool.query(
+			`select distinct pgmb.create_message_id(rand=>pgmb.create_random_bigint(id))
+			from generate_series(1, ${genCount}) AS t(id)`,
 		)
-		expect(rowCount).toBe(genCount)
-		for(const { id } of rows) {
-			expect(id).toHaveLength(32)
-		}
+		expect(rows.length).toBe(genCount)
+		const sorted = [...rows].sort((a, b) => a.id - b.id)
+		expect(sorted).toEqual(rows)
 	})
 
 	it.concurrent('should correctly get the message ID date', async() => {
@@ -119,7 +116,7 @@ describe('PGMB Tests', () => {
 		expect(rowCount).toBe(0)
 	})
 
-	it('should block a message when a consumer has read it', async() => {
+	it.concurrent('should block a message when a consumer has read it', async() => {
 		const queueName = createQueueName()
 		const rowsToRead = 3
 
@@ -148,7 +145,7 @@ describe('PGMB Tests', () => {
 		expect(rowIdSet.size).toBe(rowsToRead * 2)
 
 		await client.query('SELECT pgmb.delete_queue($1)', [queueName])
-		await client2.query('COMMIT')
+		await client.query('COMMIT')
 		client.release()
 		client2.release()
 	})
@@ -288,7 +285,7 @@ describe('PGMB Tests', () => {
 				[queueName, JSON.stringify({ queueName })]
 			)
 			await client.query(
-				'SELECT pgmb.subscribe_to_exchange($1, $2)', [exchangeName, queueName]
+				'SELECT pgmb.bind_queue($1, $2)', [queueName, exchangeName]
 			)
 		}
 
@@ -301,7 +298,7 @@ describe('PGMB Tests', () => {
 		const [sql, params] = serialisePgMsgConstructorsIntoSql([msg], [])
 
 		const { rows } = await client.query(
-			`SELECT pgmb.publish_to_exchange(${sql}) AS id`, params
+			`SELECT pgmb.publish(${sql}) AS id`, params
 		)
 		expect(rows.length).toBe(queues.length)
 

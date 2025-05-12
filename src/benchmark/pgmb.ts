@@ -10,7 +10,7 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 	logger
 }) => {
 	const uri = 'postgres://postgres:@localhost:5432'
-	const poolSize = Math.max(1, publishers, consumers.length) + 1
+	const poolSize = Math.max(1, publishers, consumers.length)
 	const pool = new Pool({
 		max: poolSize,
 		connectionString: uri,
@@ -21,17 +21,17 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 		consumers: consumers.map(({ queueName, onMessage }) => ({
 			queueName,
 			batchSize,
-			async onMessage(msgs) {
+			async onMessage(_, msgs) {
 				await onMessage(msgs.map(m => m.message))
 			},
 		})),
 	})
 
-	for(const queueName of assertQueues) {
-		await client.assertQueue(queueName)
+	for(const name of assertQueues) {
+		await client.assertQueue({ name })
 	}
 
-	await client.open()
+	await client.listen()
 
 	return {
 		async close() {
