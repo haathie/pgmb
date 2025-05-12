@@ -201,7 +201,7 @@ END
 $$ LANGUAGE plpgsql IMMUTABLE LEAKPROOF PARALLEL SAFE;
 
 -- fn to send multiple messages into a queue
-CREATE OR REPLACE FUNCTION pgmb.send_to_queue(
+CREATE OR REPLACE FUNCTION pgmb.send(
 	queue_name VARCHAR(64),
 	messages pgmb.enqueue_msg[]
 )
@@ -290,7 +290,7 @@ BEGIN
 
 	-- re-insert messages that can be retried
 	IF NOT success THEN
-		PERFORM pgmb.send_to_queue(
+		PERFORM pgmb.send(
 			queue_name,
 			ARRAY_AGG(
 				(
@@ -373,7 +373,7 @@ BEGIN
 		INNER JOIN unnest(messages) AS m ON m.route = e.name
 	)
 	SELECT
-		pgmb.send_to_queue(
+		pgmb.send(
 			m.queue_name,
 			ARRAY_AGG(
 				(

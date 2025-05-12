@@ -79,7 +79,7 @@ export class PGMBClient {
 		const [arraySql, params]
 			= serialisePgMsgConstructorsIntoSql(messages, [queueName])
 		const { rows } = await this.#pool
-			.query(`SELECT pgmb.send_to_queue($1, ${arraySql})`, params)
+			.query(`SELECT pgmb.send($1, ${arraySql})`, params)
 		return rows
 	}
 

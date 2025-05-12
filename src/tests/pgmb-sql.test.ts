@@ -339,7 +339,7 @@ async function sendToQueue(
 ) {
 	const [sql, params] = serialisePgMsgConstructorsIntoSql(msgs, [queueName])
 	const { rows } = await client.query(
-		`SELECT pgmb.send_to_queue($1, ${sql}) AS id`, params
+		`SELECT pgmb.send($1, ${sql}) AS id`, params
 	)
 	return rows as { id: string }[]
 }
