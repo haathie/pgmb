@@ -4,7 +4,8 @@ FROM node:lts-alpine
 WORKDIR /app
 
 # Copy only the package files initially to leverage Docker caching
-COPY ./package.json ./package-lock.json ./
+RUN mkdir src && echo '' > src/index.ts
+COPY ./package.json ./package-lock.json ./tsconfig.json ./
 
 # Install dependencies for build
 RUN npm ci
