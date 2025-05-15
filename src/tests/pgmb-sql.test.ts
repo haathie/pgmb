@@ -270,6 +270,34 @@ describe('PGMB SQL Tests', () => {
 		expect(ackedRows.length).toBe(3)
 	})
 
+	testWithRollback('should get metrics for a queue', async client => {
+		const queueName = createQueueName()
+		await client.query('SELECT pgmb.assert_queue($1)', [queueName])
+		await sendToQueue(client, queueName, [
+			{ message: 'data_1' },
+			{ message: 'data_2' },
+			{ message: 'data_3', consumeAt: new Date(Date.now() + 5500) },
+		])
+
+		const { rows } = await client.query(
+			'SELECT total_length, consumable_length'
+				+ ', EXTRACT(epoch FROM newest_msg_age) AS newest_msg_age'
+				+ ', EXTRACT(epoch FROM oldest_msg_age) AS oldest_msg_age'
+				+ ' FROM pgmb.get_queue_metrics($1)', [queueName]
+		)
+		expect(rows.length).toBe(1)
+		const [{
+			total_length: total,
+			consumable_length: consumable,
+			newest_msg_age: newestMsgAge,
+			oldest_msg_age: oldestMsgAge,
+		}] = rows
+		expect(total).toBe(3)
+		expect(consumable).toBe(2)
+		expect(+newestMsgAge).toBeLessThanOrEqual(-5)
+		expect(+oldestMsgAge).toBeLessThan(0.5)
+	})
+
 	testWithRollback('should publish to an exchange', async client => {
 		const queues = [...Array.from({ length: 2 }, createQueueName)]
 		const exchangeName = createExchangeName()

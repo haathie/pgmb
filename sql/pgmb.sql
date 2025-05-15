@@ -13,6 +13,15 @@ CREATE TYPE pgmb.publish_msg AS (
 CREATE TYPE pgmb.msg_record AS (
 	id VARCHAR(22), message BYTEA, headers JSONB
 );
+-- type to store the result of a queue's metrics
+CREATE TYPE pgmb.metrics_result AS (
+	queue_name VARCHAR(64),
+	total_length int,
+	consumable_length int,
+	newest_msg_age interval,
+	oldest_msg_age interval
+);
+
 CREATE TYPE pgmb.queue_ack_setting AS ENUM ('archive', 'delete');
 
 -- table for exchanges
@@ -387,6 +396,39 @@ BEGIN
 		)
 	FROM expanded_msgs m
 	GROUP BY m.queue_name;
+END
+$$ LANGUAGE plpgsql;
+
+-- get the metrics of a queue
+CREATE OR REPLACE FUNCTION pgmb.get_queue_metrics(
+	queue_name VARCHAR(64)
+)
+RETURNS SETOF pgmb.metrics_result AS $$
+DECLARE
+	schema_name VARCHAR(64);
+BEGIN
+	-- get schema name
+	SELECT q.schema_name FROM pgmb.queues q
+	WHERE q.name = queue_name INTO schema_name;
+	-- get the metrics of the queue
+	RETURN QUERY EXECUTE 'SELECT
+		''' || queue_name || '''::varchar(64) AS queue_name,
+		count(*)::int AS total_length,
+		(count(*) FILTER (WHERE id <= pgmb.create_message_id(rand=>999999999999)))::int AS consumable_length,
+		(clock_timestamp() - pgmb.extract_date_from_message_id(max(id))) AS newest_msg_age_sec,
+		(clock_timestamp() - pgmb.extract_date_from_message_id(min(id))) AS oldest_msg_age_sec
+		FROM ' || quote_ident(schema_name) || '.live_messages';
+END
+$$ LANGUAGE plpgsql;
+
+-- fn to get metrics for all queues
+CREATE OR REPLACE FUNCTION pgmb.get_all_queue_metrics()
+RETURNS SETOF pgmb.metrics_result AS $$
+BEGIN
+	RETURN QUERY
+	SELECT m.*
+	FROM pgmb.queues q, pgmb.get_queue_metrics(q.name) m
+	ORDER BY q.name ASC;
 END
 $$ LANGUAGE plpgsql;
 
