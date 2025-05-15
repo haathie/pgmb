@@ -14,11 +14,3 @@ services:
     volumes:
       - ./dev/pg.conf:/etc/postgresql.conf
       - ./dev/pg_data:/var/lib/postgresql/data
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4096M
-        reservations:
-          cpus: '0.25'
-          memory: 1024M

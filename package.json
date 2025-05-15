@@ -8,7 +8,8 @@
     "prepare": "tsc",
     "build": "tsc",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
-    "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx"
+    "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx",
+    "benchmark:tsc": "node -r @swc-node/register src/benchmark/run.ts"
   },
   "devDependencies": {
     "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",

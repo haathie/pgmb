@@ -1,4 +1,7 @@
-import { Worker, workerData } from 'worker_threads'
+import dotenv from 'dotenv'
+dotenv.config({ })
+
+import { threadId, Worker, workerData } from 'worker_threads'
 import makeAmqpBenchmarkClient from './amqp'
 import { benchmarkConsumption, benchmarkPublishing } from './base'
 import makePgmbBenchmarkClient from './pgmb'
@@ -10,12 +13,6 @@ const CLIENTS: { [client: string]: MakeBenchmarkClient } = {
 	'pgmq': makePgmqBenchmarkClient,
 	'amqp': makeAmqpBenchmarkClient
 }
-
-const TEST_QUEUES = [
-	'test_queue',
-	'test_queue_2',
-	'test_queue_3',
-]
 
 function getArg(name: string) {
 	const index = process.argv.indexOf('--' + name)
@@ -42,7 +39,11 @@ if(!workerData) {
 		throw new Error('Please specify --consume or --publish')
 	}
 
-	TEST_QUEUES.map(queueName => (
+	const queues = getArg('queues') || '1'
+	const testQueues = [...Array.from({ length: Number(queues) })]
+		.map((_, i) => `test_queue_${i}`)
+
+	testQueues.map(queueName => (
 		new Worker(__filename, {
 			workerData: { queueName, method, clientId }
 		})
@@ -57,10 +58,9 @@ if(!workerData) {
 		)
 	}
 
-	const folder = `benchmark-metrics/${clientId}/${queueName}`
 	const opts = {
 		makeClient,
-		metricsFolder: folder,
+		id: `${clientId}-${threadId}`,
 		queueName,
 	}
 

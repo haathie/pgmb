@@ -5,7 +5,11 @@ const makeAmqpBenchmarkClient: MakeBenchmarkClient = async({
 	assertQueues, batchSize, publishers: publisherCount, consumers, logger
 }: BenchmarkClientOpts): Promise<BenchmarkClient> => {
 	// Connect to RabbitMQ
-	const uri = 'amqp://user:password@localhost:5672'
+	const uri = process.env.AMQP_URI
+	if(!uri) {
+		throw new Error('AMQP_URI is not set')
+	}
+
 	const connection = await amqp.connect(uri)
 
 	// Create a single channel for queue assertions

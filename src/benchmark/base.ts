@@ -1,5 +1,4 @@
 import { randomBytes } from 'crypto'
-import { mkdir, open } from 'fs/promises'
 import P from 'pino'
 import { MakeBenchmarkClient } from './types'
 
@@ -11,24 +10,20 @@ const BATCH_SIZE = 100
 
 type BenchmarkOpts = {
 	makeClient: MakeBenchmarkClient
-	metricsFolder: string
+	id: string
 	queueName: string
 }
 
 export async function benchmarkConsumption({
 	makeClient,
-	metricsFolder,
+	id,
 	queueName
 }: BenchmarkOpts) {
 	let consumed = 0
 	let totalConsumed = 0
-	const logger = LOGGER.child({ cnm: 1, queueName })
-
-	await mkdirIfNotExists(metricsFolder)
-	const filepath = `${metricsFolder}/consumptions.txt`
-	const metricsFile = await open(filepath, 'w')
+	const logger = LOGGER.child({ cnm: 1, id, queueName })
 	const int = setInterval(async() => {
-		await metricsFile.write(`${new Date().toJSON()} ${consumed}\n`)
+		logger.info({ value: consumed, total: totalConsumed }, 'metrics')
 		consumed = 0
 	}, 10_000)
 	const totalConcurrency = CONSUMPTION_CONCURRENCY
@@ -55,7 +50,6 @@ export async function benchmarkConsumption({
 	process.on('SIGINT', async() => {
 		clearInterval(int)
 		await client.close()
-		await metricsFile.close()
 		process.exit(0)
 	})
 }
@@ -63,19 +57,16 @@ export async function benchmarkConsumption({
 export async function benchmarkPublishing({
 	queueName,
 	makeClient,
-	metricsFolder
+	id
 }: BenchmarkOpts) {
 	let published = 0
 	let totalPublished = 0
 	let killed = false
 
-	const logger = LOGGER.child({ pub: 1, queueName })
+	const logger = LOGGER.child({ pub: 1, id, queueName })
 
-	await mkdirIfNotExists(metricsFolder)
-	const filepath = `${metricsFolder}/publishings.txt`
-	const metricsFile = await open(filepath, 'w')
 	const int = setInterval(async() => {
-		await metricsFile.write(`${new Date().toJSON()} ${published}\n`)
+		logger.info({ value: published, total: totalPublished }, 'metrics')
 		published = 0
 	}, 10_000)
 
@@ -109,15 +100,4 @@ export async function benchmarkPublishing({
 
 	clearInterval(int)
 	await client.close()
-	await metricsFile.close()
-}
-
-async function mkdirIfNotExists(path: string) {
-	try {
-		await mkdir(path, { recursive: true })
-	} catch(err) {
-		if((err as NodeJS.ErrnoException).code !== 'EEXIST') {
-			throw err
-		}
-	}
 }
