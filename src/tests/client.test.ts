@@ -108,5 +108,14 @@ describe('Client Tests', () => {
 		await delay(1000)
 		// once for error, once for success
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(2)
+
+		// try sending another message & check it's consumed
+		ON_MESSAGE_MOCK.mockClear()
+		await client.sendToQueue(QUEUES[0], { message: 'test message 2' })
+		while(!ON_MESSAGE_MOCK.mock.calls.length) {
+			await delay(100)
+		}
+
+		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
 	})
 })
