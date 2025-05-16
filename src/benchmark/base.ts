@@ -3,7 +3,8 @@ import P from 'pino'
 import { MakeBenchmarkClient } from './types'
 
 const MSG_SIZE_BYTES = 1024
-const LOGGER = P({ })
+const LOG_LEVEL = process.env.LOG_LEVEL || 'info'
+const LOGGER = P({ level: LOG_LEVEL })
 const CONSUMPTION_CONCURRENCY = 10
 const PUBLISH_CONCURRENCY = 5
 const BATCH_SIZE = 100
@@ -23,7 +24,7 @@ export async function benchmarkConsumption({
 	let totalConsumed = 0
 	const logger = LOGGER.child({ cnm: 1, id, queueName })
 	const int = setInterval(async() => {
-		logger.info({ value: consumed, total: totalConsumed }, 'metrics')
+		console.log(`${id} ${queueName} ${consumed} ${totalConsumed}`)
 		consumed = 0
 	}, 10_000)
 	const totalConcurrency = CONSUMPTION_CONCURRENCY
@@ -36,7 +37,7 @@ export async function benchmarkConsumption({
 			async onMessage(msgs) {
 				consumed += msgs.length
 				totalConsumed += msgs.length
-				logger.info(
+				logger.debug(
 					{ client: i, count: msgs.length, totalConsumed },
 					'consumed messages'
 				)
@@ -66,7 +67,7 @@ export async function benchmarkPublishing({
 	const logger = LOGGER.child({ pub: 1, id, queueName })
 
 	const int = setInterval(async() => {
-		logger.info({ value: published, total: totalPublished }, 'metrics')
+		console.log(`${id} ${queueName} ${published} ${totalPublished}`)
 		published = 0
 	}, 10_000)
 
