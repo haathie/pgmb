@@ -24,7 +24,7 @@ export async function benchmarkConsumption({
 	let totalConsumed = 0
 	const logger = LOGGER.child({ cnm: 1, id, queueName })
 	const int = setInterval(async() => {
-		console.log(`${id} ${queueName} ${consumed} ${totalConsumed}`)
+		console.log(`${new Date()} ${id} ${queueName} ${consumed} ${totalConsumed}`)
 		consumed = 0
 	}, 10_000)
 	const totalConcurrency = CONSUMPTION_CONCURRENCY
@@ -67,7 +67,7 @@ export async function benchmarkPublishing({
 	const logger = LOGGER.child({ pub: 1, id, queueName })
 
 	const int = setInterval(async() => {
-		console.log(`${id} ${queueName} ${published} ${totalPublished}`)
+		console.log(`${new Date()} ${id} ${queueName} ${published} ${totalPublished}`)
 		published = 0
 	}, 10_000)
 
