@@ -1,0 +1,37 @@
+# Configures the EKS cluster, to use via eksctl
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: pgmb-benchmark-cluster
+  region: ap-southeast-1
+nodeGroups:
+  - name: workers
+    instanceType: c7g.2xlarge # 8 vCPU, 16GB ram
+    desiredCapacity: 1
+    availabilityZones: ["ap-southeast-1a"]
+    iam:
+      withAddonPolicies:
+        ebs: true
+    # Configures the node groups to use the kubeletExtraConfig to
+    # set the kubeReserved and systemReserved resources
+    # and evictionHard settings.
+    # Done to ensure that the kubelet does not run out of resources
+    # and render all pods in the node group un-usable.
+    # From: https://eksctl.io/usage/customizing-the-kubelet/
+    kubeletExtraConfig:
+      kubeReserved:
+        cpu: "300m"
+        memory: "300Mi"
+        ephemeral-storage: "1Gi"
+      kubeReservedCgroup: "/kube-reserved"
+      systemReserved:
+        cpu: "300m"
+        memory: "300Mi"
+        ephemeral-storage: "1Gi"
+      evictionHard:
+        memory.available:  "200Mi"
+        nodefs.available: "10%"
+      featureGates:
+        # has to be enabled, otherwise it will be disabled
+        RotateKubeletServerCertificate: true

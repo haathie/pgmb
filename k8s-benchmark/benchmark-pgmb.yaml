@@ -1,0 +1,224 @@
+# Manifest for PostgreSQL and pgmb benchmark
+---
+# Namespace definition
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pgmb-benchmark
+---
+# ConfigMap for PostgreSQL configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:	
+  name: postgres-config
+  namespace: pgmb-benchmark
+data:
+  postgresql.conf: |
+    # from: https://pgtune.leopard.in.ua/?dbVersion=17&osType=mac&dbType=mixed&cpuNum=2&totalMemory=4&totalMemoryUnit=GB&connectionNum=50&hdType=ssd
+    # DB Version: 17
+    # OS Type: mac
+    # DB Type: oltp
+    # Total Memory (RAM): 4 GB
+    # CPUs num: 2
+    # Connections num: 50
+    # Data Storage: ssd
+
+    max_connections = 60
+    shared_buffers = 1GB
+    effective_cache_size = 3GB
+    maintenance_work_mem = 256MB
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+    default_statistics_target = 100
+    random_page_cost = 1.1
+    work_mem = 18078kB
+    huge_pages = off
+    min_wal_size = 2GB
+    max_wal_size = 4GB
+    wal_compression = on
+
+    # required for docker
+    listen_addresses = '*'
+    # Enable asynchronous commits for better throughput
+    synchronous_commit = off 
+    # For high-turnover message tables
+    # See: https://www.tembo.io/blog/optimizing-postgres-auto-vacuum
+    autovacuum = on
+    autovacuum_max_workers = 2
+    autovacuum_work_mem = 1GB
+    autovacuum_naptime = 10s
+    autovacuum_vacuum_scale_factor = 0.05    # Vacuum when 5% of table changes
+    autovacuum_vacuum_cost_delay = 0         # Remove autovacuum throttling
+    autovacuum_vacuum_cost_limit = 10000
+    autovacuum_vacuum_threshold = 100
+---
+# ConfigMap for consumer and publisher
+apiVersion: v1
+kind: ConfigMap
+metadata:	
+  name: benchmark-config
+  namespace: pgmb-benchmark
+data:
+  PG_URI: postgres://postgres:@postgres.pgmb-benchmark:5432/test
+  LOG_LEVEL: fatal
+  NODE_ENV: production
+---
+# PostgreSQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: pgmb-benchmark
+spec:
+  serviceName: "postgres"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-bullseye
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_PASSWORD
+          value: ""
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: trust
+        - name: POSTGRES_DB
+          value: test
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        args:
+        - -c
+        - config_file=/etc/postgresql.conf
+        volumeMounts:
+        - name: postgres-config
+          mountPath: /etc/postgresql.conf
+          subPath: postgresql.conf
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          limits:
+            cpu: "2"
+            memory: "4096Mi"
+          requests:
+            cpu: "2"
+            memory: "4096Mi"
+      volumes:
+      - name: postgres-config
+        configMap:
+          name: postgres-config
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "gp2"
+      resources:
+        requests:
+          storage: 50Gi
+---
+# PostgreSQL Service (Headless for StatefulSet)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: pgmb-benchmark
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+---
+# Consumer Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  namespace: pgmb-benchmark
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consumer
+  template:
+    metadata:
+      labels:
+        app: consumer
+    spec:
+      containers:
+        - name: consumer
+          image: ghcr.io/haathie/pgmb:f7bfb6fd1efc46c77af0f522f71d92721603fbe3
+          command:
+            [
+              "npm",
+              "run",
+              "benchmark:tsc",
+              "--",
+              "--consume",
+              "--client",
+              "pgmb",
+              "--batch",
+              "500"
+            ]
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          resources:
+            limits:
+              cpu: "1"
+              memory: "2048Mi"
+            requests:
+              cpu: "1"
+              memory: "2048Mi"
+
+---
+# Publisher Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: publisher
+  namespace: pgmb-benchmark
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: publisher
+  template:
+    metadata:
+      labels:
+        app: publisher
+    spec:
+      containers:
+        - name: publisher
+          image: ghcr.io/haathie/pgmb:f7bfb6fd1efc46c77af0f522f71d92721603fbe3
+          command:
+            [
+              "npm",
+              "run",
+              "benchmark:tsc",
+              "--",
+              "--publish",
+              "--client",
+              "pgmb",
+            ]
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          resources:
+            limits:
+              cpu: "1"
+              memory: "2048Mi"
+            requests:
+              cpu: "1"
+              memory: "2048Mi"
