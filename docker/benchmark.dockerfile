@@ -1,5 +1,7 @@
 FROM node:lts-alpine
 
+RUN apk --update add postgresql-client
+
 # Set the working directory
 WORKDIR /app
 
