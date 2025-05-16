@@ -13,25 +13,27 @@ type BenchmarkOpts = {
 	makeClient: MakeBenchmarkClient
 	id: string
 	queueName: string
+	batchSize?: number
 }
 
 export async function benchmarkConsumption({
 	makeClient,
 	id,
-	queueName
+	queueName,
+	batchSize = BATCH_SIZE
 }: BenchmarkOpts) {
 	let consumed = 0
 	let totalConsumed = 0
 	const logger = LOGGER.child({ cnm: 1, id, queueName })
 	const int = setInterval(async() => {
-		console.log(`${new Date()} ${id} ${queueName} ${consumed} ${totalConsumed}`)
+		console.log(`${new Date().toJSON()} ${id} ${queueName} ${consumed} ${totalConsumed}`)
 		consumed = 0
 	}, 10_000)
 	const totalConcurrency = CONSUMPTION_CONCURRENCY
 
 	const client = await makeClient({
 		assertQueues: [queueName],
-		batchSize: BATCH_SIZE,
+		batchSize,
 		consumers: Array.from({ length: totalConcurrency }, (_, i) => ({
 			queueName: queueName,
 			async onMessage(msgs) {
@@ -58,7 +60,8 @@ export async function benchmarkConsumption({
 export async function benchmarkPublishing({
 	queueName,
 	makeClient,
-	id
+	id,
+	batchSize = BATCH_SIZE
 }: BenchmarkOpts) {
 	let published = 0
 	let totalPublished = 0
@@ -67,13 +70,13 @@ export async function benchmarkPublishing({
 	const logger = LOGGER.child({ pub: 1, id, queueName })
 
 	const int = setInterval(async() => {
-		console.log(`${new Date()} ${id} ${queueName} ${published} ${totalPublished}`)
+		console.log(`${new Date().toJSON()} ${id} ${queueName} ${published} ${totalPublished}`)
 		published = 0
 	}, 10_000)
 
 	const client = await makeClient({
 		assertQueues: [queueName],
-		batchSize: 100,
+		batchSize,
 		publishers: PUBLISH_CONCURRENCY,
 		consumers: [],
 		logger,
@@ -87,8 +90,7 @@ export async function benchmarkPublishing({
 
 	await Promise.all(client.publishers.map(async(pub, i) => {
 		while(!killed) {
-			const count = Math.floor(Math.random() * 100) + 100
-
+			const count = batchSize
 			const msgs = Array.from({ length: count }, () => (
 				randomBytes(MSG_SIZE_BYTES)
 			))

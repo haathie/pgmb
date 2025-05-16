@@ -52,13 +52,20 @@ if(!workerData) {
 		throw new Error('Please specify --consume or --publish')
 	}
 
+	const batchSize = getArg('batch')
+
 	const queues = getArg('queues') || '1'
 	const testQueues = [...Array.from({ length: Number(queues) })]
 		.map((_, i) => `test_queue_${i}`)
 	const runWorkers = () => (
 		testQueues.map(queueName => (
 			new Worker(__filename, {
-				workerData: { queueName, method, clientId }
+				workerData: {
+					queueName,
+					method,
+					clientId,
+					batchSize: batchSize ? Number(batchSize) : undefined,
+				}
 			})
 		))
 	)
@@ -83,7 +90,7 @@ if(!workerData) {
 		runWorkers()
 	}
 } else {
-	const { queueName, clientId, method } = workerData
+	const { queueName, clientId, method, batchSize } = workerData
 	const client = CLIENTS[clientId]
 	if(!client) {
 		throw new Error(
@@ -96,6 +103,7 @@ if(!workerData) {
 		makeClient: client.make,
 		id: `${clientId}-${threadId}`,
 		queueName,
+		batchSize,
 	}
 
 	if(method === 'consume') {
