@@ -1,6 +1,10 @@
-import { exec } from 'child_process'
+import { exec as execCallback } from 'child_process'
+import { stat, writeFile } from 'fs/promises'
 import { Client, Pool } from 'pg'
+import { promisify } from 'util'
 import { BenchmarkConsumer, MakeBenchmarkClient } from './types'
+
+const exec = promisify(execCallback)
 
 const makePgmqBenchmarkClient: MakeBenchmarkClient = async({
 	batchSize,
@@ -101,21 +105,26 @@ export async function install() {
 		return false
 	}
 
-	await new Promise<void>((resolve, reject) => {
-		exec(`psql ${uri} -f ./sql/pgmq.sql`, (err, stdout, stderr) => {
-			process.stdout.write(stdout)
-			process.stderr.write(stderr)
-			if(err) {
-				console.error(`Error: ${err.message}`)
-				reject(err)
-				return
-			}
+	const fileExists = await stat('./sql/pgmq.sql')
+		.catch(() => false)
+	if(!fileExists) {
+		await downloadPgmqSql()
+	}
 
-			resolve()
-		})
-	})
+	const { stdout, stderr } = await exec(`psql ${uri} -f ./sql/pgmq.sql`)
+	process.stdout.write(stdout)
+	process.stderr.write(stderr)
 
 	return true
+}
+
+// download pgmq.sql from the git repository
+async function downloadPgmqSql() {
+	const res = await fetch(
+		'https://raw.githubusercontent.com/pgmq/pgmq/refs/heads/main/pgmq-extension/sql/pgmq.sql'
+	)
+	await writeFile('./sql/pgmq.sql', await res.text())
+	console.log('pgmq.sql downloaded')
 }
 
 export default makePgmqBenchmarkClient

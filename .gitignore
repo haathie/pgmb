@@ -131,3 +131,4 @@ lib
 
 benchmark-metrics
 dev/pg_data
+sql/pgmq.sql
