@@ -3,6 +3,7 @@ import { stat, writeFile } from 'fs/promises'
 import { Client, Pool } from 'pg'
 import { promisify } from 'util'
 import { BenchmarkConsumer, MakeBenchmarkClient } from './types'
+import { delay } from '../utils'
 
 const exec = promisify(execCallback)
 
@@ -80,7 +81,7 @@ const makePgmqBenchmarkClient: MakeBenchmarkClient = async({
 
 				await client.query('COMMIT;')
 				await client.release()
-				await new Promise(r => setTimeout(r, 100))
+				await delay(100)
 			}
 		}
 	}

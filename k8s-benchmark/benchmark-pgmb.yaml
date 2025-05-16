@@ -158,7 +158,7 @@ spec:
     spec:
       containers:
         - name: consumer
-          image: ghcr.io/haathie/pgmb:f7bfb6fd1efc46c77af0f522f71d92721603fbe3
+          image: ghcr.io/haathie/pgmb:53e38d3911d0908e4741dbecd027bcada614c076
           command:
             [
               "npm",
@@ -201,7 +201,7 @@ spec:
     spec:
       containers:
         - name: publisher
-          image: ghcr.io/haathie/pgmb:f7bfb6fd1efc46c77af0f522f71d92721603fbe3
+          image: ghcr.io/haathie/pgmb:53e38d3911d0908e4741dbecd027bcada614c076
           command:
             [
               "npm",
