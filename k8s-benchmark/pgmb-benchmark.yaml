@@ -1,4 +1,4 @@
-# Manifest for PostgreSQL and pgmb benchmark
+# Manifest for PostgreSQL and pgmb/pgmq benchmark
 ---
 # Namespace definition
 apiVersion: v1
@@ -14,31 +14,36 @@ metadata:
   namespace: pgmb-benchmark
 data:
   postgresql.conf: |
-    # from: https://pgtune.leopard.in.ua/?dbVersion=17&osType=mac&dbType=mixed&cpuNum=2&totalMemory=4&totalMemoryUnit=GB&connectionNum=50&hdType=ssd
+    # from: https://pgtune.leopard.in.ua/?dbVersion=17&osType=linux&dbType=oltp&cpuNum=4&totalMemory=8&totalMemoryUnit=GB&connectionNum=75&hdType=san
     # DB Version: 17
-    # OS Type: mac
+    # OS Type: linux
     # DB Type: oltp
-    # Total Memory (RAM): 4 GB
-    # CPUs num: 2
-    # Connections num: 50
-    # Data Storage: ssd
+    # Total Memory (RAM): 8 GB
+    # CPUs num: 4
+    # Connections num: 75
+    # Data Storage: san
 
-    max_connections = 60
-    shared_buffers = 1GB
-    effective_cache_size = 3GB
-    maintenance_work_mem = 256MB
+    max_connections = 75
+    shared_buffers = 2GB
+    effective_cache_size = 6GB
+    maintenance_work_mem = 512MB
     checkpoint_completion_target = 0.9
     wal_buffers = 16MB
     default_statistics_target = 100
     random_page_cost = 1.1
-    work_mem = 18078kB
+    effective_io_concurrency = 300
+    work_mem = 26546kB
     huge_pages = off
     min_wal_size = 2GB
-    max_wal_size = 4GB
-    wal_compression = on
+    max_wal_size = 8GB
+    max_worker_processes = 4
+    max_parallel_workers_per_gather = 2
+    max_parallel_workers = 4
+    max_parallel_maintenance_workers = 2
 
-    # required for docker
+    # ---------------------
     listen_addresses = '*'
+
     # Enable asynchronous commits for better throughput
     synchronous_commit = off 
     # For high-turnover message tables
@@ -106,11 +111,11 @@ spec:
           mountPath: /var/lib/postgresql/data
         resources:
           limits:
-            cpu: "2"
-            memory: "4096Mi"
+            cpu: "4"
+            memory: "8192Mi"
           requests:
-            cpu: "2"
-            memory: "4096Mi"
+            cpu: "4"
+            memory: "8192Mi"
       volumes:
       - name: postgres-config
         configMap:
@@ -158,7 +163,7 @@ spec:
     spec:
       containers:
         - name: consumer
-          image: ghcr.io/haathie/pgmb:53e38d3911d0908e4741dbecd027bcada614c076
+          image: ghcr.io/haathie/pgmb:323c8987e082cf21964b6c507a64259b058299ad
           command:
             [
               "npm",
@@ -166,10 +171,13 @@ spec:
               "benchmark:tsc",
               "--",
               "--consume",
-              "--client",
-              "pgmb",
               "--batch",
-              "500"
+              "50",
+              "--replicas",
+              "1",
+              # change to pgmq when wanting to benchmark pgmq
+              "--client",
+              "pgmb"
             ]
           envFrom:
             - configMapRef:
@@ -180,7 +188,7 @@ spec:
               memory: "2048Mi"
             requests:
               cpu: "1"
-              memory: "2048Mi"
+              memory: "1024Mi"
 
 ---
 # Publisher Deployment
@@ -201,7 +209,7 @@ spec:
     spec:
       containers:
         - name: publisher
-          image: ghcr.io/haathie/pgmb:53e38d3911d0908e4741dbecd027bcada614c076
+          image: ghcr.io/haathie/pgmb:323c8987e082cf21964b6c507a64259b058299ad
           command:
             [
               "npm",
@@ -209,7 +217,10 @@ spec:
               "benchmark:tsc",
               "--",
               "--publish",
+              "--replicas",
+              "1",
               "--client",
+              # change to pgmq when wanting to benchmark pgmq
               "pgmb",
             ]
           envFrom:
@@ -221,4 +232,4 @@ spec:
               memory: "2048Mi"
             requests:
               cpu: "1"
-              memory: "2048Mi"
+              memory: "1024Mi"
