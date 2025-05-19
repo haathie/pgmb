@@ -1,0 +1,194 @@
+# Manifest for RabbitMQ & amqp benchmark
+---
+# Namespace definition
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amqp-benchmark
+---
+# RabbitMQ ConfigMap for configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: amqp-benchmark
+data:
+  rabbitmq.conf: |
+    # RabbitMQ configuration
+    # For more options, see https://www.rabbitmq.com/configure.html
+    
+    # Default user settings
+    default_user = user
+    default_pass = password
+    
+    # Network settings
+    listeners.tcp.default = 5672
+    management.tcp.port = 15672
+
+---
+# RabbitMQ StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: amqp-benchmark
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:4-management-alpine
+        ports:
+        - name: amqp
+          containerPort: 5672
+        - name: http
+          containerPort: 15672
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          value: user
+        - name: RABBITMQ_DEFAULT_PASS
+          value: password
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+        - name: rabbitmq-config
+          mountPath: /etc/rabbitmq/rabbitmq.conf
+          subPath: rabbitmq.conf
+        resources:
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+          requests:
+            cpu: "2"
+            memory: "4Gi"
+      volumes:
+      - name: rabbitmq-config
+        configMap:
+          name: rabbitmq-config
+  volumeClaimTemplates:
+  - metadata:
+      name: rabbitmq-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 50Gi
+
+---
+# RabbitMQ Service for cluster communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: amqp-benchmark
+spec:
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+  - name: amqp
+    port: 5672
+    targetPort: 5672
+---
+# ConfigMap for consumer and publisher
+apiVersion: v1
+kind: ConfigMap
+metadata:	
+  name: benchmark-config
+  namespace: amqp-benchmark
+data:
+  AMQP_URI: amqp://user:password@rabbitmq.amqp-benchmark:5672
+  LOG_LEVEL: fatal
+  NODE_ENV: production
+---
+# Consumer Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  namespace: amqp-benchmark
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consumer
+  template:
+    metadata:
+      labels:
+        app: consumer
+    spec:
+      containers:
+        - name: consumer
+          image: ghcr.io/haathie/pgmb:53e38d3911d0908e4741dbecd027bcada614c076
+          command:
+            [
+              "npm",
+              "run",
+              "benchmark:tsc",
+              "--",
+              "--consume",
+              "--client",
+              "amqp",
+              "--batch",
+              "500"
+            ]
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          resources:
+            limits:
+              cpu: "1"
+              memory: "2048Mi"
+            requests:
+              cpu: "1"
+              memory: "2048Mi"
+
+---
+# Publisher Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: publisher
+  namespace: amqp-benchmark
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: publisher
+  template:
+    metadata:
+      labels:
+        app: publisher
+    spec:
+      containers:
+        - name: publisher
+          image: ghcr.io/haathie/pgmb:53e38d3911d0908e4741dbecd027bcada614c076
+          command:
+            [
+              "npm",
+              "run",
+              "benchmark:tsc",
+              "--",
+              "--publish",
+              "--client",
+              "amqp",
+            ]
+          envFrom:
+            - configMapRef:
+                name: benchmark-config
+          resources:
+            limits:
+              cpu: "1"
+              memory: "2048Mi"
+            requests:
+              cpu: "1"
+              memory: "2048Mi"
