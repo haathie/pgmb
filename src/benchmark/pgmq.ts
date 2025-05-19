@@ -2,8 +2,8 @@ import { exec as execCallback } from 'child_process'
 import { stat, writeFile } from 'fs/promises'
 import { Client, Pool } from 'pg'
 import { promisify } from 'util'
-import { BenchmarkConsumer, MakeBenchmarkClient } from './types'
 import { delay } from '../utils'
+import { BenchmarkConsumer, MakeBenchmarkClient } from './types'
 
 const exec = promisify(execCallback)
 
@@ -81,7 +81,10 @@ const makePgmqBenchmarkClient: MakeBenchmarkClient = async({
 
 				await client.query('COMMIT;')
 				await client.release()
-				await delay(100)
+				// keep reading until we get no more messages
+				if(!rows.length) {
+					await delay(100)
+				}
 			}
 		}
 	}

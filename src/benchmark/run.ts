@@ -54,9 +54,14 @@ if(!workerData) {
 
 	const batchSize = getArg('batch')
 
+	const replicas = getArg('replicas') || '1'
+
 	const queues = getArg('queues') || '1'
 	const testQueues = [...Array.from({ length: Number(queues) })]
-		.map((_, i) => `test_queue_${i}`)
+		.flatMap((_, i) => (
+			[...Array.from({ length: Number(replicas) })]
+				.map(() => `test_queue_${i}`)
+		))
 	const runWorkers = () => (
 		testQueues.map(queueName => (
 			new Worker(__filename, {
