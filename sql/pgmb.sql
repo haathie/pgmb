@@ -23,6 +23,7 @@ CREATE TYPE pgmb.metrics_result AS (
 );
 
 CREATE TYPE pgmb.queue_ack_setting AS ENUM ('archive', 'delete');
+CREATE TYPE pgmb.queue_type AS ENUM ('logged', 'unlogged');
 
 -- table for exchanges
 CREATE TABLE pgmb.exchanges (
@@ -76,13 +77,15 @@ CREATE TABLE pgmb.queues (
 	schema_name VARCHAR(64) NOT NULL,
 	created_at TIMESTAMPTZ DEFAULT NOW(),
 	ack_setting pgmb.queue_ack_setting DEFAULT 'delete',
+	queue_type pgmb.queue_type DEFAULT 'logged',
 	default_headers JSONB DEFAULT '{}'::JSONB
 );
 
 -- utility function to create a queue table
 CREATE OR REPLACE FUNCTION pgmb.create_queue_table(
 	queue_name VARCHAR(64),
-	schema_name VARCHAR(64)
+	schema_name VARCHAR(64),
+	queue_type pgmb.queue_type
 ) RETURNS VOID AS $$
 BEGIN
 	-- create the live_messages table
@@ -92,6 +95,10 @@ BEGIN
 		headers JSONB NOT NULL DEFAULT ''{}''::JSONB,
 		created_at TIMESTAMPTZ DEFAULT NOW()
 	)';
+	IF queue_type = 'unlogged' THEN
+		EXECUTE 'ALTER TABLE ' || quote_ident(schema_name)
+			|| '.live_messages SET UNLOGGED';
+	END IF;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -101,7 +108,8 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION pgmb.assert_queue(
 	queue_name VARCHAR(64),
 	ack_setting pgmb.queue_ack_setting DEFAULT 'delete',
-	default_headers JSONB DEFAULT '{}'::JSONB
+	default_headers JSONB DEFAULT '{}'::JSONB,
+	queue_type pgmb.queue_type DEFAULT 'logged'
 )
 RETURNS BOOLEAN AS $$
 DECLARE
@@ -115,20 +123,27 @@ BEGIN
 		RETURN FALSE;
 	END IF;
 	-- store in the queues table
-	INSERT INTO pgmb.queues (name, schema_name, ack_setting, default_headers)
-	VALUES (queue_name, schema_name, ack_setting, default_headers);
+	INSERT INTO pgmb.queues
+		(name, schema_name, ack_setting, default_headers, queue_type)
+		VALUES (queue_name, schema_name, ack_setting, default_headers, queue_type);
 	-- create schema
 	EXECUTE 'CREATE SCHEMA ' || quote_ident(schema_name);
 	-- create the live_messages table
-	PERFORM pgmb.create_queue_table(queue_name, schema_name);
-	-- create the consumed_messages table
-	EXECUTE 'CREATE TABLE ' || quote_ident(schema_name) || '.consumed_messages (
-		id VARCHAR(22) PRIMARY KEY,
-		message BYTEA NOT NULL,
-		headers JSONB NOT NULL DEFAULT ''{}''::JSONB,
-		success BOOLEAN NOT NULL,
-		consumed_at TIMESTAMPTZ DEFAULT NOW()
-	)';
+	PERFORM pgmb.create_queue_table(queue_name, schema_name, queue_type);
+	IF ack_setting = 'archive' THEN
+		-- create the consumed_messages table
+		EXECUTE 'CREATE TABLE ' || quote_ident(schema_name) || '.consumed_messages (
+			id VARCHAR(22) PRIMARY KEY,
+			message BYTEA NOT NULL,
+			headers JSONB NOT NULL DEFAULT ''{}''::JSONB,
+			success BOOLEAN NOT NULL,
+			consumed_at TIMESTAMPTZ DEFAULT NOW()
+		)';
+		IF queue_type = 'unlogged' THEN
+			EXECUTE 'ALTER TABLE ' || quote_ident(schema_name)
+				|| '.consumed_messages SET UNLOGGED';
+		END IF;
+	END IF;
 	RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql;
@@ -141,7 +156,8 @@ DECLARE
 	schema_name VARCHAR(64);
 BEGIN
 	-- get schema name
-	SELECT q.schema_name FROM pgmb.queues q WHERE q.name = queue_name INTO schema_name;
+	SELECT q.schema_name FROM pgmb.queues q
+	WHERE q.name = queue_name INTO schema_name;
 	-- drop the schema
 	EXECUTE 'DROP SCHEMA IF EXISTS ' || quote_ident(schema_name) || ' CASCADE';
 	-- remove from exchanges
@@ -159,13 +175,16 @@ CREATE OR REPLACE FUNCTION pgmb.purge_queue(queue_name VARCHAR(64))
 RETURNS VOID AS $$
 DECLARE
 	schema_name VARCHAR(64);
+	queue_type pgmb.queue_type;
 BEGIN
 	-- get schema name
-	SELECT q.schema_name FROM pgmb.queues q WHERE q.name = queue_name INTO schema_name;
+	SELECT q.schema_name, q.queue_type FROM pgmb.queues q
+	WHERE q.name = queue_name INTO schema_name, queue_type;
 	-- drop the live_messages table
-	EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(schema_name) || '.live_messages';
+	EXECUTE 'DROP TABLE IF EXISTS '
+		|| quote_ident(schema_name) || '.live_messages';
 	-- create the live_messages table
-	PERFORM pgmb.create_queue_table(queue_name, schema_name);
+	PERFORM pgmb.create_queue_table(queue_name, schema_name, queue_type);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -180,7 +199,8 @@ BEGIN
 END
 $$ LANGUAGE plpgsql VOLATILE LEAKPROOF PARALLEL SAFE;
 
--- fn to create a unique message ID. This'll be the current timestamp + a random number
+-- fn to create a unique message ID. This'll be the current timestamp
+-- + a random number
 CREATE OR REPLACE FUNCTION pgmb.create_message_id(
 	dt timestamptz DEFAULT clock_timestamp(),
 	rand bigint DEFAULT pgmb.create_random_bigint()
@@ -201,7 +221,9 @@ END
 $$ LANGUAGE plpgsql VOLATILE LEAKPROOF PARALLEL SAFE;
 
 -- fn to extract the date from a message ID.
-CREATE OR REPLACE FUNCTION pgmb.extract_date_from_message_id(message_id VARCHAR(64))
+CREATE OR REPLACE FUNCTION pgmb.extract_date_from_message_id(
+	message_id VARCHAR(64)
+)
 RETURNS TIMESTAMPTZ AS $$
 BEGIN
 	-- convert it to a timestamp

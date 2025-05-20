@@ -15,6 +15,7 @@ Presently, it supports the following features:
 | Multiple Consumers | Multiple consumers can consume from the same queue | ✅ |
 | Scheduled Messages | Messages can be scheduled to be consumed at a later time | ✅ |
 | Bulk Publish/Consume | Messages can be published and consumed in bulk | ✅ |
+| Unlogged Queues | Use unlogged tables for better performance, in exchange of durability | ✅ |
 | Archive Table | Messages can be archived to a separate table for later retrieval/audit | ✅ |
 | Archive Cleanup/Rollover | The archive table is periodically cleaned up/rolled over to a new table | ❌ |
 | Metrics | Basic metrics for monitoring the state of the queues and exchanges | ❌ |
@@ -55,9 +56,13 @@ The most basic usage is to create a queue and publish messages to it. The follow
 -- Create a queue. By default the queue will delete messages on acknowledgement.
 SELECT pgmb.assert_queue('my_queue');
 -- Create a queue that'll archive messages on ack
-SELECT pgmb.assert_queue('my_queue', 'archive');
+SELECT pgmb.assert_queue('my_queue', ack_setting => 'archive');
 -- Create a queue with some default headers
-SELECT pgmb.assert_queue('my_queue', 'archive', '{"foo": "bar"}');
+SELECT pgmb.assert_queue('my_queue', default_headers => '{"foo": "bar"}');
+-- Create an unlogged queue
+-- Note: this will not be durable, and messages will be lost on crash,
+-- if ack_setting is set to 'archive', the archive table will be unlogged as well
+SELECT pgmb.assert_queue('my_queue', queue_type => 'unlogged');
 ```
 
 ### Sending a Message to a Queue

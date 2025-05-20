@@ -40,7 +40,7 @@ describe('PGMB SQL Tests', () => {
 		expect(date).toEqual(dt)
 	})
 
-	testWithRollback('should create a queue', async client => {
+	testWithRollback('should create a logged queue', async client => {
 		const queueName = createQueueName()
 		const { rows: [{ created }] } = await client.query(
 			'SELECT pgmb.assert_queue($1) as "created"', [queueName]
@@ -51,6 +51,9 @@ describe('PGMB SQL Tests', () => {
 		)
 		expect(created).toBeTruthy()
 		expect(created2).toBeFalsy()
+
+		// check if the table is a logged table
+		expect(await isQueueLogged(client, queueName)).toBe(true)
 
 		const { rows } = await client.query(
 			'SELECT * FROM pgmb.queues WHERE name = $1', [queueName]
@@ -65,6 +68,46 @@ describe('PGMB SQL Tests', () => {
 			WHERE table_schema = $1`, [rows[0]['schema_name']]
 		)
 		expect(tables.length).toBeGreaterThan(0)
+	})
+
+	testWithRollback('should create a queue w archive table', async client => {
+		const queueName = createQueueName()
+		const { rows: [{ created }] } = await client.query(
+			'SELECT pgmb.assert_queue($1, \'archive\') as "created"', [queueName]
+		)
+		expect(created).toBeTruthy()
+
+		const { rows } = await client.query(
+			'SELECT * FROM pgmb.queues WHERE name = $1', [queueName]
+		)
+		expect(rows.length).toBe(1)
+		expect(rows[0].name).toBe(queueName)
+		expect(rows[0]['ack_setting']).toBe('archive')
+
+		// ensure archived table exists
+		await client.query(
+			`SELECT * FROM ${getQueueSchemaName(queueName)}.consumed_messages`
+		)
+	})
+
+	testWithRollback('should create an unlogged queue', async client => {
+		const queueName = createQueueName()
+		const { rows: [{ created }] } = await client.query(
+			'SELECT pgmb.assert_queue($1, queue_type => $2) as "created"',
+			[queueName, 'unlogged']
+		)
+		expect(created).toBeTruthy()
+
+		// check if the table is a logged table
+		expect(await isQueueLogged(client, queueName)).toBe(false)
+
+		const { rows } = await client.query(
+			'SELECT * FROM pgmb.queues WHERE name = $1', [queueName]
+		)
+		expect(rows.length).toBe(1)
+		expect(rows[0].name).toBe(queueName)
+		expect(rows[0]['schema_name']).toBeTruthy()
+		expect(rows[0]['queue_type']).toBe('unlogged')
 	})
 
 	testWithRollback('should send message to a queue', async client => {
@@ -370,6 +413,18 @@ async function sendToQueue(
 		`SELECT pgmb.send($1, ${sql}) AS id`, params
 	)
 	return rows as { id: string }[]
+}
+
+async function isQueueLogged(
+	client: PoolClient, queueName: string
+) {
+	// https://stackoverflow.com/a/29900169
+	const { rows: [{ relpersistence }] } = await client.query(
+		`SELECT relpersistence FROM pg_class
+		where oid = $1::regclass::oid`,
+		[getQueueSchemaName(queueName) + '.live_messages']
+	)
+	return relpersistence === 'p'
 }
 
 // util fn for testing. Do not use in production, fetch
