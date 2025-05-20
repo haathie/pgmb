@@ -19,4 +19,5 @@ For PGMB and PGMQ, we delete the messages on "ack", rather than archive them to 
 5. Run the benchmarks: `kubectl apply -f k8s-benchmark/benchmark-pgmb.yaml`. Note that the pods may crash initially, but they will restart and run the benchmarks.
 6. You can check the logs with `kubectl logs -f <pod-name> -n pgmb-benchmark`. The output logs can be used to then graph the results. Terminate the pods when done.
 
-Note: this will cost you some money, so make sure to delete the cluster when you're done. Also if you want to run more rigorous benchmarks, you can increase the size of the node in the `cluster.yaml` file, and increase the provisioned size of the postgres, consumer, publisher pods.
+Note: this will cost you some money, so make sure to delete the cluster when you're done via: `eksctl delete cluster -f k8s-benchmark/cluster.yaml --disable-nodegroup-eviction`.
+Also if you want to run more rigorous benchmarks, you can increase the size of the node in the `cluster.yaml` file, and increase the provisioned size of the postgres, consumer, publisher pods.

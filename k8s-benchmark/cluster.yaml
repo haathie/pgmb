@@ -7,9 +7,13 @@ metadata:
   region: ap-southeast-1
 nodeGroups:
   - name: workers
-    instanceType: c7g.2xlarge # 8 vCPU, 16GB ram
+    instanceType: 
     desiredCapacity: 1
     availabilityZones: ["ap-southeast-1a"]
+    # using spot instances to save costs
+    instancesDistribution:
+      instanceTypes:
+        - c7g.2xlarge # 8 vCPU, 16GB ram
     iam:
       withAddonPolicies:
         ebs: true

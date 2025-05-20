@@ -14,32 +14,28 @@ metadata:
   namespace: pgmb-benchmark
 data:
   postgresql.conf: |
-    # from: https://pgtune.leopard.in.ua/?dbVersion=17&osType=linux&dbType=oltp&cpuNum=4&totalMemory=8&totalMemoryUnit=GB&connectionNum=75&hdType=san
+    # from: https://pgtune.leopard.in.ua/?dbVersion=17&osType=linux&dbType=oltp&cpuNum=2&totalMemory=4&totalMemoryUnit=GB&connectionNum=50&hdType=san
     # DB Version: 17
     # OS Type: linux
     # DB Type: oltp
-    # Total Memory (RAM): 8 GB
-    # CPUs num: 4
-    # Connections num: 75
+    # Total Memory (RAM): 4 GB
+    # CPUs num: 2
+    # Connections num: 50
     # Data Storage: san
 
-    max_connections = 75
-    shared_buffers = 2GB
-    effective_cache_size = 6GB
-    maintenance_work_mem = 512MB
+    max_connections = 50
+    shared_buffers = 3GB
+    effective_cache_size = 3GB
+    maintenance_work_mem = 256MB
     checkpoint_completion_target = 0.9
     wal_buffers = 16MB
     default_statistics_target = 100
     random_page_cost = 1.1
     effective_io_concurrency = 300
-    work_mem = 26546kB
+    work_mem = 18078kB
     huge_pages = off
     min_wal_size = 2GB
     max_wal_size = 8GB
-    max_worker_processes = 4
-    max_parallel_workers_per_gather = 2
-    max_parallel_workers = 4
-    max_parallel_maintenance_workers = 2
 
     # ---------------------
     listen_addresses = '*'
@@ -111,11 +107,11 @@ spec:
           mountPath: /var/lib/postgresql/data
         resources:
           limits:
-            cpu: "4"
-            memory: "8192Mi"
+            cpu: "2"
+            memory: "4096Mi"
           requests:
-            cpu: "4"
-            memory: "8192Mi"
+            cpu: "2"
+            memory: "4096Mi"
       volumes:
       - name: postgres-config
         configMap:
@@ -163,7 +159,7 @@ spec:
     spec:
       containers:
         - name: consumer
-          image: ghcr.io/haathie/pgmb:323c8987e082cf21964b6c507a64259b058299ad
+          image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
           command:
             [
               "npm",
@@ -172,7 +168,7 @@ spec:
               "--",
               "--consume",
               "--batch",
-              "50",
+              "500",
               "--replicas",
               "1",
               # change to pgmq when wanting to benchmark pgmq
@@ -209,7 +205,7 @@ spec:
     spec:
       containers:
         - name: publisher
-          image: ghcr.io/haathie/pgmb:323c8987e082cf21964b6c507a64259b058299ad
+          image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
           command:
             [
               "npm",
@@ -219,6 +215,8 @@ spec:
               "--publish",
               "--replicas",
               "1",
+              "--batch",
+              "100",
               "--client",
               # change to pgmq when wanting to benchmark pgmq
               "pgmb",
