@@ -35,7 +35,16 @@ Given this, and the simplicity of implementing a message queue on top of Postgre
 
 ## Benchmarks
 
-TODO: run on semi-large machine
+Here are benchmarks of PGMB, PGMQ and AMQP. The benchmarks were run on an EC2 server managed by AWS EKS. Each database being allocated `2 cores` and `4GB` of RAM with network mounted EBS volumes. The full details of the benchmarks can be found [here](/k8s-benchmark/readme.md).
+
+| Test | PGMB (delete on ack) | PGMQ (delete on ack) | AMQP (RabbitMQ) |
+| :--- | ---: | ---: | ---: |
+| msgs published/s | 27321 ± 6493 | 21286 ± 6129 | 27,646 ± 356 |
+| msgs consumed/s | 16224 ± 10860 | 3201 ± 5061 | 27,463 ± 392 |
+
+Of course, these benchmarks are for fairly low powered machines, but these give out enough confidence that a Postgres queue can be used as a message broker for reasonably sized workloads. The folks at Tembo managed to squeeze out 30k messages per second, with a more powerful setup. You can find their benchmarks [here](https://hemming-in.rssing.com/chan-2212310/article8486.html?nocache=0)
+
+Note: I'm not super sure why the PGMQ benchmarks are much lower, but I suspect it's due to the fact that it uses a serial ID for messages + I may have not configured it for max performance.
 
 ## Installation
 
