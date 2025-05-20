@@ -17,15 +17,32 @@ describe('PGMB SQL Tests', () => {
 	})
 
 	it.concurrent('should create unique message IDs', async() => {
-		const genCount = 50000
-		const { rows } = await pool.query(
-			`select distinct pgmb.create_message_id(rand=>pgmb.create_random_bigint(id))
-			from generate_series(1, ${genCount}) AS t(id)`,
+		const genCount = 10000
+		const parallelCount = 5
+		const totalSet = new Set<string>()
+		const totalRows = await Promise.all(
+			Array.from({ length: parallelCount }, async() => {
+				const { rows } = await pool.query(
+					`select distinct
+						pgmb.create_message_id(rand=>pgmb.create_random_bigint(num)) AS id
+					from generate_series(1, ${genCount}) AS t(num)`
+				)
+				return rows
+			})
 		)
-		expect(rows.length).toBe(genCount)
-		const sorted = [...rows].sort((a, b) => a.id - b.id)
-		expect(sorted).toEqual(rows)
-	})
+		for(const rows of totalRows) {
+			expect(rows.length).toBe(genCount)
+			const sorted = [...rows].sort((a, b) => a.id - b.id)
+			expect(sorted).toEqual(rows)
+
+			for(const { id } of rows) {
+				expect(totalSet).not.toContain(id)
+				totalSet.add(id)
+			}
+		}
+
+		expect(totalSet.size).toBe(genCount * parallelCount)
+	}, 30000)
 
 	it.concurrent('should correctly get the message ID date', async() => {
 		const dt = new Date('2023-10-01T00:00:00Z')

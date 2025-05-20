@@ -213,7 +213,7 @@ BEGIN
 	RETURN substr(
 		'pm'
 		|| substr(lpad(to_hex((extract(epoch from dt) * 1000000)::bigint), 14, '0'), 1, 14)
-		|| lpad(to_hex(rand), 14, '0'),
+		|| rpad(to_hex(rand), 8, '0'),
 		1,
 		22
 	);
