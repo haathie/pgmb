@@ -53,9 +53,9 @@ The primary code is just SQL functions, that can be utilised in any Postgres dat
 In Postgres:
 - Clone the repository: `git clone https://github.com/haathie/pgmb.git`
 - The library must be installed in the database you want to use it in. This can be done by running the following command:
-```sh
-psql postgres://<user>:<pass>@<host>:<port>/<db> -f sql/pgmb.sql -1
-```
+  ```sh
+  psql postgres://<user>:<pass>@<host>:<port>/<db> -f sql/pgmb.sql -1
+  ```
   note: `psql` must be installed on your machine.
 
 ## Testing

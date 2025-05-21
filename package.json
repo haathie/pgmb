@@ -1,6 +1,6 @@
 {
   "name": "@haathie/pgmb",
-  "version": "1.1.1",
+  "version": "0.1.0",
   "description": "Postgres Message Broker",
   "main": "lib/index.js",
   "scripts": {
