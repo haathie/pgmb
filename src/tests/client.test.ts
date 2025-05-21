@@ -22,6 +22,7 @@ describe('Client Tests', () => {
 	const client = new PGMBClient({
 		pool,
 		logger: LOGGER,
+		consumers: []
 	})
 
 	beforeAll(async() => {
@@ -36,7 +37,7 @@ describe('Client Tests', () => {
 	beforeEach(async() => {
 		await client.replaceConsumers(
 			...QUEUES.map(queueName => ({
-				queue: { name: queueName },
+				name: queueName,
 				onMessage: ON_MESSAGE_MOCK,
 				batchSize: 10
 			}))
@@ -111,7 +112,7 @@ describe('Client Tests', () => {
 
 		await client.replaceConsumers(
 			{
-				queue: { name: queueName },
+				name: queueName,
 				onMessage: ON_MESSAGE_MOCK,
 				batchSize: 10,
 				debounceIntervalMs: 500

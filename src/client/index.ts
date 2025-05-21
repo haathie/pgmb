@@ -1,44 +1,45 @@
 import type { Pool, PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
-import type { PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PgPublishMsg, PGSentMessage } from '../types'
+import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
 import { serialisePgMsgConstructorsIntoSql } from '../utils'
 import { PGMBConsumer } from './consumer'
 import { PGMBListener } from './listener'
 
-export class PGMBClient {
+export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 
 	#pool: Pool
-	#consumers: PGMBConsumer[]
+	#consumers: PGMBConsumer<keyof QM, EM, QM[keyof QM]>[]
 	#logger: Logger
 	#listener: PGMBListener
+	#serialiser?: Serialiser
 
 	constructor({
 		pool,
 		logger = P(),
 		consumers = [],
+		serialiser
 	}: PGMBClientOpts) {
 		this.#pool = pool
-		this.#consumers = consumers.map(s => (
-			new PGMBConsumer(this.#pool,	s, logger.child({ queue: s.queue.name }))
-		))
 		this.#logger = logger
 		this.#onNotification = this.#onNotification.bind(this)
 		this.#listener
 			= new PGMBListener(this.#pool, this.#onNotification, this.#logger)
+		this.#serialiser = serialiser
+		this.#consumers = this.#createConsumers(consumers)
 	}
 
 	async listen() {
 		await this.#listener.close()
 
-		const queues = this.#consumers.map(s => s.getOpts().queue)
-		if(!queues.length) {
+		const queueOpts = this.#consumers.map(s => s.getOpts())
+		if(!queueOpts.length) {
 			return
 		}
 
 		const client = await this.#pool.connect()
 		try {
 			await client.query('BEGIN')
-			for(const q of queues) {
+			for(const q of queueOpts) {
 				await this.assertQueue(q, client)
 			}
 
@@ -50,8 +51,8 @@ export class PGMBClient {
 			client.release()
 		}
 
-		await this.#listener.subscribe(...queues.map(q => q.name))
-		this.#logger.info({ queues: queues.length }, 'listening to queues')
+		await this.#listener.subscribe(...queueOpts.map(q => String(q.name)))
+		this.#logger.info({ queues: queueOpts.length }, 'listening to queues')
 	}
 
 	/**
@@ -59,14 +60,12 @@ export class PGMBClient {
 	 * the newly provided consumers. Will automatically call `listen()` to
 	 * re-subscribe to the queues.
 	 */
-	async replaceConsumers(...subs: PGMBConsumerOpts[]) {
+	async replaceConsumers(...consumerOpts: PGMBClientOpts<QM, EM>['consumers']) {
 		for(const cons of this.#consumers) {
 			await cons.close()
 		}
 
-		this.#consumers = subs.map(s => (
-			new PGMBConsumer(this.#pool, s, this.#logger.child({ queue: s.queue.name }))
-		))
+		this.#consumers = this.#createConsumers(consumerOpts)
 		await this.listen()
 	}
 
@@ -84,7 +83,7 @@ export class PGMBClient {
 			defaultHeaders = {},
 			type = 'logged',
 			bindings = [],
-		}: PGMBAssertQueueOpts,
+		}: PGMBAssertQueueOpts<keyof QM, keyof EM>,
 		client: PoolClient | Pool = this.#pool
 	) {
 		const { rows: [{ created }] } = await client.query(
@@ -92,64 +91,78 @@ export class PGMBClient {
 			[
 				name, ackSetting,
 				JSON.stringify(defaultHeaders), type,
-				`{${bindings.map(b => `'${b}'`).join(',')}}`
+				`{${bindings.map(b => `'${String(b)}'`).join(',')}}`
 			]
 		)
 		this.#logger.debug({ name, created }, 'asserted queue')
 		return created as boolean
 	}
 
-	async deleteQueue(name: string) {
+	async deleteQueue<Q extends keyof QM>(name: Q) {
 		await this.#pool.query('SELECT pgmb.delete_queue($1)', [name])
 		this.#logger.debug({ name }, 'deleted queue')
 	}
 
-	async purgeQueue(name: string) {
+	async purgeQueue<Q extends keyof QM>(name: Q) {
 		await this.#pool.query('SELECT pgmb.purge_queue($1)', [name])
 	}
 
-	async send(queueName: string, ...messages: PgEnqueueMsg[]) {
+	async send<Q extends keyof QM>(
+		queueName: Q,
+		...messages: PgEnqueueMsg<QM[Q]>[]
+	) {
 		if(!messages.length) {
 			return []
 		}
 
-		const [arraySql, params]
-			= serialisePgMsgConstructorsIntoSql(messages, [queueName])
+		const [arraySql, params] = serialisePgMsgConstructorsIntoSql(
+			this.#serialiseMsgs(messages),
+			[queueName]
+		)
 		const { rows } = await this.#pool
 			.query(`SELECT pgmb.send($1, ${arraySql}) AS id`, params)
 		return rows as PGSentMessage[]
 	}
 
-	async assertExchange({ name }: PGMBAssertExchangeOpts) {
+	async assertExchange<E extends keyof EM>({ name }: PGMBAssertExchangeOpts<E>) {
 		await this.#pool.query('SELECT pgmb.assert_exchange($1)', [name])
 		this.#logger.debug({ name }, 'asserted exchange')
 	}
 
-	async deleteExchange(name: string) {
+	async deleteExchange<E extends keyof EM>(name: E) {
 		await this.#pool.query('SELECT pgmb.delete_exchange($1)', [name])
 		this.#logger.debug({ name }, 'deleted exchange')
 	}
 
-	async bindQueue(queueName: string, exchangeName: string) {
+	async bindQueue<
+		Q extends keyof QM,
+		E extends keyof EM
+	>(queueName: Q, exchangeName: E) {
 		await this.#pool.query(
 			'SELECT pgmb.bind_queue($1, $2)',
 			[queueName, exchangeName]
 		)
 	}
 
-	async unbindQueue(queueName: string, exchangeName: string) {
+	async unbindQueue<
+		Q extends keyof QM,
+		E extends keyof EM
+	>(queueName: Q, exchangeName: E) {
 		await this.#pool.query(
 			'SELECT pgmb.unbind_queue($1, $2)',
 			[queueName, exchangeName]
 		)
 	}
 
-	async publish(...messages: PgPublishMsg[]) {
+	async publish(...messages: PgPublishMsg<EM>[]) {
 		if(!messages.length) {
 			return []
 		}
 
-		const [arraySql, params] = serialisePgMsgConstructorsIntoSql(messages, [])
+		const [arraySql, params] = serialisePgMsgConstructorsIntoSql(
+			this.#serialiseMsgs(messages),
+			[]
+		)
 		const { rows } = await this.#pool
 			.query(`SELECT pgmb.publish(${arraySql}) AS id`, params)
 		return rows as PGSentMessage[]
@@ -158,12 +171,41 @@ export class PGMBClient {
 	#onNotification = (notif: PGMBNotification) => {
 		if(notif.type === 'message') {
 			for(const sub of this.#consumers) {
-				if(sub.getOpts().queue.name === notif.queueName) {
+				if(sub.getOpts().name === notif.queueName) {
 					sub.onMessage(notif.data.count)
 				}
 			}
 		} else {
 			Promise.all(this.#consumers.map(s => s.consume()))
 		}
+	}
+
+	#createConsumers(opts: PGMBClientOpts<QM, EM>['consumers']) {
+		return opts.map(s => (
+			new PGMBConsumer<keyof QM, EM, QM[keyof QM]>(
+				this.#pool,
+				s,
+				this.#serialiser,
+				this.#logger.child({ queue: s.name })
+			)
+		))
+	}
+
+	#serialiseMsgs<T extends PgEnqueueMsg<unknown>>(msgs: T[]) {
+		type SerialisedMsg = Omit<T, 'message'> & Pick<PgEnqueueMsg, 'message'>
+		if(!this.#serialiser) {
+			return msgs as SerialisedMsg[]
+		}
+
+		const serialised: SerialisedMsg[] = []
+		for(const msg of msgs) {
+			serialised.push({
+				...msg,
+				headers: { ...msg.headers, contentType: this.#serialiser.contentType },
+				message: this.#serialiser.encode(msg.message)
+			})
+		}
+
+		return serialised
 	}
 }
