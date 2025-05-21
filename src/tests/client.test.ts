@@ -47,11 +47,14 @@ describe('Client Tests', () => {
 	})
 
 	it('should consume messages', async() => {
-		await client.sendToQueue(
+		const msgs = await client.send(
 			QUEUES[0],
 			{ message: 'test message' },
 			{ message: 'test message 2' }
 		)
+		expect(msgs).toHaveLength(2)
+		// ensure it's an ID string
+		expect(msgs[0].id).toContain('pm')
 
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
@@ -63,7 +66,7 @@ describe('Client Tests', () => {
 
 		// let's send another message -- ensure the listener is still
 		// working.
-		await client.sendToQueue(QUEUES[0], { message: 'test message 3' })
+		await client.send(QUEUES[0], { message: 'test message 3' })
 
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
@@ -83,9 +86,9 @@ describe('Client Tests', () => {
 				debounceIntervalMs: 500
 			}
 		)
-		await client.sendToQueue(QUEUES[0], { message: 'test message' })
+		await client.send(QUEUES[0], { message: 'test message' })
 		await delay(50)
-		await client.sendToQueue(QUEUES[0], { message: 'test message 2' })
+		await client.send(QUEUES[0], { message: 'test message 2' })
 
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
@@ -103,7 +106,7 @@ describe('Client Tests', () => {
 			await delay(100)
 		})
 
-		await client.sendToQueue(QUEUES[0], { message: 'test message' })
+		await client.send(QUEUES[0], { message: 'test message' })
 
 		await delay(1000)
 		// once for error, once for success
@@ -111,11 +114,46 @@ describe('Client Tests', () => {
 
 		// try sending another message & check it's consumed
 		ON_MESSAGE_MOCK.mockClear()
-		await client.sendToQueue(QUEUES[0], { message: 'test message 2' })
+		await client.send(QUEUES[0], { message: 'test message 2' })
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
 		}
 
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+	})
+
+	describe('Exchanges', () => {
+
+		const EXCHANGE_NAME = 'test_exchange'
+		beforeAll(async() => {
+			await client.assertExchange({ name: EXCHANGE_NAME })
+		})
+
+		it('should bind queue to exchange', async() => {
+			await client.bindQueue(QUEUES[0], EXCHANGE_NAME)
+		})
+
+		it('should send messages to exchange', async() => {
+			await client.bindQueue(QUEUES[0], EXCHANGE_NAME)
+			const pubIds = await client.publish(
+				{
+					exchange: EXCHANGE_NAME,
+					message: 'Hello'
+				},
+				{
+					exchange: EXCHANGE_NAME,
+					message: 'World'
+				}
+			)
+			expect(pubIds).toHaveLength(2)
+			// ensure it's an ID string
+			expect(pubIds[0].id).toContain('pm')
+
+			while(!ON_MESSAGE_MOCK.mock.calls.length) {
+				await delay(100)
+			}
+
+			expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+		})
 	})
 })

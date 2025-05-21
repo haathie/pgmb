@@ -47,7 +47,7 @@ const makeAmqpBenchmarkClient: MakeBenchmarkClient = async({
 			publish: async(queueName: string, msgs: Uint8Array[]) => {
 				await Promise.all(msgs.map(async(msg) => (
 					new Promise<void>((resolve, reject) => {
-						channel.sendToQueue(
+						channel.send(
 							queueName, Buffer.from(msg), { persistent: true },
 							(err) => {
 								if(err) {

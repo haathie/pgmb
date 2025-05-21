@@ -45,7 +45,7 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 		},
 		publishers: Array.from({ length: publishers }, () => ({
 			async publish(queueName, msgs) {
-				await client.sendToQueue(
+				await client.send(
 					queueName,
 					...msgs.map(m => ({ message: m })),
 				)

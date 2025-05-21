@@ -1,6 +1,6 @@
 import type { Notification, Pool, PoolClient } from 'pg'
-import type { Logger } from 'pino'
-import type { PgEnqueueMsg, PGMBAssertQueueOpts, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PGMBNotificationData, PgPublishMsg } from './types'
+import P, { type Logger } from 'pino'
+import type { PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PGMBNotificationData, PgPublishMsg, PGSentMessage } from './types'
 import { delay, getChannelNameForQueue, getQueueNameFromChannel, serialisePgMsgConstructorsIntoSql } from './utils'
 
 export class PGMBClient {
@@ -12,7 +12,7 @@ export class PGMBClient {
 
 	constructor({
 		pool,
-		logger,
+		logger = P(),
 		consumers = [],
 	}: PGMBClientOpts) {
 		this.#pool = pool
@@ -57,11 +57,12 @@ export class PGMBClient {
 	async assertQueue({
 		name,
 		ackSetting = 'delete',
-		defaultHeaders = {}
+		defaultHeaders = {},
+		type = 'logged'
 	}: PGMBAssertQueueOpts) {
 		const { rows: [{ created }] } = await this.#pool.query(
-			'SELECT pgmb.assert_queue($1, $2, $3) AS "created"',
-			[name, ackSetting, JSON.stringify(defaultHeaders)]
+			'SELECT pgmb.assert_queue($1, $2, $3, $4) AS "created"',
+			[name, ackSetting, JSON.stringify(defaultHeaders), type]
 		)
 		this.#logger.debug({ name, created }, 'asserted queue')
 		return created as boolean
@@ -71,7 +72,7 @@ export class PGMBClient {
 		await this.#pool.query('SELECT pgmb.purge_queue($1)', [name])
 	}
 
-	async sendToQueue(queueName: string, ...messages: PgEnqueueMsg[]) {
+	async send(queueName: string, ...messages: PgEnqueueMsg[]) {
 		if(!messages.length) {
 			return []
 		}
@@ -79,19 +80,31 @@ export class PGMBClient {
 		const [arraySql, params]
 			= serialisePgMsgConstructorsIntoSql(messages, [queueName])
 		const { rows } = await this.#pool
-			.query(`SELECT pgmb.send($1, ${arraySql})`, params)
-		return rows
+			.query(`SELECT pgmb.send($1, ${arraySql}) AS id`, params)
+		return rows as PGSentMessage[]
 	}
 
-	async publishToExchange(...messages: PgPublishMsg[]) {
+	async assertExchange({ name }: PGMBAssertExchangeOpts) {
+		await this.#pool.query('SELECT pgmb.assert_exchange($1)', [name])
+		this.#logger.debug({ name }, 'asserted exchange')
+	}
+
+	async bindQueue(queueName: string, exchangeName: string) {
+		await this.#pool.query(
+			'SELECT pgmb.bind_queue($1, $2)',
+			[queueName, exchangeName]
+		)
+	}
+
+	async publish(...messages: PgPublishMsg[]) {
 		if(!messages.length) {
 			return []
 		}
 
 		const [arraySql, params] = serialisePgMsgConstructorsIntoSql(messages, [])
 		const { rows } = await this.#pool
-			.query(`SELECT pgmb.publish(${arraySql})`, params)
-		return rows
+			.query(`SELECT pgmb.publish(${arraySql}) AS id`, params)
+		return rows as PGSentMessage[]
 	}
 
 	#onNotification = (notif: PGMBNotification) => {

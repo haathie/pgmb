@@ -1,13 +1,13 @@
 CREATE SCHEMA IF NOT EXISTS pgmb;
 
--- type to create a message that's routed to a queue
+-- type to create a message that's sent to a queue
 CREATE TYPE pgmb.enqueue_msg AS (
 	message BYTEA, headers JSONB, consume_at TIMESTAMPTZ
 );
--- type to create a message that's routed to an exchange
+-- type to create a message that's published to an exchange
 -- This'll be used to publish messages to exchanges
 CREATE TYPE pgmb.publish_msg AS (
-	route VARCHAR(64), message BYTEA, headers JSONB, consume_at TIMESTAMPTZ
+	exchange VARCHAR(64), message BYTEA, headers JSONB, consume_at TIMESTAMPTZ
 );
 -- type to store an existing message record
 CREATE TYPE pgmb.msg_record AS (
@@ -28,7 +28,7 @@ CREATE TYPE pgmb.queue_type AS ENUM ('logged', 'unlogged');
 -- table for exchanges
 CREATE TABLE pgmb.exchanges (
 	name VARCHAR(64) PRIMARY KEY,
-	subscribed_queues VARCHAR(64)[] NOT NULL DEFAULT '{}',
+	queues VARCHAR(64)[] NOT NULL DEFAULT '{}',
 	created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -49,14 +49,15 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- fn to bind a queue to an exchange
 CREATE OR REPLACE FUNCTION pgmb.bind_queue(
 	queue_name VARCHAR(64), exchange VARCHAR(64) 
 )
 RETURNS VOID AS $$
 BEGIN
 	UPDATE pgmb.exchanges
-	SET subscribed_queues = array_append(subscribed_queues, queue_name)
-	WHERE name = exchange;
+	SET queues = array_append(queues, queue_name)
+	WHERE name = exchange AND NOT queue_name = ANY(queues);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -66,7 +67,7 @@ CREATE OR REPLACE FUNCTION pgmb.unbind_queue(
 RETURNS VOID AS $$
 BEGIN
 	UPDATE pgmb.exchanges
-	SET subscribed_queues = array_remove(subscribed_queues, queue_name)
+	SET queues = array_remove(queues, queue_name)
 	WHERE name = exchange;
 END;
 $$ LANGUAGE plpgsql;
@@ -162,8 +163,8 @@ BEGIN
 	EXECUTE 'DROP SCHEMA IF EXISTS ' || quote_ident(schema_name) || ' CASCADE';
 	-- remove from exchanges
 	UPDATE pgmb.exchanges
-	SET subscribed_queues = array_remove(subscribed_queues, queue_name)
-	WHERE queue_name = ANY(subscribed_queues);
+	SET queues = array_remove(queues, queue_name)
+	WHERE queue_name = ANY(queues);
 	-- remove from queues
 	DELETE FROM pgmb.queues WHERE name = queue_name;
 END;
@@ -395,13 +396,13 @@ BEGIN
 	RETURN QUERY
 	WITH expanded_msgs AS (
 		SELECT
-			unnest(subscribed_queues) AS queue_name,
+			unnest(e.queues) AS queue_name,
 			e.name as exchange_name,
 			m.message,
 			m.headers,
 			m.consume_at
 		FROM pgmb.exchanges e
-		INNER JOIN unnest(messages) AS m ON m.route = e.name
+		INNER JOIN unnest(messages) AS m ON m.exchange = e.name
 	)
 	SELECT
 		pgmb.send(

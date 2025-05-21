@@ -7,7 +7,7 @@ export type PGMBClientOpts = {
 	 */
 	pool: Pool
 
-	logger: Logger
+	logger?: Logger
 	/**
 	 * Add consumers to the client. This will automatically
 	 * start consuming messages.
@@ -50,9 +50,9 @@ export type PgEnqueueMsg = {
 
 export type PgPublishMsg = PgEnqueueMsg & {
 	/**
-	 * Queue or exchange name to send the message to.
+	 * Exchange name to send the message to.
 	 */
-	route: string
+	exchange: string
 }
 
 export type PGMBNotificationData = { count: number }
@@ -69,4 +69,11 @@ export type PGMBAssertQueueOpts = {
 	name: string
 	ackSetting?: 'archive' | 'delete'
 	defaultHeaders?: { [key: string]: any }
+	type?: 'logged' | 'unlogged'
 }
+
+export type PGMBAssertExchangeOpts = {
+	name: string
+}
+
+export type PGSentMessage = { id: string }

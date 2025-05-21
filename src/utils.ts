@@ -23,11 +23,11 @@ export function serialisePgMsgConstructorsIntoSql(
 	messages: (PgEnqueueMsg | PgPublishMsg)[],
 	params: unknown[] = []
 ) {
-	const type = 'route' in messages[0] ? 'publish_msg' : 'enqueue_msg'
+	const type = 'exchange' in messages[0] ? 'publish_msg' : 'enqueue_msg'
 	const queryComps = messages.map(({ message, headers, consumeAt, ...rt }) => {
 		let str = '('
-		if('route' in rt) {
-			params.push(rt.route)
+		if('exchange' in rt) {
+			params.push(rt.exchange)
 			str += `$${params.length}, `
 		}
 

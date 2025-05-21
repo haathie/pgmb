@@ -224,7 +224,7 @@ An exchange is a way to route messages to one or more queues -- very similar to 
 
 An exchange has the following options:
 - **name:** globally unique identifier for the exchange
-- **subscribed_queues:** list of queues that receive messages whenever a message is sent to the exchange.
+- **queues:** list of queues that receive messages whenever a message is sent to the exchange.
 
 ### Creating and Publishing to an Exchange
 
@@ -301,4 +301,63 @@ SELECT pgmb.uninstall();
 This will remove the `pgmb` schema, and all queue schemas -- thus removing all data too. If you just want to remove the queues, you can just drop the `pgmb` schema:
 ```sql
 DROP SCHEMA pgmb CASCADE;
+```
+
+## NodeJS Client
+
+The NodeJS client is a simple wrapper around the SQL functions. It uses the `pg` library to connect to Postgres, and provides a simple API for sending and consuming messages.
+
+You can install the client using npm:
+```sh
+npm install @haathie/pgmb
+```
+
+### Getting Started
+
+Connecting:
+```ts
+import { Pool } from 'pg'
+import { PGMBClient } from '@haathie/pgmb'
+
+const pool = new Pool({
+  connectionString: 'postgres://postgres:@localhost:5432/test',
+  max: 10
+})
+
+const pgmb = new PGMBClient({ pool })
+```
+
+Creating a queue & sending messages:
+```ts
+await pgmb.assertQueue({ name: 'my_queue' })
+// send multiple messages to the queue
+const publishedIds = await pgmb.send(
+  'my_queue',
+  { message: 'Hello', headers: { foo: 'bar' } },
+  { message: 'World', headers: { foo: 'baz' } }
+)
+console.log(publishedIds) // [{ id: 'pm123' }, { id: 'pm234' }]
+```
+
+Creating an exchange & publishing messages:
+```ts
+await pgmb.assertExchange({ name: 'my_exchange' })
+// bind a queue to an exchange
+await pgmb.bindQueue('my_queue', 'my_exchange')
+// publish a message to the exchange
+const publishedIds = await pgmb.publish(
+  { exchange: 'my_exchange', message: 'Hello', headers: { foo: 'bar' } },
+  { exchange: 'my_exchange', message: 'World', headers: { foo: 'baz' } }
+)
+console.log(publishedIds) // [{ id: 'pm123' }, { id: 'pm234' }]
+```
+
+Consuming messages:
+```ts
+```
+
+Terminating the client:
+```ts
+await pgmb.close()
+await pool.end()
 ```
