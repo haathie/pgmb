@@ -18,7 +18,8 @@ Presently, it supports the following features:
 | Unlogged Queues | Use unlogged tables for better performance, in exchange of durability | ✅ |
 | Archive Table | Messages can be archived to a separate table for later retrieval/audit | ✅ |
 | Archive Cleanup/Rollover | The archive table is periodically cleaned up/rolled over to a new table | ❌ |
-| Metrics | Basic metrics for monitoring the state of the queues and exchanges | ❌ |
+| Queue Metrics | Metrics for monitoring the state of queues | ✅ |
+| Exchange Metrics | Metrics for monitoring the state of exchanges | ❌ |
 
 ## Another Postgres Message Queue Solution?
 
@@ -67,7 +68,9 @@ In Postgres:
 
 ## Queues
 
-A queue is a FIFO store of messages. A queue can have multiple simultaneous consumers & publishers. The queue's tables also reside in its own schema (`live_messages` => messages that are currently being processed, `consumed_messages` => messages that have been consumed & consequently archived -- only if queue's configured to archive).
+A queue is a FIFO store of messages. A queue can have multiple simultaneous consumers & publishers. The queue's tables also reside in its own schema, specfied by `pgmb_q_<queue-name>`. The following tables are created:
+- `live_messages` => messages that are currently being processed,
+- `consumed_messages` => messages that have been consumed & consequently archived -- only if queue's configured to archive.
 
 A queue has the following options:
 - **name**: globally unique identifier for the queue
@@ -84,7 +87,8 @@ A queue has the following options:
 This table contains the messages that are currently being processed. It has the following columns:
 - **id**: the ID of the message. This is a sequentially generated ID that is built from the consumption time and some randomness. This single ID lets us have a single field that can be used to identify the message in the queue, and tell us when to consume it. Eg. when we want to consume messages, we simply:
 ```sql
--- find all messages that are consumable right now, as the message ID generated now is based on the current time.
+-- find all messages that are consumable right now, as the message ID
+-- generated now is based on the current time.
 SELECT * FROM live_messages WHERE id <= pgmb.create_message_id(rand=>9999999);
 ```
 - **headers**: JSONB object containing metadata about the message.
@@ -147,6 +151,8 @@ The final message will be:
   "message": "Hello"
 }
 ```
+
+Each queue also has its own channel, specified by `chn_<queue_name>`. Whenever messages are sent to the queue via the `send` fn -- a notification is sent to the channel. This can be used to notify consumers that there are messages in the queue. The notification payload is a simple JSON `{"count": <number of messages>}`. This is useful for realtime consumption of messages.
 
 ### Acknowledging Messages
 
