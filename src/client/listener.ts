@@ -1,7 +1,7 @@
 import type { Notification, Pool, PoolClient } from 'pg'
 import type { Logger } from 'pino'
-import type { PGMBNotification, PGMBNotificationData } from './types'
-import { delay, getChannelNameForQueue, getQueueNameFromChannel } from './utils'
+import type { PGMBNotification, PGMBNotificationData } from '../types'
+import { delay, getChannelNameForQueue, getQueueNameFromChannel } from '../utils'
 
 /**
  * PGMBListener is a class that listens for notifications on multiple

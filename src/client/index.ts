@@ -1,9 +1,9 @@
-import type { Pool } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
+import type { PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PgPublishMsg, PGSentMessage } from '../types'
+import { serialisePgMsgConstructorsIntoSql } from '../utils'
 import { PGMBConsumer } from './consumer'
 import { PGMBListener } from './listener'
-import type { PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBConsumerOpts, PGMBNotification, PgPublishMsg, PGSentMessage } from './types'
-import { serialisePgMsgConstructorsIntoSql } from './utils'
 
 export class PGMBClient {
 
@@ -19,7 +19,7 @@ export class PGMBClient {
 	}: PGMBClientOpts) {
 		this.#pool = pool
 		this.#consumers = consumers.map(s => (
-			new PGMBConsumer(this.#pool,	s, logger.child({ queue: s.queueName }))
+			new PGMBConsumer(this.#pool,	s, logger.child({ queue: s.queue.name }))
 		))
 		this.#logger = logger
 		this.#onNotification = this.#onNotification.bind(this)
@@ -30,13 +30,28 @@ export class PGMBClient {
 	async listen() {
 		await this.#listener.close()
 
-		const subQueues = this.#consumers.map(s => s.getOpts().queueName)
-		if(!subQueues.length) {
+		const queues = this.#consumers.map(s => s.getOpts().queue)
+		if(!queues.length) {
 			return
 		}
 
-		await this.#listener.subscribe(...subQueues)
-		this.#logger.info({ queues: subQueues.length }, 'listening to queues')
+		const client = await this.#pool.connect()
+		try {
+			await client.query('BEGIN')
+			for(const q of queues) {
+				await this.assertQueue(q, client)
+			}
+
+			await client.query('COMMIT')
+		} catch(err) {
+			await client.query('ROLLBACK')
+			throw err
+		} finally {
+			client.release()
+		}
+
+		await this.#listener.subscribe(...queues.map(q => q.name))
+		this.#logger.info({ queues: queues.length }, 'listening to queues')
 	}
 
 	/**
@@ -50,7 +65,7 @@ export class PGMBClient {
 		}
 
 		this.#consumers = subs.map(s => (
-			new PGMBConsumer(this.#pool, s, this.#logger.child({ queue: s.queueName }))
+			new PGMBConsumer(this.#pool, s, this.#logger.child({ queue: s.queue.name }))
 		))
 		await this.listen()
 	}
@@ -62,15 +77,23 @@ export class PGMBClient {
 		)
 	}
 
-	async assertQueue({
-		name,
-		ackSetting = 'delete',
-		defaultHeaders = {},
-		type = 'logged'
-	}: PGMBAssertQueueOpts) {
-		const { rows: [{ created }] } = await this.#pool.query(
-			'SELECT pgmb.assert_queue($1, $2, $3, $4) AS "created"',
-			[name, ackSetting, JSON.stringify(defaultHeaders), type]
+	async assertQueue(
+		{
+			name,
+			ackSetting = 'delete',
+			defaultHeaders = {},
+			type = 'logged',
+			bindings = [],
+		}: PGMBAssertQueueOpts,
+		client: PoolClient | Pool = this.#pool
+	) {
+		const { rows: [{ created }] } = await client.query(
+			'SELECT pgmb.assert_queue($1, $2, $3, $4, $5::varchar[]) AS "created"',
+			[
+				name, ackSetting,
+				JSON.stringify(defaultHeaders), type,
+				`{${bindings.map(b => `'${b}'`).join(',')}}`
+			]
 		)
 		this.#logger.debug({ name, created }, 'asserted queue')
 		return created as boolean
@@ -135,7 +158,7 @@ export class PGMBClient {
 	#onNotification = (notif: PGMBNotification) => {
 		if(notif.type === 'message') {
 			for(const sub of this.#consumers) {
-				if(sub.getOpts().queueName === notif.queueName) {
+				if(sub.getOpts().queue.name === notif.queueName) {
 					sub.onMessage(notif.data.count)
 				}
 			}

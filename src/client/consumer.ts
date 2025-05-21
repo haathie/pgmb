@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg'
 import type { Logger } from 'pino'
-import type { PGMBConsumerOpts } from './types'
+import type { PGMBConsumerOpts } from '../types'
 
 export class PGMBConsumer {
 
@@ -95,7 +95,7 @@ export class PGMBConsumer {
 
 		const { rows } = await client.query(
 			'SELECT * FROM pgmb.read_from_queue($1, $2)',
-			[this.opts.queueName, this.opts.batchSize]
+			[this.opts.queue.name, this.opts.batchSize]
 		)
 		const msgIds = rows.map((row) => row.id)
 		if(!rows.length) {
@@ -105,7 +105,7 @@ export class PGMBConsumer {
 
 		let success = false
 		try {
-			await this.opts.onMessage(this.opts.queueName, rows)
+			await this.opts.onMessage(this.opts.queue.name, rows)
 			success = true
 		} catch(err) {
 			this.logger.error({ err }, 'error processing messages')
@@ -113,7 +113,7 @@ export class PGMBConsumer {
 
 		await client.query(
 			'SELECT pgmb.ack_msgs($1, $2, $3)',
-			[this.opts.queueName, success, `{${msgIds.join(',')}}`]
+			[this.opts.queue.name, success, `{${msgIds.join(',')}}`]
 		)
 		await client.query('COMMIT')
 

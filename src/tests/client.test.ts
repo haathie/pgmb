@@ -36,7 +36,7 @@ describe('Client Tests', () => {
 	beforeEach(async() => {
 		await client.replaceConsumers(
 			...QUEUES.map(queueName => ({
-				queueName,
+				queue: { name: queueName },
 				onMessage: ON_MESSAGE_MOCK,
 				batchSize: 10
 			}))
@@ -111,7 +111,7 @@ describe('Client Tests', () => {
 
 		await client.replaceConsumers(
 			{
-				queueName,
+				queue: { name: queueName },
 				onMessage: ON_MESSAGE_MOCK,
 				batchSize: 10,
 				debounceIntervalMs: 500

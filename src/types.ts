@@ -18,7 +18,11 @@ export type PGMBClientOpts = {
 }
 
 export type PGMBConsumerOpts = {
-	queueName: string
+	/**
+	 * Details of the queue to consume from.
+	 * Will be created if it doesn't exist.
+	 */
+	queue: PGMBAssertQueueOpts
 	/**
 	 * Number of messages to consume at once.
 	 */
@@ -89,6 +93,7 @@ export type PGMBAssertQueueOpts = {
 	ackSetting?: 'archive' | 'delete'
 	defaultHeaders?: PGMBHeaders
 	type?: 'logged' | 'unlogged'
+	bindings?: string[]
 }
 
 export type PGMBAssertExchangeOpts = {
