@@ -103,36 +103,68 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- fn to ensure a queue exists. Each queue will have its own schema.
--- The schema will have a table for messages, and a table for consumed messages.
+
+-- fn to ensure a queue exists. If bindings are provided, all existing
+-- bindings are removed and the queue is bound to the new exchanges.
 -- @returns true if the queue was created, false if it already exists
 CREATE OR REPLACE FUNCTION pgmb.assert_queue(
 	queue_name VARCHAR(64),
-	ack_setting pgmb.queue_ack_setting DEFAULT 'delete',
-	default_headers JSONB DEFAULT '{}'::JSONB,
-	queue_type pgmb.queue_type DEFAULT 'logged'
+	ack_setting pgmb.queue_ack_setting DEFAULT NULL,
+	default_headers JSONB DEFAULT NULL,
+	queue_type pgmb.queue_type DEFAULT NULL,
+	bindings VARCHAR(64)[] DEFAULT NULL
 )
 RETURNS BOOLEAN AS $$
 DECLARE
 	-- check if the queue already exists
 	schema_name VARCHAR(64);
+	_ack_setting pgmb.queue_ack_setting;
+	_queue_type pgmb.queue_type;
 BEGIN
 	schema_name := 'pgmb_q_' || queue_name;
+
+	-- if bindings are provided, assert the exchanges,
+	-- and bind the queue to them
+	IF bindings IS NOT NULL AND array_length(bindings, 1) > 0 THEN
+		-- remove all existing bindings
+		UPDATE pgmb.exchanges
+		SET queues = array_remove(queues, queue_name)
+		WHERE queue_name = ANY(queues);
+		-- create the exchanges
+		PERFORM pgmb.assert_exchange(binding)
+		FROM unnest(bindings) AS binding;
+		-- bind the queue to the exchanges
+		PERFORM pgmb.bind_queue(queue_name, binding)
+		FROM unnest(bindings) AS binding;
+	END IF;
+
 	-- check if the queue already exists
 	IF EXISTS (SELECT 1 FROM pgmb.queues WHERE name = queue_name) THEN
 		-- queue already exists
 		RETURN FALSE;
 	END IF;
 	-- store in the queues table
-	INSERT INTO pgmb.queues
+	EXECUTE 'INSERT INTO pgmb.queues
 		(name, schema_name, ack_setting, default_headers, queue_type)
-		VALUES (queue_name, schema_name, ack_setting, default_headers, queue_type);
+		VALUES (
+			$1,
+			$2,'
+			|| (CASE WHEN ack_setting IS NULL THEN 'DEFAULT' ELSE '$3' END) || ','
+			|| (CASE WHEN default_headers IS NULL THEN 'DEFAULT' ELSE '$4' END) || ','
+			|| (CASE WHEN queue_type IS NULL THEN 'DEFAULT' ELSE '$5' END)
+			|| ')' USING queue_name, schema_name,
+			ack_setting, default_headers, queue_type;
 	-- create schema
 	EXECUTE 'CREATE SCHEMA ' || quote_ident(schema_name);
+
+	-- get the saved settings
+	SELECT q.ack_setting, q.queue_type FROM pgmb.queues q
+	WHERE q.name = queue_name INTO _ack_setting, _queue_type;
+
 	-- create the live_messages table
-	PERFORM pgmb.create_queue_table(queue_name, schema_name, queue_type);
-	IF ack_setting = 'archive' THEN
-		-- create the consumed_messages table
+	PERFORM pgmb.create_queue_table(queue_name, schema_name, _queue_type);
+	-- create the consumed_messages table (if ack_setting is archive)
+	IF _ack_setting = 'archive' THEN
 		EXECUTE 'CREATE TABLE ' || quote_ident(schema_name) || '.consumed_messages (
 			id VARCHAR(22) PRIMARY KEY,
 			message BYTEA NOT NULL,
@@ -140,7 +172,7 @@ BEGIN
 			success BOOLEAN NOT NULL,
 			consumed_at TIMESTAMPTZ DEFAULT NOW()
 		)';
-		IF queue_type = 'unlogged' THEN
+		IF _queue_type = 'unlogged' THEN
 			EXECUTE 'ALTER TABLE ' || quote_ident(schema_name)
 				|| '.consumed_messages SET UNLOGGED';
 		END IF;

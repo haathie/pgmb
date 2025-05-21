@@ -472,6 +472,40 @@ describe('PGMB SQL Tests', () => {
 		}
 	})
 
+	testWithRollback('should create a queue with bindings', async client => {
+		const queueName = createQueueName()
+		const bindings = [createExchangeName(), createExchangeName()]
+		await client.query(
+			'SELECT pgmb.assert_queue($1, bindings => ARRAY[$2,$3]::varchar[])',
+			[queueName, ...bindings]
+		)
+
+		const { rows } = await client.query(
+			'SELECT * FROM pgmb.queues WHERE name = $1', [queueName]
+		)
+		expect(rows.length).toBe(1)
+		expect(rows[0].name).toBe(queueName)
+
+		for(const binding of bindings) {
+			const { rows: bindingRows } = await client.query(
+				'SELECT * FROM pgmb.exchanges WHERE name = $1', [binding]
+			)
+			expect(bindingRows.length).toBe(1)
+		}
+
+		// should update bindings when re-asserted
+		const newBinding = createExchangeName()
+		await client.query(
+			'SELECT pgmb.assert_queue($1, bindings => ARRAY[$2]::varchar[])',
+			[queueName, newBinding]
+		)
+		const { rows: boundExchanges } = await client.query(
+			'SELECT * FROM pgmb.exchanges WHERE $1 = ANY(queues)', [queueName]
+		)
+		expect(boundExchanges.length).toBe(1)
+		expect(boundExchanges[0].name).toBe(newBinding)
+	})
+
 	function testWithRollback(
 		name: string,
 		fn: (client: PoolClient) => Promise<void>
