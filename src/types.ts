@@ -36,15 +36,17 @@ export type PGMBConsumerOpts = {
 	onMessage(queueName: string, msgs: PgIncomingMessage[]): Promise<void> | void
 }
 
+export type PGMBHeaders = { [key: string]: any }
+
 export type PgIncomingMessage = {
 	id: string
 	message: Uint8Array
-	headers: Record<string, any>
+	headers: PGMBHeaders
 }
 
 export type PgEnqueueMsg = {
 	message: Uint8Array | string
-	headers?: Record<string, any>
+	headers?: PGMBHeaders
 	consumeAt?: Date
 }
 
@@ -68,7 +70,7 @@ export type PGMBNotification = {
 export type PGMBAssertQueueOpts = {
 	name: string
 	ackSetting?: 'archive' | 'delete'
-	defaultHeaders?: { [key: string]: any }
+	defaultHeaders?: PGMBHeaders
 	type?: 'logged' | 'unlogged'
 }
 

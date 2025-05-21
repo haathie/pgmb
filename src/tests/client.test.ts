@@ -7,12 +7,18 @@ import { delay } from '../utils'
 const LOGGER = P({ level: 'trace' })
 const QUEUES = [
 	'test_queue',
+	'test_queue_2',
 ]
+const IDLE_TIMEOUT_MS = 2000
 const ON_MESSAGE_MOCK = jest.fn<void, [string, PgIncomingMessage[]]>()
 
 describe('Client Tests', () => {
 
-	const pool = new Pool({ connectionString: process.env.PG_URI, max: 1 })
+	const pool = new Pool({
+		connectionString: process.env.PG_URI,
+		max: 1,
+		idleTimeoutMillis: IDLE_TIMEOUT_MS
+	})
 	const client = new PGMBClient({
 		pool,
 		logger: LOGGER,
@@ -28,7 +34,7 @@ describe('Client Tests', () => {
 	})
 
 	beforeEach(async() => {
-		await client.replaceSubscriptions(
+		await client.replaceConsumers(
 			...QUEUES.map(queueName => ({
 				queueName,
 				onMessage: ON_MESSAGE_MOCK,
@@ -75,10 +81,35 @@ describe('Client Tests', () => {
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
 	})
 
+	it('should consume messages on multiple queues', async() => {
+		// we'll block the connection of the first queue, to ensure that
+		// the second queue is still consumed. We're checking that the listener
+		// still sends out notifications despite the first queue being blocked.
+		let gotMessage = false
+		ON_MESSAGE_MOCK.mockImplementationOnce(async() => {
+			gotMessage = true
+			await delay(1000)
+		})
+
+		await client.send(QUEUES[0], { message: 'test message' })
+		while(!gotMessage) {
+			await delay(50)
+		}
+
+		await client.send(QUEUES[1], { message: 'test message 2' })
+		while(ON_MESSAGE_MOCK.mock.calls.length < 2) {
+			await delay(100)
+		}
+
+		const secondCall = ON_MESSAGE_MOCK.mock.calls[1]
+		// ensure the second call is for the second queue
+		expect(secondCall[0]).toBe(QUEUES[1])
+	})
+
 	it('should debounce consumption', async() => {
 		const queueName = QUEUES[0]
 
-		await client.replaceSubscriptions(
+		await client.replaceConsumers(
 			{
 				queueName,
 				onMessage: ON_MESSAGE_MOCK,
@@ -120,6 +151,18 @@ describe('Client Tests', () => {
 		}
 
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+	})
+
+	it('should handle connection closures', async() => {
+		// in case the pool closes the connection due to idle timeout
+		// or anything else -- the listener should be able to reconnect
+		await delay(IDLE_TIMEOUT_MS + 500)
+
+		// now when we send a message, it should still be consumed
+		await client.send(QUEUES[0], { message: 'test message' })
+		while(!ON_MESSAGE_MOCK.mock.calls.length) {
+			await delay(100)
+		}
 	})
 
 	describe('Exchanges', () => {
