@@ -312,8 +312,6 @@ You can install the client using npm:
 npm install @haathie/pgmb
 ```
 
-### Getting Started
-
 Connecting:
 ```ts
 import { Pool } from 'pg'
@@ -354,6 +352,62 @@ console.log(publishedIds) // [{ id: 'pm123' }, { id: 'pm234' }]
 
 Consuming messages:
 ```ts
+// you can create the client with the consumers set. A client can have one
+// or more consumers. Each consumer consumes from exactly one queue.
+const pgmb = new PGMBClient({
+  pool,
+  consumers: [
+    {
+      queueName: 'my_queue',
+      // the onMessage fn will have at most <batchSize> messages
+      // in the messages array. The messages are guaranteed to be
+      // consumable at the time of consumption.
+      // Internally, the pgmb client fetches these many messages
+      // in a single query
+      batchSize: 10,
+      // optionally, will wait for this long after receiving a notification
+      // or if batchSize is reached, before consuming messages
+      debounceIntervalMs: 1000,
+      // process the messages, upon successful resolution of the
+      // promise, the messages will be acknowledged. If the promise
+      // is rejected, the messages will be negatively acknowledged.
+      onMessage: async (queueName, messages) => {
+        /**
+         * [{
+         *  id: 'pm123',
+         *  headers: { foo: 'bar' },
+         *  message: Buffer.from('hello')
+         * }]
+         */
+        console.log(messages)
+      },
+    }
+  ]
+})
+
+// start listening for messages
+await pgmb.listen()
+```
+
+Upon the successful call to listen, all consumers will consume any pending messages in the queue. Note, that the queues must exist before calling `listen()`, otherwise you will get an error in the consumer.
+
+If you need to in some way alter which queues are being consumed, you can do so by calling `pgmb.replaceConsumers()`. This will stop the current consumers and start the new ones. The new consumers must be passed in the same format as the original ones.
+
+``` ts
+// will also automatically call listen() for you, so no need to call it again
+await pgmb.replaceConsumers(
+  {
+    queueName: 'my_queue',
+    batchSize: 10,
+    debounceIntervalMs: 1000,
+    onMessage: async (queueName, messages) => { /** ... */ },
+  },
+  {
+    queueName: 'my_queue_2',
+    batchSize: 1000,
+    onMessage: async (queueName, messages) => { /** ... */ },
+  }
+)
 ```
 
 Terminating the client:
