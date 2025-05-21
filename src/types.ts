@@ -36,7 +36,24 @@ export type PGMBConsumerOpts = {
 	onMessage(queueName: string, msgs: PgIncomingMessage[]): Promise<void> | void
 }
 
-export type PGMBHeaders = { [key: string]: any }
+export type PGMBHeaders = {
+	/**
+	 * Specifys the number of times this message should be retried.
+	 * Each element in the array is a retry delay in seconds.
+	 * Eg. [5, 10, 15] will retry the message after 5 seconds,
+	 * then 10 seconds, then 15 seconds.
+	 */
+	retriesLeftS?: number[]
+	/**
+	 * If this message is a retried message, this will be the ID of the
+	 * original n-acked message.
+	 */
+	originalMessageId?: string
+	/**
+	 * The number of times this message has been retried.
+	 */
+	tries?: number
+} & { [key: string]: any }
 
 export type PgIncomingMessage = {
 	id: string
