@@ -1,16 +1,31 @@
+import assert from 'assert'
 import { Pool } from 'pg'
 import P from 'pino'
 import { PGMBClient } from '../client'
-import { PgIncomingMessage } from '../types'
+import { V8Serialiser } from '../serialisers/v8'
+import { PGMBClientOpts, PgTypedIncomingMessage } from '../types'
 import { delay } from '../utils'
 
+type QueueTypeMap = {
+	'test_queue_1': { msg: string }
+	'test_queue_2': { msg: string }
+}
+
+type ExchangeTypeMap = {
+	'test_exchange_1': { a: string }
+	'test_exchange_2': { b: string }
+}
+
+type ClientOpts = PGMBClientOpts<QueueTypeMap, ExchangeTypeMap>
+
 const LOGGER = P({ level: 'trace' })
-const QUEUES = [
-	'test_queue',
-	'test_queue_2',
-]
 const IDLE_TIMEOUT_MS = 2000
-const ON_MESSAGE_MOCK = jest.fn<void, [string, PgIncomingMessage[]]>()
+const ON_MESSAGE_MOCK = jest.fn<
+	void, [
+		keyof QueueTypeMap,
+		PgTypedIncomingMessage<ExchangeTypeMap, QueueTypeMap[keyof QueueTypeMap]>[]
+	]
+>()
 
 describe('Client Tests', () => {
 
@@ -19,45 +34,57 @@ describe('Client Tests', () => {
 		max: 1,
 		idleTimeoutMillis: IDLE_TIMEOUT_MS
 	})
-	const client = new PGMBClient({
-		pool,
-		logger: LOGGER,
-		consumers: []
-	})
+	const defaultQueueName = 'test_queue_1'
 
-	beforeAll(async() => {
-		for(const queueName of QUEUES) {
-			await client.assertQueue({ name: queueName })
-			await client.purgeQueue(queueName)
+	let opts: ClientOpts
+	let client: PGMBClient<QueueTypeMap, ExchangeTypeMap>
+
+	beforeEach(async() => {
+		opts = {
+			pool,
+			logger: LOGGER,
+			consumers: [
+				{
+					name: 'test_queue_1',
+					onMessage: ON_MESSAGE_MOCK,
+					batchSize: 10,
+				},
+				{
+					name: 'test_queue_2',
+					onMessage: ON_MESSAGE_MOCK,
+					batchSize: 10,
+				}
+			],
+			serialiser: V8Serialiser
+		}
+		client = new PGMBClient(opts)
+
+		for(const { name } of opts.consumers) {
+			await client.assertQueue({ name })
+			await client.purgeQueue(name)
 		}
 
 		await client.listen()
-	})
 
-	beforeEach(async() => {
-		await client.replaceConsumers(
-			...QUEUES.map(queueName => ({
-				name: queueName,
-				onMessage: ON_MESSAGE_MOCK,
-				batchSize: 10
-			}))
-		)
-	})
-
-	afterAll(async() => {
-		await client.close()
-		await pool.end()
-	})
-
-	beforeEach(() => {
 		ON_MESSAGE_MOCK.mockClear()
 	})
 
+	afterEach(async() => {
+		await client.close()
+	})
+
+	afterAll(async() => {
+		await pool.end()
+	})
+
 	it('should consume messages', async() => {
+		const msgsToSend: QueueTypeMap[typeof defaultQueueName][] = [
+			{ msg: 'test' },
+			{ msg: 'test2' },
+		]
 		const msgs = await client.send(
-			QUEUES[0],
-			{ message: 'test message' },
-			{ message: 'test message 2' }
+			defaultQueueName,
+			...msgsToSend.map(message => ({ message }))
 		)
 		expect(msgs).toHaveLength(2)
 		// ensure it's an ID string
@@ -69,11 +96,21 @@ describe('Client Tests', () => {
 
 		// batched consumption
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+
+		const recvMsgs = ON_MESSAGE_MOCK.mock.calls[0][1]
+		expect(recvMsgs).toHaveLength(2)
+		for(const [i, { id, message, rawMessage, headers }] of recvMsgs.entries()) {
+			expect(headers.contentType).toBeTruthy()
+			expect(id).toContain('pm')
+			expect(rawMessage).toBeTruthy()
+			expect(message).toEqual(msgsToSend[i])
+		}
+
 		ON_MESSAGE_MOCK.mockClear()
 
 		// let's send another message -- ensure the listener is still
 		// working.
-		await client.send(QUEUES[0], { message: 'test message 3' })
+		await client.send(defaultQueueName, { message: { msg: 'test 3' } })
 
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
@@ -83,6 +120,7 @@ describe('Client Tests', () => {
 	})
 
 	it('should consume messages on multiple queues', async() => {
+		const secondQueueName = 'test_queue_2'
 		// we'll block the connection of the first queue, to ensure that
 		// the second queue is still consumed. We're checking that the listener
 		// still sends out notifications despite the first queue being blocked.
@@ -92,35 +130,42 @@ describe('Client Tests', () => {
 			await delay(1000)
 		})
 
-		await client.send(QUEUES[0], { message: 'test message' })
+		await client.send(defaultQueueName, { message: { msg: '1' } })
 		while(!gotMessage) {
 			await delay(50)
 		}
 
-		await client.send(QUEUES[1], { message: 'test message 2' })
+		await client.send(secondQueueName, { message: { msg: '2' } })
 		while(ON_MESSAGE_MOCK.mock.calls.length < 2) {
 			await delay(100)
 		}
 
 		const secondCall = ON_MESSAGE_MOCK.mock.calls[1]
 		// ensure the second call is for the second queue
-		expect(secondCall[0]).toBe(QUEUES[1])
+		expect(secondCall[0]).toBe(secondQueueName)
 	})
 
 	it('should debounce consumption', async() => {
-		const queueName = QUEUES[0]
+		opts = {
+			...opts,
+			// required for type-checking
+			serialiser: opts.serialiser!,
+			consumers: [
+				{
+					name: defaultQueueName,
+					onMessage: ON_MESSAGE_MOCK,
+					batchSize: 10,
+					debounceIntervalMs: 500
+				},
+			]
+		}
+		await client.close()
+		client = new PGMBClient(opts)
+		await client.listen()
 
-		await client.replaceConsumers(
-			{
-				name: queueName,
-				onMessage: ON_MESSAGE_MOCK,
-				batchSize: 10,
-				debounceIntervalMs: 500
-			}
-		)
-		await client.send(QUEUES[0], { message: 'test message' })
+		await client.send(defaultQueueName, { message: { msg: '1' } })
 		await delay(50)
-		await client.send(QUEUES[0], { message: 'test message 2' })
+		await client.send(defaultQueueName, { message: { msg: '2' } })
 
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
@@ -138,7 +183,7 @@ describe('Client Tests', () => {
 			await delay(100)
 		})
 
-		await client.send(QUEUES[0], { message: 'test message' })
+		await client.send(defaultQueueName, { message: { msg: '1234' } })
 
 		await delay(1000)
 		// once for error, once for success
@@ -146,7 +191,7 @@ describe('Client Tests', () => {
 
 		// try sending another message & check it's consumed
 		ON_MESSAGE_MOCK.mockClear()
-		await client.send(QUEUES[0], { message: 'test message 2' })
+		await client.send(defaultQueueName, { message: { msg: '2345' } })
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
 		}
@@ -160,7 +205,7 @@ describe('Client Tests', () => {
 		await delay(IDLE_TIMEOUT_MS + 500)
 
 		// now when we send a message, it should still be consumed
-		await client.send(QUEUES[0], { message: 'test message' })
+		await client.send(defaultQueueName, { message: { msg: '' } })
 		while(!ON_MESSAGE_MOCK.mock.calls.length) {
 			await delay(100)
 		}
@@ -168,25 +213,25 @@ describe('Client Tests', () => {
 
 	describe('Exchanges', () => {
 
-		const EXCHANGE_NAME = 'test_exchange'
-		beforeAll(async() => {
+		const EXCHANGE_NAME = 'test_exchange_1'
+		beforeEach(async() => {
 			await client.assertExchange({ name: EXCHANGE_NAME })
 		})
 
 		it('should bind queue to exchange', async() => {
-			await client.bindQueue(QUEUES[0], EXCHANGE_NAME)
+			await client.bindQueue(defaultQueueName, EXCHANGE_NAME)
 		})
 
 		it('should send messages to exchange', async() => {
-			await client.bindQueue(QUEUES[0], EXCHANGE_NAME)
+			await client.bindQueue(defaultQueueName, EXCHANGE_NAME)
 			const pubIds = await client.publish(
 				{
 					exchange: EXCHANGE_NAME,
-					message: 'Hello'
+					message: { a: 'hello' }
 				},
 				{
 					exchange: EXCHANGE_NAME,
-					message: 'World'
+					message: { a: 'world' }
 				}
 			)
 			expect(pubIds).toHaveLength(2)
@@ -198,6 +243,16 @@ describe('Client Tests', () => {
 			}
 
 			expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+
+			const recvMsgs = ON_MESSAGE_MOCK.mock.calls[0][1]
+			expect(recvMsgs).toHaveLength(2)
+			for(const { id, message, exchange } of recvMsgs) {
+				assert(exchange === EXCHANGE_NAME)
+				// accessing "a" directly here, to ensure our types
+				// are correct too. If build fails, our types may be messed up.
+				expect(typeof message.a).toEqual('string')
+				expect(id).toContain('pm')
+			}
 		})
 	})
 })

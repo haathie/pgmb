@@ -25,8 +25,6 @@ export class PGMBListener {
 		this.#onNotification = this.#onNotification.bind(this)
 		this.#onListenerError = this.#onListenerError.bind(this)
 		this.#onClientRemoved = this.#onClientRemoved.bind(this)
-
-		this.pool.on('remove', this.#onClientRemoved)
 	}
 
 	async subscribe(...queueNames: string[]) {
@@ -45,6 +43,7 @@ export class PGMBListener {
 	}
 
 	async close() {
+		this.pool.off('remove', this.#onClientRemoved)
 		this.#reconnectAttempt = 0
 		if(!this.#client) {
 			return
@@ -107,6 +106,9 @@ export class PGMBListener {
 			return this.#client
 		}
 
+		// ensure onClientRemoved is only added once
+		this.pool.off('remove', this.#onClientRemoved)
+
 		this.#reconnectAttempt ++
 
 		while(this.#reconnectAttempt) {
@@ -114,13 +116,7 @@ export class PGMBListener {
 				this.#client = await this.pool.connect()
 				this.#client.on('error', this.#onListenerError)
 				this.#client.on('notification', this.#onNotification)
-				this.pool.on('remove', client => {
-					if(client === this.#client) {
-						this.#onListenerError(
-							new Error('connection removed from pool')
-						)
-					}
-				})
+				this.pool.on('remove', this.#onClientRemoved)
 				// if we reconnected & the connection was closed
 				// mark as connection aborted
 				if(!this.#reconnectAttempt) {

@@ -18,7 +18,7 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		logger = P(),
 		consumers = [],
 		serialiser
-	}: PGMBClientOpts) {
+	}: PGMBClientOpts<QM, EM>) {
 		this.#pool = pool
 		this.#logger = logger
 		this.#onNotification = this.#onNotification.bind(this)
@@ -56,24 +56,12 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 	}
 
 	/**
-	 * Stops consuming messages from existing consumers and replaces them with
-	 * the newly provided consumers. Will automatically call `listen()` to
-	 * re-subscribe to the queues.
+	 * Stops listening to all queues, waits for all consumers to finish
+	 * processing messages, and stops any further processing of messages.
 	 */
-	async replaceConsumers(...consumerOpts: PGMBClientOpts<QM, EM>['consumers']) {
-		for(const cons of this.#consumers) {
-			await cons.close()
-		}
-
-		this.#consumers = this.#createConsumers(consumerOpts)
-		await this.listen()
-	}
-
 	async close() {
 		await this.#listener?.close()
-		await Promise.all(
-			this.#consumers.map(s => s.close())
-		)
+		await Promise.all(this.#consumers.map(s => s.close()))
 	}
 
 	async assertQueue(

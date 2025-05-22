@@ -10,9 +10,10 @@ type PGMBMessageRecord = {
 
 export class PGMBConsumer<Q, M, Default> {
 
-	#consuming = false
 	#pendingCount = 0
 	#consumeDebounce: NodeJS.Timeout | undefined
+	#abortedConsuming = false
+	#currentConsumeTask: Promise<void> | undefined
 
 	constructor(
 		private pool: Pool,
@@ -46,16 +47,15 @@ export class PGMBConsumer<Q, M, Default> {
 		this.logger.trace({ count }, 'scheduled consume')
 	}
 
-	close() {
-		this.#consuming = false
+	async close() {
+		clearTimeout(this.#consumeDebounce)
+		this.#abortedConsuming = true
 		this.#pendingCount = 0
-		if(this.#consumeDebounce) {
-			clearTimeout(this.#consumeDebounce)
-		}
+		await this.#currentConsumeTask
 	}
 
 	async consume() {
-		if(this.#consuming) {
+		if(this.#currentConsumeTask) {
 			this.logger.trace('already consuming, ignored')
 			return
 		}
@@ -64,7 +64,15 @@ export class PGMBConsumer<Q, M, Default> {
 			clearTimeout(this.#consumeDebounce)
 		}
 
-		this.#consuming = true
+		this.#currentConsumeTask = this.#consume()
+			.finally(() => {
+				this.#currentConsumeTask = undefined
+			})
+		return this.#currentConsumeTask
+	}
+
+	async #consume() {
+		this.#abortedConsuming = false
 		let client: PoolClient | undefined
 
 		try {
@@ -73,8 +81,8 @@ export class PGMBConsumer<Q, M, Default> {
 			this.logger.debug('got client, starting consumption')
 			let rowsDone = 0
 			for(;;) {
-				if(!this.#consuming) {
-					throw new Error('aborted consumption')
+				if(this.#abortedConsuming) {
+					throw new Error('Aborted consumption task')
 				}
 
 				const _rows = await this.#consumeBatch(client)
@@ -84,14 +92,12 @@ export class PGMBConsumer<Q, M, Default> {
 				}
 			}
 
-			this.#consuming = false
 			if(rowsDone) {
 				this.logger.info({ rowsDone }, 'done consuming')
 			}
 		} catch(err) {
 			this.logger.error({ err }, 'error consuming messages')
 		} finally {
-			this.#consuming = false
 			this.#pendingCount = 0
 			client?.release()
 		}

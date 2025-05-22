@@ -1,7 +1,9 @@
 import type { Pool } from 'pg'
 import type { Logger } from 'pino'
 
-export type DefaultDataMap = { [_: string]: Uint8Array | string }
+export type DefaultDataMap = { [_: string]: unknown }
+
+export type DefaultSerialisedMap = { [_: string]: Uint8Array | string }
 
 /**
  * Declare the options for the PGMBClient.
@@ -26,7 +28,7 @@ export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap> = {
 		 * Add consumers to the client. This will automatically
 		 * start consuming messages.
 		 */
-		consumers: PGMBConsumerOpts[]
+		consumers: PGMBConsumerOpts<keyof QM, DefaultSerialisedMap, Uint8Array>[]
 		serialiser?: undefined
 	} | {
 		/**
@@ -40,9 +42,7 @@ export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap> = {
 	}
 )
 
-export type PGMBConsumerOpts<
-	Q = string, M = DefaultDataMap, Default = Uint8Array
-> = PGMBAssertQueueOpts<Q, keyof M> & {
+export type PGMBConsumerOpts<Q, M, Default> = PGMBAssertQueueOpts<Q, keyof M> & {
 	/**
 	 * Number of messages to consume at once.
 	 */
@@ -88,6 +88,10 @@ export type PGMBMetadata<E = string> = {
 	 * The exchange this message came from
 	 */
 	exchange?: E
+	/**
+	 * type of the content
+	 */
+	contentType?: string
 }
 
 export type PGMBHeaders = PGMBMetadata & { [key: string]: any }
@@ -115,7 +119,7 @@ export type PgEnqueueMsg<M = Uint8Array | string> = {
 	consumeAt?: Date
 }
 
-export type PgPublishMsg<M = DefaultDataMap, E extends keyof M = keyof M> = {
+export type PgPublishMsg<M = DefaultSerialisedMap, E extends keyof M = keyof M> = {
 	[Key in E]: {
 		/**
 		 * Exchange name to send the message to.
