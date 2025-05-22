@@ -3,8 +3,9 @@ import { Pool } from 'pg'
 import P from 'pino'
 import { PGMBClient } from '../client'
 import { V8Serialiser } from '../serialisers/v8'
-import { PGMBClientOpts, PgTypedIncomingMessage } from '../types'
+import { PGMBClientOpts, PGMBOnMessageOpts } from '../types'
 import { delay } from '../utils'
+import { getQueueSchemaName, send } from './utils'
 
 type QueueTypeMap = {
 	'test_queue_1': { msg: string }
@@ -22,8 +23,11 @@ const LOGGER = P({ level: 'trace' })
 const IDLE_TIMEOUT_MS = 2000
 const ON_MESSAGE_MOCK = jest.fn<
 	void, [
-		keyof QueueTypeMap,
-		PgTypedIncomingMessage<ExchangeTypeMap, QueueTypeMap[keyof QueueTypeMap]>[]
+		PGMBOnMessageOpts<
+			keyof QueueTypeMap,
+			ExchangeTypeMap,
+			QueueTypeMap[keyof QueueTypeMap]
+		>
 	]
 >()
 
@@ -97,7 +101,7 @@ describe('Client Tests', () => {
 		// batched consumption
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
 
-		const recvMsgs = ON_MESSAGE_MOCK.mock.calls[0][1]
+		const { msgs: recvMsgs } = ON_MESSAGE_MOCK.mock.calls[0][0]
 		expect(recvMsgs).toHaveLength(2)
 		for(const [i, { id, message, rawMessage, headers }] of recvMsgs.entries()) {
 			expect(headers.contentType).toBeTruthy()
@@ -140,9 +144,68 @@ describe('Client Tests', () => {
 			await delay(100)
 		}
 
-		const secondCall = ON_MESSAGE_MOCK.mock.calls[1]
+		const secondCallArgs = ON_MESSAGE_MOCK.mock.calls[1][0]
 		// ensure the second call is for the second queue
-		expect(secondCall[0]).toBe(secondQueueName)
+		expect(secondCallArgs.queueName).toBe(secondQueueName)
+	})
+
+	it('should allow mixed ack/nack', async() => {
+		const msgsToSend: QueueTypeMap[typeof defaultQueueName][] = [
+			{ msg: 'test' },
+			{ msg: 'test2' },
+		]
+
+		ON_MESSAGE_MOCK.mockImplementationOnce(async({ msgs, ack }) => {
+			expect(msgs).toHaveLength(2)
+			ack(true, msgs[0].id)
+			ack(false, msgs[1].id)
+		})
+
+		const msgs = await client.send(
+			defaultQueueName,
+			...msgsToSend.map(message => ({ message, headers: { retriesLeftS: [5] } }))
+		)
+		expect(msgs).toHaveLength(2)
+
+		while(!ON_MESSAGE_MOCK.mock.calls.length) {
+			await delay(100)
+		}
+
+		await delay(500)
+		const { rows } = await pool.query(
+			`SELECT * from ${getQueueSchemaName(defaultQueueName)}.live_messages`,
+		)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].headers.originalMessageId).toEqual(msgs[1].id)
+	})
+
+	it('should automatically nack failed serialisation', async() => {
+		const conn = await pool.connect()
+		const [, { id: successId }] = await send(
+			conn,
+			defaultQueueName,
+			[
+				{ message: 'bogus' },
+				{
+					message: opts.serialiser!.encode({ msg: 'test' }),
+					headers: { contentType: opts.serialiser!.contentType }
+				}
+			]
+		)
+		conn.release()
+
+		await delay(100)
+
+		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+		const { msgs } = ON_MESSAGE_MOCK.mock.calls[0][0]
+		expect(msgs).toHaveLength(1)
+		expect(msgs[0].id).toEqual(successId)
+
+		// failed serialisation msg should've been nacked
+		const { rows } = await pool.query(
+			`SELECT * from ${getQueueSchemaName(defaultQueueName)}.live_messages`,
+		)
+		expect(rows).toHaveLength(0)
 	})
 
 	it('should debounce consumption', async() => {
@@ -244,7 +307,7 @@ describe('Client Tests', () => {
 
 			expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
 
-			const recvMsgs = ON_MESSAGE_MOCK.mock.calls[0][1]
+			const { msgs: recvMsgs } = ON_MESSAGE_MOCK.mock.calls[0][0]
 			expect(recvMsgs).toHaveLength(2)
 			for(const { id, message, exchange } of recvMsgs) {
 				assert(exchange === EXCHANGE_NAME)

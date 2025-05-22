@@ -42,6 +42,19 @@ export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap> = {
 	}
 )
 
+export type PGMBOnMessageOpts<Q, M, Default> = {
+	queueName: Q
+	msgs: PgTypedIncomingMessage<M, Default>[]
+	/**
+	 * Mark the messages as processed.
+	 * This will be transmitted to the database, upon completion
+	 * of the `onMessage` function.
+	 * @param success - If true, the messages will be acked,
+	 * 	if false, they will be nacked.
+	 */
+	ack(success: boolean, ...msgs: string[]): void
+}
+
 export type PGMBConsumerOpts<Q, M, Default> = PGMBAssertQueueOpts<Q, keyof M> & {
 	/**
 	 * Number of messages to consume at once.
@@ -57,10 +70,7 @@ export type PGMBConsumerOpts<Q, M, Default> = PGMBAssertQueueOpts<Q, keyof M> & 
 	 * Process messages in the queue. Rejecting a message will
 	 * automatically nack it, resolving it will ack it.
 	 */
-	onMessage(
-		queueName: Q,
-		msgs: PgTypedIncomingMessage<M, Default>[]
-	): Promise<void> | void
+	onMessage(opts: PGMBOnMessageOpts<Q, M, Default>): Promise<void> | void
 }
 
 export type PgTypedIncomingMessage<M, D> = {

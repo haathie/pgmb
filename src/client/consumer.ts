@@ -110,12 +110,12 @@ export class PGMBConsumer<Q, M, Default> {
 			'SELECT * FROM pgmb.read_from_queue($1, $2)',
 			[this.opts.name, this.opts.batchSize]
 		) as unknown as { rows: PGMBMessageRecord[] }
-		const msgIds = rows.map((row) => row.id)
 		if(!rows.length) {
 			await client.query('COMMIT')
 			return 0
 		}
 
+		const pendingMsgSet = new Set<string>()
 		const successMsgs: string[] = []
 		const failMsgs: string[] = []
 		const msgs: PgTypedIncomingMessage<M, Default>[] = []
@@ -138,34 +138,58 @@ export class PGMBConsumer<Q, M, Default> {
 				rawMessage: row.message,
 				exchange: row.headers.exchange
 			} as PgTypedIncomingMessage<M, Default>)
+			pendingMsgSet.add(row.id)
 		}
 
-		try {
-			await this.opts.onMessage(this.opts.name, msgs)
-			successMsgs.push(...msgs.map(m => m.id))
-		} catch(err) {
-			this.logger.error({ err }, 'error processing messages')
-			failMsgs.push(...msgs.map(m => m.id))
+		if(pendingMsgSet.size) {
+			try {
+				await this.opts.onMessage({
+					queueName: this.opts.name,
+					msgs,
+					ack(success, ...msgIds) {
+						for(const id of msgIds) {
+							if(!pendingMsgSet.has(id)) {
+								throw new Error(`Message ${id} not in batch, or already marked`)
+							}
+
+							pendingMsgSet.delete(id)
+						}
+
+						if(success) {
+							successMsgs.push(...msgIds)
+						} else {
+							failMsgs.push(...msgIds)
+						}
+					},
+				})
+
+				successMsgs.push(...Array.from(pendingMsgSet))
+			} catch(err) {
+				this.logger.error(
+					{ err, failed: pendingMsgSet.size },
+					'error processing messages'
+				)
+				failMsgs.push(...Array.from(pendingMsgSet))
+			}
 		}
 
-		if(successMsgs.length) {
-			await client.query(
-				'SELECT pgmb.ack_msgs($1, true, $2)',
-				[this.opts.name, `{${successMsgs.join(',')}}`]
-			)
-		}
-
-		if(failMsgs.length) {
-			await client.query(
-				'SELECT pgmb.ack_msgs($1, false, $2)',
-				[this.opts.name, `{${failMsgs.join(',')}}`]
-			)
-		}
+		await Promise.all(
+			[
+				!!successMsgs.length && client.query(
+					'SELECT pgmb.ack_msgs($1, true, $2)',
+					[this.opts.name, `{${successMsgs.join(',')}}`]
+				),
+				!!failMsgs.length && client.query(
+					'SELECT pgmb.ack_msgs($1, false, $2)',
+					[this.opts.name, `{${failMsgs.join(',')}}`]
+				)
+			]
+		)
 
 		await client.query('COMMIT')
 
 		this.logger.debug(
-			{ success: successMsgs.length, fail: failMsgs.length, msgIds },
+			{ success: successMsgs, fail: failMsgs },
 			'acked messages'
 		)
 

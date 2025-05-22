@@ -26,7 +26,7 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 		consumers: consumers.map(({ queueName, onMessage }) => ({
 			name: queueName,
 			batchSize,
-			async onMessage(_, msgs) {
+			async onMessage({ msgs }) {
 				await onMessage(msgs.map(m => m.rawMessage))
 			},
 		})),

@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto'
 import { Pool, PoolClient } from 'pg'
 import { PgEnqueueMsg, PgPublishMsg } from '../types'
 import { delay, serialisePgMsgConstructorsIntoSql } from '../utils'
+import { getQueueSchemaName, isQueueLogged, send } from './utils'
 
 const chance = new Chance()
 
@@ -522,34 +523,6 @@ describe('PGMB SQL Tests', () => {
 		})
 	}
 })
-
-async function send(
-	client: PoolClient, queueName: string, msgs: PgEnqueueMsg[]
-) {
-	const [sql, params] = serialisePgMsgConstructorsIntoSql(msgs, [queueName])
-	const { rows } = await client.query(
-		`SELECT pgmb.send($1, ${sql}) AS id`, params
-	)
-	return rows as { id: string }[]
-}
-
-async function isQueueLogged(
-	client: PoolClient, queueName: string
-) {
-	// https://stackoverflow.com/a/29900169
-	const { rows: [{ relpersistence }] } = await client.query(
-		`SELECT relpersistence FROM pg_class
-		where oid = $1::regclass::oid`,
-		[getQueueSchemaName(queueName) + '.live_messages']
-	)
-	return relpersistence === 'p'
-}
-
-// util fn for testing. Do not use in production, fetch
-// the schema name from the queue table instead
-function getQueueSchemaName(queueName: string) {
-	return `pgmb_q_${queueName}`
-}
 
 function createQueueName() {
 	const queueName = chance.word({ length: 10 }) + '_queue'
