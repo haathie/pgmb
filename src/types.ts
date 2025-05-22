@@ -169,7 +169,15 @@ export type PGMBAssertExchangeOpts<T = string> = {
 export type PGSentMessage = { id: string }
 
 export type Serialiser = {
+	/**
+	 * Arbitrary ID for the serialiser.
+	 */
 	id: string
+	/**
+	 * Content type of the serialised message, included in the headers
+	 * of the sent message.
+	 * @example 'application/json'
+	 */
 	contentType: string | undefined
 	encode: (msg: unknown) => Uint8Array | string
 	decode: (msg: Uint8Array) => unknown

@@ -125,7 +125,10 @@ export class PGMBConsumer<Q, M, Default> {
 				try {
 					message = this.serialiser.decode(row.message)
 				} catch(err) {
-					this.logger.error({ err, id: row.id }, 'error decoding message')
+					this.logger.error(
+						{ err, id: row.id, serialiser: this.serialiser.id },
+						'error decoding message'
+					)
 					failMsgs.push(row.id)
 					continue
 				}

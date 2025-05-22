@@ -67,21 +67,37 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 	async assertQueue(
 		{
 			name,
-			ackSetting = 'delete',
-			defaultHeaders = {},
-			type = 'logged',
-			bindings = [],
+			ackSetting,
+			defaultHeaders,
+			type,
+			bindings,
 		}: PGMBAssertQueueOpts<keyof QM, keyof EM>,
 		client: PoolClient | Pool = this.#pool
 	) {
-		const { rows: [{ created }] } = await client.query(
-			'SELECT pgmb.assert_queue($1, $2, $3, $4, $5::varchar[]) AS "created"',
-			[
-				name, ackSetting,
-				JSON.stringify(defaultHeaders), type,
-				`{${bindings.map(b => `'${String(b)}'`).join(',')}}`
-			]
-		)
+		let sql = 'SELECT pgmb.assert_queue(queue_name => $1'
+		const params: unknown[] = [name]
+		if(ackSetting) {
+			params.push(ackSetting)
+			sql += `, ack_setting => $${params.length}`
+		}
+
+		if(defaultHeaders) {
+			params.push(JSON.stringify(defaultHeaders))
+			sql += `, default_headers => ${params.length}`
+		}
+
+		if(type) {
+			params.push(type)
+			sql += `, type => $${params.length}`
+		}
+
+		if(bindings) {
+			params.push(`{${bindings.map(b => `'${String(b)}'`).join(',')}}`)
+			sql += `, bindings => $${params.length}::varchar[]`
+		}
+
+		sql += ') AS "created"'
+		const { rows: [{ created }] } = await client.query(sql, params)
 		this.#logger.debug({ name, created }, 'asserted queue')
 		return created as boolean
 	}
