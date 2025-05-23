@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
 import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
 import { serialisePgMsgConstructorsIntoSql } from '../utils'
+import { PGMBEventBatcher } from './batcher'
 import { PGMBConsumer } from './consumer'
 import { PGMBListener } from './listener'
 
@@ -12,12 +13,16 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 	#logger: Logger
 	#listener: PGMBListener
 	#serialiser?: Serialiser
+	#batcherOpts: PGMBClientOpts<QM, EM>['batcher']
+
+	defaultBatcher: PGMBEventBatcher<EM>
 
 	constructor({
 		pool,
 		logger = P(),
 		consumers = [],
-		serialiser
+		serialiser,
+		batcher
 	}: PGMBClientOpts<QM, EM>) {
 		this.#pool = pool
 		this.#logger = logger
@@ -26,6 +31,8 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 			= new PGMBListener(this.#pool, this.#onNotification, this.#logger)
 		this.#serialiser = serialiser
 		this.#consumers = this.#createConsumers(consumers)
+		this.#batcherOpts = batcher
+		this.defaultBatcher = this.createBatcher()
 	}
 
 	async listen() {
@@ -60,6 +67,7 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 	 * processing messages, and stops any further processing of messages.
 	 */
 	async close() {
+		await this.defaultBatcher.close()
 		await this.#listener?.close()
 		await Promise.all(this.#consumers.map(s => s.close()))
 	}
@@ -170,6 +178,17 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		const { rows } = await this.#pool
 			.query(`SELECT pgmb.publish(${arraySql}) AS id`, params)
 		return rows as PGSentMessage[]
+	}
+
+	/**
+	 * Create a new batcher for publishing messages.
+	 */
+	createBatcher() {
+		return new PGMBEventBatcher<EM>({
+			publish: this.publish.bind(this),
+			logger: this.#logger.child({ batcher: true }),
+			...this.#batcherOpts
+		})
 	}
 
 	#onNotification = (notif: PGMBNotification) => {

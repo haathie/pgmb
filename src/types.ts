@@ -22,6 +22,11 @@ export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap> = {
 	pool: Pool
 
 	logger?: Logger
+	/**
+	 * Options for the event batcher. This can be used to queue messages
+	 * before publishing them all at once.
+	 */
+	batcher?: Omit<PGMBMakeEventBatcherOpts<EM>, 'publish' | 'logger'>
 } & (
 	{
 		/**
@@ -73,10 +78,6 @@ export type PGMBConsumerOpts<Q, M, Default> = PGMBAssertQueueOpts<Q, keyof M> & 
 	onMessage(opts: PGMBOnMessageOpts<Q, M, Default>): Promise<void> | void
 }
 
-export type PgTypedIncomingMessage<M, D> = {
-	[key in keyof M]: PgIncomingMessage<key, M[key], D>
-}[keyof M]
-
 export type PGMBMetadata<E = string> = {
 	/**
 	 * Specifys the number of times this message should be retried.
@@ -106,7 +107,11 @@ export type PGMBMetadata<E = string> = {
 
 export type PGMBHeaders = PGMBMetadata & { [key: string]: any }
 
-export type PgIncomingMessage<E = string, M = Uint8Array, D = Uint8Array> = {
+export type PgTypedIncomingMessage<M, D> = {
+	[key in keyof M]: PgIncomingMessage<key, M[key], D>
+}[keyof M]
+
+type PgIncomingMessage<E = string, M = Uint8Array, D = Uint8Array> = {
 	id: string
 	/**
 	 * the raw serialised message
@@ -167,6 +172,34 @@ export type PGMBAssertExchangeOpts<T = string> = {
 }
 
 export type PGSentMessage = { id: string }
+
+export type PGMBMakeEventBatcherOpts<M> = {
+	publish(...msgs: PgPublishMsg<M>[]): Promise<PGSentMessage[]>
+
+	logger: Logger
+	/**
+	 * @param msg - The message to serialise
+	 */
+	serialise?(msg: unknown): Uint8Array | string
+	/**
+	 * Max message size allowed, prevents enqueuing messages
+	 * that are guaranteed to fail.
+	 * @default 10 * 1024 * 1024 (10mb)
+	 */
+	maxMessageSizeBytes?: number
+	/**
+	 * Automatically flush after this interval.
+	 * Set to undefined or 0 to disable. Will need to
+	 * manually call `flush()` to publish messages.
+	 * @default undefined
+	 */
+	flushIntervalMs?: number
+	/**
+	 * Max number of events to send in a batch
+	 * @default 2500
+	 */
+	maxEventsPerBatch?: number
+}
 
 export type Serialiser = {
 	/**
