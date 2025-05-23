@@ -230,7 +230,7 @@ BEGIN
 	-- create a random bigint
 	RETURN floor((random() + additive) * 10000000000000)::bigint;
 END
-$$ LANGUAGE plpgsql VOLATILE LEAKPROOF PARALLEL SAFE;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 
 -- fn to create a unique message ID. This'll be the current timestamp
 -- + a random number
@@ -251,7 +251,7 @@ BEGIN
 		22
 	);
 END
-$$ LANGUAGE plpgsql VOLATILE LEAKPROOF PARALLEL SAFE;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 
 -- fn to extract the date from a message ID.
 CREATE OR REPLACE FUNCTION pgmb.extract_date_from_message_id(
@@ -262,7 +262,7 @@ BEGIN
 	-- convert it to a timestamp
 	RETURN to_timestamp(('0x' || substr(message_id, 3, 14))::numeric / 1000000);
 END
-$$ LANGUAGE plpgsql IMMUTABLE LEAKPROOF PARALLEL SAFE;
+$$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE;
 
 -- fn to send multiple messages into a queue
 CREATE OR REPLACE FUNCTION pgmb.send(
