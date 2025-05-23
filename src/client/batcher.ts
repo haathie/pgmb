@@ -8,7 +8,7 @@ export class PGMBEventBatcher<M> {
 
 	#publish: PGMBMakeEventBatcherOpts<M>['publish']
 	#flushIntervalMs: number | undefined
-	#maxEventsPerBatch: number
+	#maxBatchSize: number
 	#currentBatch: Batch<M> = { messages: [] }
 	#flushTimeout: NodeJS.Timeout | undefined
 	#flushTask: Promise<void> | undefined
@@ -17,12 +17,12 @@ export class PGMBEventBatcher<M> {
 	constructor({
 		publish,
 		flushIntervalMs,
-		maxEventsPerBatch = 2500,
+		maxBatchSize = 2500,
 		logger
 	}: PGMBMakeEventBatcherOpts<M>) {
 		this.#publish = publish
 		this.#flushIntervalMs = flushIntervalMs
-		this.#maxEventsPerBatch = maxEventsPerBatch
+		this.#maxBatchSize = maxBatchSize
 		this.#logger = logger
 	}
 
@@ -34,7 +34,7 @@ export class PGMBEventBatcher<M> {
 
 	enqueue(msg: PgPublishMsg<M>) {
 		this.#currentBatch.messages.push(msg)
-		if(this.#currentBatch.messages.length >= this.#maxEventsPerBatch) {
+		if(this.#currentBatch.messages.length >= this.#maxBatchSize) {
 			this.flush()
 			return
 		}
@@ -47,13 +47,13 @@ export class PGMBEventBatcher<M> {
 	}
 
 	async flush() {
+		if(!this.#currentBatch.messages.length) {
+			return
+		}
+
 		const batch = this.#currentBatch
 		this.#currentBatch = { messages: [] }
 		clearTimeout(this.#flushTimeout)
-
-		if(!batch.messages.length) {
-			return
-		}
 
 		await this.#flushTask
 
@@ -61,20 +61,12 @@ export class PGMBEventBatcher<M> {
 		return this.#flushTask
 	}
 
-	async #publishBatch(batch: Batch<M>) {
+	async #publishBatch({ messages }: Batch<M>) {
 		try {
-			const msgIds = await this.#publish(...batch.messages)
-			const consolidatedMsgs = batch.messages.map((msg, i) => ({
-				...msg,
-				id: msgIds[i].id
-			}))
-			this.#logger.info(
-				{ total: consolidatedMsgs.length, msgs: consolidatedMsgs },
-				'published messages'
-			)
+			await this.#publish(...messages)
 		} catch(err) {
 			this.#logger.error(
-				{ err, msgs: batch.messages },
+				{ err, msgs: messages },
 				'failed to publish messages'
 			)
 		}

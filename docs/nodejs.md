@@ -14,16 +14,26 @@ npm install @haathie/pgmb
 import { Pool } from 'pg'
 import { PGMBClient } from '@haathie/pgmb'
 
-const pool = new Pool({
-  connectionString: 'postgres://postgres:@localhost:5432/test',
-  max: 10
-})
-
 const pgmb = new PGMBClient({
-	pool,
+	pool: {
+		create: true,
+		connectionString: 'postgres://postgres:@localhost:5432/test'
+	},
 	// leave blank if you don't want to consume any messages
 	consumers: []
 })
+```
+
+Or you can pass in a `pg` pool object:
+```ts
+import { Pool } from 'pg'
+import { PGMBClient } from '@haathie/pgmb'
+
+const pool = new Pool({
+	connectionString: 'postgres://postgres:@localhost:5432/test',
+	max: 10
+})
+const pgmb = new PGMBClient({ pool, consumers: [] })
 ```
 
 ## Creating a Queue & Sending Messages
@@ -145,6 +155,7 @@ The actual acks/nacks will be transmitted to the database once the `onMessage` c
 
 ```ts
 await pgmb.close()
+// if you passed in your own pool, you'll need to close it manually
 await pool.end()
 ```
 
@@ -250,6 +261,36 @@ await pgmb.publish(
 	}
 )
 ```
+
+## Enqueing Messages For Publishing
+
+In some cases, you may want to enqueue messages for publishing & flush them later. The library provides a simple "batcher" API for this. You can use the `batch` method to create a batch, and then use the `flush` method to publish all messages in the batch.
+
+```ts
+const pgmb = new PGMBClient({
+	...otherOptions,
+	batcher: {
+		// the batcher will automatically flush messages every 5 seconds
+		// set to 0 or undefined to disable auto-flushing
+		flushIntervalMs: 5000,
+		// the batcher will automatically flush messages when the batch size
+		// reaches 2500 messages
+		maxBatchSize: 2500
+	}
+})
+
+pgmb.defaultBatcher.enqueue({
+	exchange: 'user-registered',
+	message: { id: '123', email: '' }
+})
+
+// flush the batch manually
+await pgmb.defaultBatcher.flush()
+```
+
+Note: if you've messages pending in the batcher, and you close the client, the batcher will automatically flush all messages before closing.
+
+The batcher also automatically logs all failed flushes, in case of errors -- so that they could be recovered manually later.
 
 ## General Notes
 

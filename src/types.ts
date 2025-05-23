@@ -182,7 +182,7 @@ export type PGMBAssertExchangeOpts<T = string> = {
 export type PGSentMessage = { id: string }
 
 export type PGMBMakeEventBatcherOpts<M> = {
-	publish(...msgs: PgPublishMsg<M>[]): Promise<PGSentMessage[]>
+	publish(...msgs: PgPublishMsg<M>[]): Promise<void> | void
 
 	logger: Logger
 	/**
@@ -203,10 +203,10 @@ export type PGMBMakeEventBatcherOpts<M> = {
 	 */
 	flushIntervalMs?: number
 	/**
-	 * Max number of events to send in a batch
+	 * Max number of messages to send in a batch
 	 * @default 2500
 	 */
-	maxEventsPerBatch?: number
+	maxBatchSize?: number
 }
 
 export type Serialiser = {

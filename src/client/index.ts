@@ -114,7 +114,7 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		}
 
 		if(bindings) {
-			params.push(`{${bindings.map(b => `'${String(b)}'`).join(',')}}`)
+			params.push(`{${bindings.map(b => `${String(b)}`).join(',')}}`)
 			sql += `, bindings => $${params.length}::varchar[]`
 		}
 

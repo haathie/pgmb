@@ -21,6 +21,8 @@ type ClientOpts = PGMBClientOpts<QueueTypeMap, ExchangeTypeMap>
 
 const LOGGER = P({ level: 'trace' })
 const IDLE_TIMEOUT_MS = 2000
+const MAX_BATCH_SIZE = 5
+
 const ON_MESSAGE_MOCK = jest.fn<
 	void, [
 		PGMBOnMessageOpts<
@@ -47,6 +49,7 @@ describe('Client Tests', () => {
 		opts = {
 			pool,
 			logger: LOGGER,
+			batcher: { flushIntervalMs: 500, maxBatchSize: MAX_BATCH_SIZE },
 			consumers: [
 				{
 					name: 'test_queue_1',
@@ -316,6 +319,43 @@ describe('Client Tests', () => {
 				expect(typeof message.a).toEqual('string')
 				expect(id).toContain('pm')
 			}
+		})
+	})
+
+	describe('Batching', () => {
+
+		const EXCHANGE_NAME = 'test_exchange_1'
+		beforeEach(async() => {
+			await client.assertQueue({
+				name: defaultQueueName,
+				bindings: [EXCHANGE_NAME],
+			})
+		})
+
+		it('should enqueue and publish messages', async() => {
+			client.defaultBatcher.enqueue({
+				exchange: EXCHANGE_NAME,
+				message: { a: 'hello' }
+			})
+			await client.defaultBatcher.flush()
+			while(!ON_MESSAGE_MOCK.mock.calls.length) {
+				await delay(100)
+			}
+		})
+
+		it('should auto flush on batch size', async() => {
+			for(let i = 0; i < MAX_BATCH_SIZE; i++) {
+				client.defaultBatcher.enqueue({
+					exchange: EXCHANGE_NAME,
+					message: { a: 'hello ' + i }
+				})
+			}
+
+			while(!ON_MESSAGE_MOCK.mock.calls.length) {
+				await delay(100)
+			}
+
+			expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
 		})
 	})
 })
