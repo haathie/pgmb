@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from 'pg'
+import { Pool, type PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
 import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
 import { serialisePgMsgConstructorsIntoSql } from '../utils'
@@ -14,6 +14,7 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 	#listener: PGMBListener
 	#serialiser?: Serialiser
 	#batcherOpts: PGMBClientOpts<QM, EM>['batcher']
+	#createdPool = false
 
 	defaultBatcher: PGMBEventBatcher<EM>
 
@@ -24,7 +25,15 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		serialiser,
 		batcher
 	}: PGMBClientOpts<QM, EM>) {
-		this.#pool = pool
+		if('create' in pool && pool.create) {
+			this.#pool = new Pool(pool)
+			this.#createdPool = true
+		} else if(pool instanceof Pool) {
+			this.#pool = pool
+		} else {
+			throw new Error('Either a pool or pool options must be provided')
+		}
+
 		this.#logger = logger
 		this.#onNotification = this.#onNotification.bind(this)
 		this.#listener
@@ -70,6 +79,11 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		await this.defaultBatcher.close()
 		await this.#listener?.close()
 		await Promise.all(this.#consumers.map(s => s.close()))
+		if(this.#createdPool) {
+			await this.#pool.end()
+		}
+
+		this.#logger.debug('closed PGMB client')
 	}
 
 	async assertQueue(

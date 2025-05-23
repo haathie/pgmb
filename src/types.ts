@@ -1,4 +1,4 @@
-import type { Pool } from 'pg'
+import type { Pool, PoolConfig } from 'pg'
 import type { Logger } from 'pino'
 
 export type DefaultDataMap = { [_: string]: unknown }
@@ -40,9 +40,10 @@ export type PGMBTypedClientOpts<QM, EM> = PGMBBaseClientOpts<EM> & {
 
 export type PGMBBaseClientOpts<EM> = {
 	/**
-	 * Provide a connection pool to use.
+	 * Provide a connection pool to use,
+	 * or options to create a new pool.
 	 */
-	pool: Pool
+	pool: Pool | ({ create: true } & PoolConfig)
 
 	logger?: Logger
 	/**

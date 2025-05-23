@@ -44,8 +44,10 @@
   ],
   "author": "Adhiraj Singh",
   "license": "ISC",
+  "peerDependencies": {
+    "pg": "^8.0.0"
+  },
   "dependencies": {
-    "pg": "^8.15.6",
     "pino": "^8.4.1"
   }
 }
