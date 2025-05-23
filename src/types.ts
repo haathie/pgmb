@@ -15,7 +15,30 @@ export type DefaultSerialisedMap = { [_: string]: Uint8Array | string }
  * @template QM - Map of queue names to message types.
  * @template EM - Map of exchange names to message types.
  */
-export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap> = {
+export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap>
+	= PGMBRawClientOpts<QM, EM> | PGMBTypedClientOpts<QM, EM>
+
+export type PGMBRawClientOpts<QM, EM> = PGMBBaseClientOpts<EM> & {
+	/**
+	 * Add consumers to the client. This will automatically
+	 * start consuming messages.
+	 */
+	consumers: PGMBConsumerOpts<keyof QM, DefaultSerialisedMap, Uint8Array>[]
+	serialiser?: undefined
+}
+
+export type PGMBTypedClientOpts<QM, EM> = PGMBBaseClientOpts<EM> & {
+	/**
+	 * Add consumers to the client. This will automatically
+	 * start consuming messages.
+	 */
+	consumers: {
+		[Key in keyof QM]: PGMBConsumerOpts<Key, EM, QM[Key]>
+	}[keyof QM][]
+	serialiser: Serialiser
+}
+
+export type PGMBBaseClientOpts<EM> = {
 	/**
 	 * Provide a connection pool to use.
 	 */
@@ -27,29 +50,13 @@ export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap> = {
 	 * before publishing them all at once.
 	 */
 	batcher?: Omit<PGMBMakeEventBatcherOpts<EM>, 'publish' | 'logger'>
-} & (
-	{
-		/**
-		 * Add consumers to the client. This will automatically
-		 * start consuming messages.
-		 */
-		consumers: PGMBConsumerOpts<keyof QM, DefaultSerialisedMap, Uint8Array>[]
-		serialiser?: undefined
-	} | {
-		/**
-		 * Add consumers to the client. This will automatically
-		 * start consuming messages.
-		 */
-		consumers: {
-			[Key in keyof QM]: PGMBConsumerOpts<Key, EM, QM[Key]>
-		}[keyof QM][]
-		serialiser: Serialiser
-	}
-)
+}
 
 export type PGMBOnMessageOpts<Q, M, Default> = {
 	queueName: Q
 	msgs: PgTypedIncomingMessage<M, Default>[]
+
+	logger: Logger
 	/**
 	 * Mark the messages as processed.
 	 * This will be transmitted to the database, upon completion

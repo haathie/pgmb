@@ -164,6 +164,7 @@ export class PGMBConsumer<Q, M, Default> {
 							failMsgs.push(...msgIds)
 						}
 					},
+					logger: this.logger
 				})
 
 				successMsgs.push(...Array.from(pendingMsgSet))
