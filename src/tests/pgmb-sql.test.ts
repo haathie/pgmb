@@ -299,7 +299,7 @@ describe('PGMB SQL Tests', () => {
 			expect(curRows.length).toBe(1)
 
 			// message should be readable after the retry time
-			await delay(retryS * 1000 + 100)
+			await delay(retryS * 1000 + 200)
 
 			const { rows } = await client.query(
 				'SELECT * FROM pgmb.read_from_queue($1, 100)', [queueName]
