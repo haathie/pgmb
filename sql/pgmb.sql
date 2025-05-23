@@ -125,7 +125,7 @@ BEGIN
 
 	-- if bindings are provided, assert the exchanges,
 	-- and bind the queue to them
-	IF bindings IS NOT NULL AND array_length(bindings, 1) > 0 THEN
+	IF bindings IS NOT NULL THEN
 		-- remove all existing bindings
 		UPDATE pgmb.exchanges
 		SET queues = array_remove(queues, queue_name)
