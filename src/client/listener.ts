@@ -3,6 +3,8 @@ import type { Logger } from 'pino'
 import type { PGMBNotification, PGMBNotificationData } from '../types'
 import { delay, getChannelNameForQueue, getQueueNameFromChannel } from '../utils'
 
+const CLIENT_REMOVED_ERR = 'Listener client removed from pool'
+
 /**
  * PGMBListener is a class that listens for notifications on multiple
  * PostgreSQL channels. It uses a connection pool to obtain a connection
@@ -96,9 +98,7 @@ export class PGMBListener {
 			return
 		}
 
-		this.#onListenerError(
-			new Error('Listener client removed from pool')
-		)
+		this.#onListenerError(new Error(CLIENT_REMOVED_ERR))
 	}
 
 	async #assertConnection() {
