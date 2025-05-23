@@ -93,7 +93,7 @@ export class PGMBConsumer<Q, M, Default> {
 			}
 
 			if(rowsDone) {
-				this.logger.info({ rowsDone }, 'done consuming')
+				this.logger.debug({ rowsDone }, 'done consuming')
 			}
 		} catch(err) {
 			this.logger.error({ err }, 'error consuming messages')
