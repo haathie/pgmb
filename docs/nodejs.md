@@ -134,6 +134,13 @@ const pgmb = new PGMBClient({
 	consumers: [
 		{
 			name: 'my_queue',
+			// Optionally, add replicas to the consumer -- to prevent a single batch
+			// blocking consumption of other messages.
+			replicas: 2,
+			// the onMessage fn will have at most <batchSize> messages.
+			// If you set the replicas option, the total number of messages
+			// being processed will be <batchSize> * <replicas>
+			batchSize: 10,
 			onMessage: async ({ queueName, messages, ack }) => {
 				for(const msg of messages) {
 					try {

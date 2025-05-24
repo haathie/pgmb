@@ -70,6 +70,14 @@ export type PGMBOnMessageOpts<Q, M, Default> = {
 
 export type PGMBConsumerOpts<Q, M, Default> = PGMBAssertQueueOpts<Q, keyof M> & {
 	/**
+	 * Number of replicas to create for this queue, this is useful to ensure that
+	 * if you have one long running batch, other replicas can still continue
+	 * consuming messages.
+	 * Ensure that you've enough connections in your pool to handle this.
+	 * @default 1
+	 */
+	replicas?: number
+	/**
 	 * Number of messages to consume at once.
 	 */
 	batchSize: number

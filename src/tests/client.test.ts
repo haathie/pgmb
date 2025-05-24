@@ -67,7 +67,7 @@ describe('Client Tests', () => {
 		client = new PGMBClient(opts)
 
 		for(const { name } of opts.consumers) {
-			await client.assertQueue({ name })
+			await client.assertQueue({ name, bindings: [] })
 			await client.purgeQueue(name)
 		}
 
@@ -238,6 +238,45 @@ describe('Client Tests', () => {
 		}
 
 		expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
+	})
+
+	it('should create multiple replicas', async() => {
+		opts = {
+			pool: { create: true, connectionString: process.env.PG_URI, max: 5 },
+			logger: LOGGER,
+			// required for type-checking
+			serialiser: opts.serialiser!,
+			consumers: [
+				{
+					name: defaultQueueName,
+					onMessage: ON_MESSAGE_MOCK,
+					batchSize: 5,
+					replicas: 2,
+				},
+			]
+		}
+		await client.close()
+		client = new PGMBClient(opts)
+		await client.listen()
+
+		let resolveMsg: (() => void) | undefined
+		ON_MESSAGE_MOCK.mockImplementationOnce(() => {
+			return new Promise<void>(r => {
+				resolveMsg = r
+			})
+		})
+
+		await client.send(defaultQueueName, { message: { msg: '1' } })
+		while(ON_MESSAGE_MOCK.mock.calls.length < 1) {
+			await delay(50)
+		}
+
+		await client.send(defaultQueueName, { message: { msg: '2' } })
+		while(ON_MESSAGE_MOCK.mock.calls.length < 2) {
+			await delay(50)
+		}
+
+		resolveMsg?.()
 	})
 
 	it('should handle connection errors', async() => {
