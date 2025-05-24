@@ -54,6 +54,7 @@ export class PGMBEventBatcher<M> {
 		const batch = this.#currentBatch
 		this.#currentBatch = { messages: [] }
 		clearTimeout(this.#flushTimeout)
+		this.#flushTimeout = undefined
 
 		await this.#flushTask
 

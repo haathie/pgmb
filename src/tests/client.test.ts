@@ -382,6 +382,26 @@ describe('Client Tests', () => {
 			}
 		})
 
+		it('should publish on timeout', async() => {
+			client.defaultBatcher.enqueue({
+				exchange: EXCHANGE_NAME,
+				message: { a: 'hello' }
+			})
+
+			while(!ON_MESSAGE_MOCK.mock.calls.length) {
+				await delay(100)
+			}
+
+			client.defaultBatcher.enqueue({
+				exchange: EXCHANGE_NAME,
+				message: { a: 'hello' }
+			})
+
+			while(ON_MESSAGE_MOCK.mock.calls.length < 2) {
+				await delay(100)
+			}
+		})
+
 		it('should auto flush on batch size', async() => {
 			for(let i = 0; i < MAX_BATCH_SIZE; i++) {
 				client.defaultBatcher.enqueue({
