@@ -454,9 +454,13 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
--- get the metrics of a queue
+-- get the metrics of a queue.
+-- Pass "approximate" as true to get an approximate count of the messages, which
+-- is much faster than counting all rows. "consumable_length" will always be 0
+-- when "approximate" is passed as true.
 CREATE OR REPLACE FUNCTION pgmb.get_queue_metrics(
-	queue_name VARCHAR(64)
+	queue_name VARCHAR(64),
+	approximate BOOLEAN DEFAULT FALSE
 )
 RETURNS SETOF pgmb.metrics_result AS $$
 DECLARE
@@ -468,8 +472,14 @@ BEGIN
 	-- get the metrics of the queue
 	RETURN QUERY EXECUTE 'SELECT
 		''' || queue_name || '''::varchar(64) AS queue_name,
-		count(*)::int AS total_length,
-		(count(*) FILTER (WHERE id <= pgmb.create_message_id(rand=>999999999999)))::int AS consumable_length,
+		' ||
+			(CASE WHEN approximate THEN
+				'COALESCE(pgmb.get_approximate_count(' || quote_literal(schema_name || '.live_messages') || '), 0) AS total_length,'
+				|| '0 AS consumable_length,'
+			ELSE
+				'count(*)::int AS total_length,'
+				|| '(count(*) FILTER (WHERE id <= pgmb.create_message_id(rand=>999999999999)))::int AS consumable_length,'
+			END) || '
 		(clock_timestamp() - pgmb.extract_date_from_message_id(max(id))) AS newest_msg_age_sec,
 		(clock_timestamp() - pgmb.extract_date_from_message_id(min(id))) AS oldest_msg_age_sec
 		FROM ' || quote_ident(schema_name) || '.live_messages';
@@ -477,15 +487,35 @@ END
 $$ LANGUAGE plpgsql;
 
 -- fn to get metrics for all queues
-CREATE OR REPLACE FUNCTION pgmb.get_all_queue_metrics()
+CREATE OR REPLACE FUNCTION pgmb.get_all_queue_metrics(
+	approximate BOOLEAN DEFAULT FALSE
+)
 RETURNS SETOF pgmb.metrics_result AS $$
 BEGIN
 	RETURN QUERY
 	SELECT m.*
-	FROM pgmb.queues q, pgmb.get_queue_metrics(q.name) m
+	FROM pgmb.queues q, pgmb.get_queue_metrics(q.name, approximate) m
 	ORDER BY q.name ASC;
 END
 $$ LANGUAGE plpgsql;
+
+-- fn to get an approximate count of rows in a table
+-- See: https://stackoverflow.com/a/7945274
+CREATE OR REPLACE FUNCTION pgmb.get_approximate_count(
+	table_name regclass
+)
+RETURNS INTEGER AS $$
+	SELECT (
+		CASE WHEN c.reltuples < 0 THEN NULL       -- never vacuumed
+		WHEN c.relpages = 0 THEN float8 '0'  -- empty table
+		ELSE c.reltuples / c.relpages END
+		* (pg_catalog.pg_relation_size(c.oid)
+		/ pg_catalog.current_setting('block_size')::int)
+	)::bigint
+	FROM  pg_catalog.pg_class c
+	WHERE c.oid = table_name
+	LIMIT 1;
+$$ LANGUAGE sql;
 
 -- uninstall pgmb
 CREATE OR REPLACE FUNCTION pgmb.uninstall()
