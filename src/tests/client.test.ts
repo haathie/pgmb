@@ -10,6 +10,7 @@ import { getQueueSchemaName, send } from './utils'
 type QueueTypeMap = {
 	'test_queue_1': { msg: string }
 	'test_queue_2': { msg: string }
+	'test_queue_3': { msg: string }
 }
 
 type ExchangeTypeMap = {
@@ -82,6 +83,15 @@ describe('Client Tests', () => {
 
 	afterAll(async() => {
 		await pool.end()
+	})
+
+	it('should assert a queue w all options', async() => {
+		await client.assertQueue({
+			name: 'test_queue_3',
+			bindings: [],
+			ackSetting: 'delete',
+			defaultHeaders: { retriesLeftS: [10, 15, 60] }
+		})
 	})
 
 	it('should consume messages', async() => {

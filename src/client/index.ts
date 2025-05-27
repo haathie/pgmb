@@ -105,7 +105,7 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 
 		if(defaultHeaders) {
 			params.push(JSON.stringify(defaultHeaders))
-			sql += `, default_headers => ${params.length}`
+			sql += `, default_headers => $${params.length}`
 		}
 
 		if(type) {
