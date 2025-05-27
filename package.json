@@ -1,6 +1,6 @@
 {
   "name": "@haathie/pgmb",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Postgres Message Broker",
   "main": "lib/index.js",
   "publishConfig": {
@@ -33,7 +33,8 @@
     "typescript": "^5.0.0"
   },
   "files": [
-    "lib"
+    "lib",
+    "sql"
   ],
   "keywords": [
     "postgres",
