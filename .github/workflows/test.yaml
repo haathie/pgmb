@@ -49,8 +49,5 @@ jobs:
     - name: Lint
       run: npm run lint
 
-    - name: Install PGMB on Postgres
-      run: psql postgres://postgres:@localhost:5432/test -f ./sql/pgmb.sql -1
-
     - name: Test
       run: npm run test
