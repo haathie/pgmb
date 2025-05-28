@@ -271,38 +271,63 @@ CREATE OR REPLACE FUNCTION pgmb.send(
 )
 RETURNS SETOF VARCHAR(22) AS $$
 DECLARE
+	msg_records pgmb.msg_record[];
+BEGIN
+	-- create the ID for each message, and then send to the internal _send fn
+	-- Generate IDs for each message
+	msg_records := ARRAY(
+		SELECT (
+			pgmb.create_message_id(
+				COALESCE(m.consume_at, clock_timestamp()),
+				pgmb.create_random_bigint(m.ordinality)
+			),
+			m.message,
+			m.headers
+		)::pgmb.msg_record
+		FROM unnest(messages) WITH ORDINALITY AS m
+	);
+
+	-- Send the messages using the internal _send function
+	PERFORM pgmb._send(queue_name, msg_records);
+	-- Return the IDs of the messages sent
+	RETURN QUERY SELECT id FROM unnest(msg_records);
+END
+$$ LANGUAGE plpgsql;
+
+-- internal fn to send multiple messages with an existing ID into a queue
+CREATE OR REPLACE FUNCTION pgmb._send(
+	queue_name VARCHAR(64),
+	messages pgmb.msg_record[]
+)
+RETURNS VOID AS $$
+DECLARE
 	-- check if the queue already exists
 	schema_name VARCHAR(64);
 	default_headers JSONB;
 BEGIN
-	-- each queue would have its own channel to listen on, so a consumer can listen
-	-- to a specific queue. This'll be used to notify the consumer when new messages
-	-- are added to the queue.
+	-- each queue would have its own channel to listen on, so a consumer can
+	-- listen to a specific queue. This'll be used to notify the consumer when
+	-- new messages are added to the queue.
 	PERFORM pg_notify(
 		'chn_' || queue_name,
 		('{"count":' || array_length(messages, 1)::varchar || '}')::varchar
 	);
 
 	-- get schema name and default headers
-	SELECT q.schema_name, q.default_headers
-	FROM pgmb.queues q
-	WHERE q.name = queue_name
-	INTO schema_name, default_headers;
+	SELECT q.schema_name, q.default_headers FROM pgmb.queues q
+	WHERE q.name = queue_name INTO schema_name, default_headers;
 	-- Insert the message into the queue and return all message IDs. We use the
 	-- ordinality of the array to ensure that each message is inserted in the same
 	-- order as it was sent. This is important for the consumer to process the
 	-- messages in the same order as they were sent.
-	RETURN QUERY
-	EXECUTE 'INSERT INTO ' || quote_ident(schema_name) || '.live_messages (id, message, headers)
+	EXECUTE 'INSERT INTO '
+		|| quote_ident(schema_name)
+		|| '.live_messages (id, message, headers)
 	SELECT
-		pgmb.create_message_id(
-			COALESCE(m.consume_at, clock_timestamp()),
-			pgmb.create_random_bigint(m.ordinality)
-		),
-		m.message,
-		COALESCE($1, ''{}''::JSONB) || COALESCE(m.headers, ''{}''::JSONB)
-	FROM unnest($2) WITH ORDINALITY m 
-	RETURNING id;' USING default_headers, messages;
+		id,
+		message,
+		COALESCE($1, ''{}''::JSONB) || COALESCE(headers, ''{}''::JSONB)
+	FROM unnest($2)' USING default_headers, messages;
 END
 $$ LANGUAGE plpgsql;
 
