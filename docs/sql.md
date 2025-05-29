@@ -198,7 +198,7 @@ SELECT pgmb.bind_queue('my_queue', 'my_exchange');
 -- Publish a message to the exchange. Again, the API is built for bulk 
 -- publishing, so you can send multiple messages at once to multiple
 -- exchanges:
-SELECT pgmb.publish(
+SELECT * FROM pgmb.publish(
   ARRAY[(
     'my_exchange',
     'Hello',
@@ -206,6 +206,7 @@ SELECT pgmb.publish(
     NOW() + interval '5 minutes'
   )]::pgmb.publish_msg[],
 );
+-- outputs the ID of the published messages (pm123)
 
 SELECT pgmb.publish(
   ARRAY[
@@ -223,20 +224,23 @@ SELECT pgmb.publish(
     )
   ]::pgmb.publish_msg[],
 );
+
 ```
 
-Note: when published from an exchange, the exchange name is added to the message's headers. For eg.
-```json
-{
-  "id": "pm123",
-  "headers": {
-    "retriesLeftS": [5, 10, 15],
-    "exchange": "my_exchange"
+Notes:
+1. The ID of the message when published is the same across all queues that the exchange is bound to. This means if an exchange is bound to queue A, and queue B -- any message M published to the exchange will have the same ID in both queues. This is useful for tracking messages across queues.
+2. Because the ID is the same across queues, if you publish 10 messages to an exchange, and 2 queues are bound to that exchange, the `publish` fn will return the unique IDs of the messages in the order they were input to the `publish` fn, i.e. 10 IDs, not 20. However, if the exchange is bound to no queues, the `publish` fn will return no rows.
+2. when published from an exchange, the exchange name is added to the message's headers. For eg.
+  ```json
+  {
+    "id": "pm123",
+    "headers": {
+      "retriesLeftS": [5, 10, 15],
+      "exchange": "my_exchange"
+    }
   }
-}
-```
-
-And of course, each queue's default headers/archive/type settings are individually respected. So if you have a queue that archives messages, and another that deletes them, the messages will be archived in the first queue and deleted in the second.
+  ```
+3. Of course, each queue's default headers/archive/type settings are individually respected. So if you have a queue that archives messages, and another that deletes them, the messages will be archived in the first queue and deleted in the second.
 
 ### Unbinding a Queue to an Exchange
 

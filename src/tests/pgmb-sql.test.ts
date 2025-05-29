@@ -17,15 +17,15 @@ describe('PGMB SQL Tests', () => {
 		await pool.end()
 	})
 
-	it.concurrent('should create unique message IDs', async() => {
-		const genCount = 10000
-		const parallelCount = 5
+	it('should create unique message IDs', async() => {
+		const genCount = 5000
+		const parallelCount = 10
 		const totalSet = new Set<string>()
 		const totalRows = await Promise.all(
 			Array.from({ length: parallelCount }, async() => {
 				const { rows } = await pool.query(
 					`select distinct
-						pgmb.create_message_id(rand=>pgmb.create_random_bigint(num)) AS id
+						pgmb.create_message_id(ord=>num) AS id
 					from generate_series(1, ${genCount}) AS t(num)`
 				)
 				return rows
@@ -45,7 +45,25 @@ describe('PGMB SQL Tests', () => {
 		expect(totalSet.size).toBe(genCount * parallelCount)
 	}, 30000)
 
-	it.concurrent('should correctly get the message ID date', async() => {
+	it('should create sequential unique message IDs with a date', async() => {
+		const genCount = 100
+		const { rows } = await pool.query(
+			`select
+				pgmb.create_message_id(
+					dt => $1::timestamptz,
+					ord => num
+				) AS id
+			from generate_series(1, ${genCount}) AS t(num) ORDER BY num`,
+			[new Date().toJSON()]
+		)
+		expect(rows.length).toBe(genCount)
+		const sorted = [...rows].sort((a, b) => a.id.localeCompare(b.id))
+		expect(sorted).toEqual(rows)
+		const rowSet = new Set<string>(rows.map(r => r.id))
+		expect(rowSet.size).toBe(genCount)
+	})
+
+	it('should correctly get the message ID date', async() => {
 		const dt = new Date('2023-10-01T00:00:00Z')
 		const { rows: [{ id }] } = await pool.query(
 			'SELECT pgmb.create_message_id($1::timestamptz) AS id', [dt.toJSON()]
@@ -177,7 +195,7 @@ describe('PGMB SQL Tests', () => {
 		expect(rowCount).toBe(0)
 	})
 
-	it.concurrent('should block a message when a consumer has read it', async() => {
+	it('should block a message when a consumer has read it', async() => {
 		const queueName = createQueueName()
 		const rowsToRead = 3
 
@@ -390,18 +408,20 @@ describe('PGMB SQL Tests', () => {
 	})
 
 	testWithRollback('should create an exchange & bind queue', async client => {
-		const queueName = createQueueName()
+		const queueNames = Array.from({ length: 2 }, createQueueName)
 		const exchangeName = createExchangeName()
 
 		await client.query('SELECT pgmb.assert_exchange($1)', [exchangeName])
-		await client.query('SELECT pgmb.assert_queue($1)', [queueName])
-		await client.query(
-			'SELECT pgmb.bind_queue($1, $2)', [queueName, exchangeName]
-		)
-		// bind again to ensure it is not added again
-		await client.query(
-			'SELECT pgmb.bind_queue($1, $2)', [queueName, exchangeName]
-		)
+		for(const queueName of queueNames) {
+			await client.query('SELECT pgmb.assert_queue($1)', [queueName])
+			await client.query(
+				'SELECT pgmb.bind_queue($1, $2)', [queueName, exchangeName]
+			)
+			// bind again to ensure it is not added again
+			await client.query(
+				'SELECT pgmb.bind_queue($1, $2)', [queueName, exchangeName]
+			)
+		}
 
 		const { rows } = await client.query(
 			'SELECT * FROM pgmb.exchanges WHERE name = $1', [exchangeName]
@@ -409,11 +429,11 @@ describe('PGMB SQL Tests', () => {
 
 		expect(rows.length).toBe(1)
 		expect(rows[0].name).toBe(exchangeName)
-		expect(rows[0]['queues']).toEqual([queueName])
+		expect(rows[0]['queues']).toEqual(queueNames)
 	})
 
 	testWithRollback('should publish to an exchange', async client => {
-		const queues = [...Array.from({ length: 2 }, createQueueName)]
+		const queues = Array.from({ length: 2 }, createQueueName)
 		// nothing should be published to this queue
 		const controlQueue = createQueueName()
 		const exchangeName = createExchangeName()
@@ -435,31 +455,36 @@ describe('PGMB SQL Tests', () => {
 
 		await client.query('SELECT pgmb.assert_queue($1)', [controlQueue])
 
-		const msg: PgPublishMsg = {
-			exchange: exchangeName,
-			message: randomBytes(256),
-			headers: { foo: 'bar' },
-			consumeAt: new Date(Date.now() - 500),
-		}
-		const [sql, params] = serialisePgMsgConstructorsIntoSql([msg], [])
-
-		const { rows } = await client.query(
-			`SELECT pgmb.publish(${sql}) AS id`, params
+		const msgs: PgPublishMsg[] = Array.from(
+			{ length: 50 }, (_, i): PgPublishMsg => ({
+				exchange: exchangeName,
+				message: randomBytes(256),
+				headers: { foo: 'bar', msgId: i },
+				consumeAt: new Date(Date.now() - 500),
+			})
 		)
-		expect(rows.length).toBe(queues.length)
+		const [sql, params] = serialisePgMsgConstructorsIntoSql(msgs, [])
+		const { rows } = await client
+			.query(`SELECT pgmb.publish(${sql}) AS id`, params)
+		expect(rows).toHaveLength(msgs.length)
 
 		for(const queueName of queues) {
 			const { rows: queueRows } = await client.query(
 				'SELECT * FROM pgmb.read_from_queue($1, 100)', [queueName]
 			)
-			expect(queueRows.length).toBe(1)
-			expect(queueRows[0].message).toEqual(msg.message)
-			expect(queueRows[0].headers).toMatchObject({
-				...msg.headers,
-				queueName,
-				// the exchange fanout will add the exchange name
-				exchange: exchangeName,
-			})
+			expect(queueRows.length).toBe(msgs.length)
+			for(const [i, msg] of queueRows.entries()) {
+				expect(queueRows[i].message).toEqual(msg.message)
+				expect(queueRows[i].headers).toMatchObject({
+					...msg.headers,
+					// queue name added from the default headers configured
+					// in the queue
+					queueName,
+					// the exchange fanout will add the exchange name
+					exchange: exchangeName,
+				})
+				expect(queueRows[i].id).toBe(rows[i].id)
+			}
 		}
 
 		// ensure the control queue is empty
@@ -469,37 +494,61 @@ describe('PGMB SQL Tests', () => {
 		expect(controlRows.length).toBe(0)
 	})
 
-	testWithRollback('should publish to multiple exchanges', async client => {
-		const pairs = [...Array.from({ length: 2 }, () => (
-			{ exchange: createExchangeName(), queue: createQueueName() }
-		))]
+	testWithRollback('should publish to multiple exchanges with various number of bindings', async client => {
+		const queues = Array.from({ length: 3 }, createQueueName)
+		const pairs = [
+			{ exchange: createExchangeName(), queues: [queues[0]] },
+			{ exchange: createExchangeName(), queues: [] },
+			{
+				exchange: createExchangeName(),
+				queues: [queues[1], queues[2]]
+			},
+			{
+				exchange: createExchangeName(),
+				queues: queues
+			},
+		]
 
-		for(const { exchange, queue } of pairs) {
+		for(const { exchange, queues } of pairs) {
 			await client.query('SELECT pgmb.assert_exchange($1)', [exchange])
-			await client.query('SELECT pgmb.assert_queue($1)', [queue])
-			await client.query(
-				'SELECT pgmb.bind_queue($1, $2)', [queue, exchange]
-			)
+			for(const queue of queues) {
+				await client.query('SELECT pgmb.assert_queue($1)', [queue])
+				// ensure the queue is bound to the exchange
+				await client.query(
+					'SELECT pgmb.bind_queue($1, $2)', [queue, exchange]
+				)
+			}
 		}
 
-		const msgs = pairs.map(({ exchange }, i): PgPublishMsg => ({
-			exchange,
-			message: randomBytes(16),
-			headers: { customkey: i },
-		}))
+		const msgs = pairs.map(({ exchange }, i): PgPublishMsg => (
+			{
+				exchange,
+				message: randomBytes(16),
+				headers: { customkey: i },
+			}
+		))
 		const [sql, params] = serialisePgMsgConstructorsIntoSql(msgs, [])
 		const { rows } = await client
 			.query(`SELECT pgmb.publish(${sql}) AS id`, params)
 		expect(rows.length).toBe(pairs.length)
-		for(const [i, { exchange, queue }] of pairs.entries()) {
-			const { rows: queueRows } = await client.query(
-				'SELECT * FROM pgmb.read_from_queue($1, 100)', [queue]
-			)
-			expect(queueRows.length).toBe(1)
-			expect(queueRows[0].message).toEqual(msgs[i].message)
-			// ensure headers were correctly merged
-			expect(queueRows[0].headers)
-				.toMatchObject({ ...msgs[i].headers, exchange })
+		for(const [i, { exchange, queues }] of pairs.entries()) {
+			if(!queues.length) {
+				expect(rows[i].id).toBeNull()
+				continue
+			}
+
+			expect(rows[i].id).toBeTruthy()
+			for(const queue of queues) {
+				const { rows: queueRows } = await client.query(
+					'SELECT * FROM pgmb.read_from_queue($1, 100)', [queue]
+				)
+				const queuedMsg = queueRows.find(r => r.id === rows[i].id)
+				expect(queuedMsg).toBeDefined()
+				expect(queuedMsg.headers['exchange']).toBe(exchange)
+				// ensure the message returned in "rows" is the same as the one
+				// that was sent
+				expect(queuedMsg.message).toEqual(msgs[i].message)
+			}
 		}
 	})
 
@@ -541,7 +590,7 @@ describe('PGMB SQL Tests', () => {
 		name: string,
 		fn: (client: PoolClient) => Promise<void>
 	) {
-		return it.concurrent(name, async() => {
+		return it(name, async() => {
 			const client = await pool.connect()
 			await client.query('BEGIN')
 			try {

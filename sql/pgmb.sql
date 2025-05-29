@@ -91,7 +91,7 @@ CREATE OR REPLACE FUNCTION pgmb.create_queue_table(
 BEGIN
 	-- create the live_messages table
 	EXECUTE 'CREATE TABLE ' || quote_ident(schema_name) || '.live_messages (
-		id VARCHAR(22) DEFAULT pgmb.create_message_id() PRIMARY KEY,
+		id VARCHAR(22) PRIMARY KEY,
 		message BYTEA NOT NULL,
 		headers JSONB NOT NULL DEFAULT ''{}''::JSONB,
 		created_at TIMESTAMPTZ DEFAULT NOW()
@@ -222,13 +222,10 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- fn to create a random bigint. Used for message IDs
-CREATE OR REPLACE FUNCTION pgmb.create_random_bigint(
-	additive DOUBLE PRECISION DEFAULT 0
-)
+CREATE OR REPLACE FUNCTION pgmb.create_random_bigint()
 RETURNS BIGINT AS $$
 BEGIN
-	-- create a random bigint
-	RETURN floor((random() + additive) * 10000000000000)::bigint;
+	RETURN (random() * 10000000)::BIGINT;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 
@@ -236,6 +233,7 @@ $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 -- + a random number
 CREATE OR REPLACE FUNCTION pgmb.create_message_id(
 	dt timestamptz DEFAULT clock_timestamp(),
+	ord int DEFAULT 0,
 	rand bigint DEFAULT pgmb.create_random_bigint()
 )
 RETURNS VARCHAR(22) AS $$
@@ -245,7 +243,8 @@ BEGIN
 	-- ensure the string is always, at most 32 bytes
 	RETURN substr(
 		'pm'
-		|| substr(lpad(to_hex((extract(epoch from dt) * 1000000)::bigint), 14, '0'), 1, 14)
+		|| substr(lpad(to_hex((extract(epoch from dt) * 1000000)::bigint), 13, '0'), 1, 13)
+		|| lpad(to_hex(ord), 4, '0')
 		|| rpad(to_hex(rand), 8, '0'),
 		1,
 		22
@@ -253,14 +252,27 @@ BEGIN
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 
+CREATE OR REPLACE FUNCTION pgmb.get_max_message_id(
+	dt timestamptz DEFAULT clock_timestamp()
+)
+RETURNS VARCHAR(22) AS $$
+BEGIN
+	RETURN pgmb.create_message_id(
+		dt,
+		ord := 16384,  -- max ordinality for a message
+		rand := 999999999999  -- max randomness
+	);
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
+
 -- fn to extract the date from a message ID.
 CREATE OR REPLACE FUNCTION pgmb.extract_date_from_message_id(
-	message_id VARCHAR(64)
+	message_id VARCHAR(22)
 )
 RETURNS TIMESTAMPTZ AS $$
 BEGIN
 	-- convert it to a timestamp
-	RETURN to_timestamp(('0x' || substr(message_id, 3, 14))::numeric / 1000000);
+	RETURN to_timestamp(('0x' || substr(message_id, 3, 13))::numeric / 1000000);
 END
 $$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE;
 
@@ -270,27 +282,22 @@ CREATE OR REPLACE FUNCTION pgmb.send(
 	messages pgmb.enqueue_msg[]
 )
 RETURNS SETOF VARCHAR(22) AS $$
-DECLARE
-	msg_records pgmb.msg_record[];
 BEGIN
 	-- create the ID for each message, and then send to the internal _send fn
-	-- Generate IDs for each message
-	msg_records := ARRAY(
+	RETURN QUERY
+	WITH msg_records AS (
 		SELECT (
 			pgmb.create_message_id(
 				COALESCE(m.consume_at, clock_timestamp()),
-				pgmb.create_random_bigint(m.ordinality)
+				m.ordinality::int
 			),
 			m.message,
 			m.headers
-		)::pgmb.msg_record
+		)::pgmb.msg_record AS record
 		FROM unnest(messages) WITH ORDINALITY AS m
-	);
-
-	-- Send the messages using the internal _send function
-	PERFORM pgmb._send(queue_name, msg_records);
-	-- Return the IDs of the messages sent
-	RETURN QUERY SELECT id FROM unnest(msg_records);
+	)
+	SELECT pgmb._send(queue_name, ARRAY_AGG(m.record)::pgmb.msg_record[])
+	FROM msg_records m;
 END
 $$ LANGUAGE plpgsql;
 
@@ -299,7 +306,7 @@ CREATE OR REPLACE FUNCTION pgmb._send(
 	queue_name VARCHAR(64),
 	messages pgmb.msg_record[]
 )
-RETURNS VOID AS $$
+RETURNS SETOF VARCHAR(22) AS $$
 DECLARE
 	-- check if the queue already exists
 	schema_name VARCHAR(64);
@@ -320,6 +327,7 @@ BEGIN
 	-- ordinality of the array to ensure that each message is inserted in the same
 	-- order as it was sent. This is important for the consumer to process the
 	-- messages in the same order as they were sent.
+	RETURN QUERY
 	EXECUTE 'INSERT INTO '
 		|| quote_ident(schema_name)
 		|| '.live_messages (id, message, headers)
@@ -327,7 +335,8 @@ BEGIN
 		id,
 		message,
 		COALESCE($1, ''{}''::JSONB) || COALESCE(headers, ''{}''::JSONB)
-	FROM unnest($2)' USING default_headers, messages;
+	FROM unnest($2)
+	RETURNING id' USING default_headers, messages;
 END
 $$ LANGUAGE plpgsql;
 
@@ -431,7 +440,7 @@ BEGIN
 	-- read the messages from the queue
 	RETURN QUERY EXECUTE 'SELECT id, message, headers
 		FROM ' || quote_ident(schema_name) || '.live_messages
-		WHERE id <= pgmb.create_message_id(rand=>999999999999)
+		WHERE id <= pgmb.get_max_message_id()
 		ORDER BY id ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1'
@@ -442,40 +451,62 @@ $$ LANGUAGE plpgsql;
 -- fn to publish a message to 1 or more exchanges.
 -- Will find all queues subscribed to it and insert the message into
 -- each of them.
+-- Each queue will receive a copy of the message, with the exchange name
+-- added to the headers. The ID of the message will remain the same
+-- across all queues.
+-- @returns ID of the published message, if sent to any queues -- NULL at the
+--  index of the messages that were not sent to any queues.
 CREATE OR REPLACE FUNCTION pgmb.publish(
 	messages pgmb.publish_msg[]
 )
 RETURNS SETOF VARCHAR(22) AS $$
-DECLARE
-	update_count INTEGER;
 BEGIN
-	-- Insert the message into all subscribed queues and return all message IDs
+	-- Create message IDs for each message, then we'll send them to the individual
+	-- queues. The ID will be the same for all queues, but the headers may vary
+	-- across queues.
 	RETURN QUERY
-	WITH expanded_msgs AS (
+	WITH msg_records AS (
 		SELECT
-			unnest(e.queues) AS queue_name,
-			e.name as exchange_name,
-			m.message,
-			m.headers,
-			m.consume_at
-		FROM pgmb.exchanges e
-		INNER JOIN unnest(messages) AS m ON m.exchange = e.name
+			pgmb.create_message_id(
+				COALESCE(consume_at, clock_timestamp()),
+				ordinality::int
+			) AS id,
+			message,
+			JSONB_SET(
+				COALESCE(headers, '{}'::JSONB),
+				'{exchange}',
+				TO_JSONB(exchange)
+			) as headers,
+			exchange,
+			ordinality
+		FROM unnest(messages) WITH ORDINALITY
+	),
+	sends AS (
+		SELECT
+			pgmb._send(
+				q.queue_name,
+				ARRAY_AGG(
+					(m.id, m.message, m.headers)::pgmb.msg_record ORDER BY m.ordinality
+				)
+			) as id
+		FROM msg_records m,
+		LATERAL (
+			SELECT DISTINCT name, unnest(queues) AS queue_name
+			FROM pgmb.exchanges e
+			WHERE e.name = m.exchange
+		) q
+		GROUP BY q.queue_name
 	)
+	-- we'll select an aggregate of "sends", to ensure that each "send" call
+	-- is executed. If this is not done, PG may optimize the query
+	-- and not execute the "sends" CTE at all, resulting in no messages being sent.
+	-- So, this aggregate call ensures PG does not optimize it away.
 	SELECT
-		pgmb.send(
-			m.queue_name,
-			ARRAY_AGG(
-				(
-					m.message,
-					JSONB_SET(
-						COALESCE(m.headers, '{}'::JSONB), '{exchange}', TO_JSONB(m.exchange_name)
-					),
-					m.consume_at
-				)::pgmb.enqueue_msg
-			)
-		)
-	FROM expanded_msgs m
-	GROUP BY m.queue_name;
+		CASE WHEN count(*) FILTER (WHERE sends.id IS NOT NULL) > 0 THEN m.id END
+	FROM msg_records m
+	LEFT JOIN sends ON sends.id = m.id
+	GROUP BY m.id, m.ordinality
+	ORDER BY m.ordinality;
 END
 $$ LANGUAGE plpgsql;
 
@@ -503,7 +534,7 @@ BEGIN
 				|| '0 AS consumable_length,'
 			ELSE
 				'count(*)::int AS total_length,'
-				|| '(count(*) FILTER (WHERE id <= pgmb.create_message_id(rand=>999999999999)))::int AS consumable_length,'
+				|| '(count(*) FILTER (WHERE id <= pgmb.get_max_message_id()))::int AS consumable_length,'
 			END) || '
 		(clock_timestamp() - pgmb.extract_date_from_message_id(max(id))) AS newest_msg_age_sec,
 		(clock_timestamp() - pgmb.extract_date_from_message_id(min(id))) AS oldest_msg_age_sec
