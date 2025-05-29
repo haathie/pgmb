@@ -271,3 +271,21 @@ DROP SCHEMA pgmb CASCADE;
 
 All message IDs are generated using the `pgmb.create_message_id` function. Each ID is a sequentially generated ID that is built from the consumption time and some randomness, prefixed by `pm`. I.e. `pm<13 hex digits of consumption ts><7 hex digits of random>`.
 When sending/publishing messages in bulk, the `send` and `publish` functions will internally create a "starting" random number, and then increment it for each message sent/published in the batch -- this ensures that the message IDs are all unique, and we retain the order of messages in the batch.
+
+## Upgrading PGMB
+
+TODO
+
+### Generating Upgrades
+
+1. Add the old SQL file to the `sql/` directory, e.g. `sql/pgmb_0.1.0.sql` (let's assume current version is `0.1.1`).
+2. Download [APGDiff](https://www.apgdiff.com/download.php)
+3. Run the following command to generate the upgrade SQL file:
+   ```sh
+   java -jar apgdiff-2.4.jar sql/pgmb_0.1.0.sql sql/pgmb.sql > sql/upgrade--0.1.0--0.1.1.sql
+   ```
+4. Review & push the generated file to the repository. 
+  - Reinstall `pgmb` with the old version (`psql <pg-url> -f sql/pgmb_0.1.0.sql -1`)
+  - Create some queues & exchanges to test the upgrade, possibly run the benchmark scripts
+  - Simultaneously, run the upgrade SQL file (`psql <pg-url> -f sql/upgrade--0.1.0--0.1.1.sql -1`)
+  - Run tests to verify the upgrade works as expected (`npm test`).
