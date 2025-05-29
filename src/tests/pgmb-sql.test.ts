@@ -24,9 +24,13 @@ describe('PGMB SQL Tests', () => {
 		const totalRows = await Promise.all(
 			Array.from({ length: parallelCount }, async() => {
 				const { rows } = await pool.query(
-					`select distinct
-						pgmb.create_message_id(ord=>num) AS id
-					from generate_series(1, ${genCount}) AS t(num)`
+					`WITH rand_data AS (
+						SELECT pgmb.create_random_bigint() AS rand
+					)
+					SELECT
+						pgmb.create_message_id(rand := rand + additive) AS id
+					from generate_series(1, ${genCount}) AS t(additive)
+					LEFT JOIN rand_data ON TRUE`
 				)
 				return rows
 			})
@@ -51,7 +55,7 @@ describe('PGMB SQL Tests', () => {
 			`select
 				pgmb.create_message_id(
 					dt => $1::timestamptz,
-					ord => num
+					rand => num
 				) AS id
 			from generate_series(1, ${genCount}) AS t(num) ORDER BY num`,
 			[new Date().toJSON()]

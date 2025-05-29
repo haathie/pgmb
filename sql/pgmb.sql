@@ -225,7 +225,11 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION pgmb.create_random_bigint()
 RETURNS BIGINT AS $$
 BEGIN
-	RETURN (random() * 10000000)::BIGINT;
+	-- the message ID allows for 7 hex-bytes of randomness,
+	-- i.e. 28 bits of randomness. Thus, the max we allow is 2^28/2
+	-- i.e. 0xffffff8, which allows for batch inserts to increment the
+	-- randomness for up to another 2^28/2 messages (more than enough)
+	RETURN (random() * 0xffffff8)::BIGINT;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 
@@ -233,7 +237,6 @@ $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 -- + a random number
 CREATE OR REPLACE FUNCTION pgmb.create_message_id(
 	dt timestamptz DEFAULT clock_timestamp(),
-	ord int DEFAULT 0,
 	rand bigint DEFAULT pgmb.create_random_bigint()
 )
 RETURNS VARCHAR(22) AS $$
@@ -244,8 +247,7 @@ BEGIN
 	RETURN substr(
 		'pm'
 		|| substr(lpad(to_hex((extract(epoch from dt) * 1000000)::bigint), 13, '0'), 1, 13)
-		|| lpad(to_hex(ord), 4, '0')
-		|| rpad(to_hex(rand), 8, '0'),
+		|| lpad(to_hex(rand), 7, '0'),
 		1,
 		22
 	);
@@ -259,7 +261,6 @@ RETURNS VARCHAR(22) AS $$
 BEGIN
 	RETURN pgmb.create_message_id(
 		dt,
-		ord := 16384,  -- max ordinality for a message
 		rand := 999999999999  -- max randomness
 	);
 END
@@ -282,6 +283,10 @@ CREATE OR REPLACE FUNCTION pgmb.send(
 	messages pgmb.enqueue_msg[]
 )
 RETURNS SETOF VARCHAR(22) AS $$
+DECLARE
+	-- we'll have a starting random number, and each successive message ID's
+	-- random component will be this number + the ordinality of the message.
+	start_rand constant BIGINT = pgmb.create_random_bigint();
 BEGIN
 	-- create the ID for each message, and then send to the internal _send fn
 	RETURN QUERY
@@ -289,7 +294,7 @@ BEGIN
 		SELECT (
 			pgmb.create_message_id(
 				COALESCE(m.consume_at, clock_timestamp()),
-				m.ordinality::int
+				start_rand + m.ordinality
 			),
 			m.message,
 			m.headers
@@ -460,6 +465,8 @@ CREATE OR REPLACE FUNCTION pgmb.publish(
 	messages pgmb.publish_msg[]
 )
 RETURNS SETOF VARCHAR(22) AS $$
+DECLARE
+	start_rand constant BIGINT = pgmb.create_random_bigint();
 BEGIN
 	-- Create message IDs for each message, then we'll send them to the individual
 	-- queues. The ID will be the same for all queues, but the headers may vary
@@ -469,7 +476,7 @@ BEGIN
 		SELECT
 			pgmb.create_message_id(
 				COALESCE(consume_at, clock_timestamp()),
-				ordinality::int
+				start_rand + ordinality
 			) AS id,
 			message,
 			JSONB_SET(

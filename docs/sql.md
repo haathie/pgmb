@@ -266,3 +266,8 @@ This will remove the `pgmb` schema, and all queue schemas -- thus removing all d
 ```sql
 DROP SCHEMA pgmb CASCADE;
 ```
+
+## ID Generation
+
+All message IDs are generated using the `pgmb.create_message_id` function. Each ID is a sequentially generated ID that is built from the consumption time and some randomness, prefixed by `pm`. I.e. `pm<13 hex digits of consumption ts><7 hex digits of random>`.
+When sending/publishing messages in bulk, the `send` and `publish` functions will internally create a "starting" random number, and then increment it for each message sent/published in the batch -- this ensures that the message IDs are all unique, and we retain the order of messages in the batch.
