@@ -485,9 +485,7 @@ BEGIN
 		SELECT
 			pgmb._send(
 				q.queue_name,
-				ARRAY_AGG(
-					(m.id, m.message, m.headers)::pgmb.msg_record ORDER BY m.ordinality
-				)
+				ARRAY_AGG((m.id, m.message, m.headers)::pgmb.msg_record)
 			) as id
 		FROM msg_records m,
 		LATERAL (
