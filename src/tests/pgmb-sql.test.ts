@@ -496,6 +496,7 @@ describe('PGMB SQL Tests', () => {
 
 	testWithRollback('should publish to multiple exchanges with various number of bindings', async client => {
 		const queues = Array.from({ length: 3 }, createQueueName)
+		const msgsToSend = 2500
 		const pairs = [
 			{ exchange: createExchangeName(), queues: [queues[0]] },
 			{ exchange: createExchangeName(), queues: [] },
@@ -520,34 +521,47 @@ describe('PGMB SQL Tests', () => {
 			}
 		}
 
-		const msgs = pairs.map(({ exchange }, i): PgPublishMsg => (
-			{
-				exchange,
-				message: randomBytes(16),
-				headers: { customkey: i },
-			}
-		))
+		const msgs = Array.from({ length: msgsToSend }, (_, i): PgPublishMsg => ({
+			exchange: chance.pickone(pairs).exchange,
+			message: randomBytes(16),
+			headers: { customkey: i },
+		}))
 		const [sql, params] = serialisePgMsgConstructorsIntoSql(msgs, [])
 		const { rows } = await client
 			.query(`SELECT pgmb.publish(${sql}) AS id`, params)
-		expect(rows.length).toBe(pairs.length)
-		for(const [i, { exchange, queues }] of pairs.entries()) {
-			if(!queues.length) {
+		expect(rows.length).toBe(msgs.length)
+
+		// map of queue to which msgs should've been sent to it
+		const queueMsgMap: Record<string, { id: string, msg: Uint8Array | string }[]> = {}
+		// ensure that we got the messages in the right order,
+		// and NULL was sent back for exchanges that had no queues bound
+		for(const [i, msg] of msgs.entries()) {
+			const exchangeData = pairs.find(p => p.exchange === msg.exchange)
+			if(!exchangeData?.queues.length) {
+				// if there are no queues bound to the exchange, the message
+				// should not be queued
 				expect(rows[i].id).toBeNull()
 				continue
 			}
 
 			expect(rows[i].id).toBeTruthy()
-			for(const queue of queues) {
-				const { rows: queueRows } = await client.query(
-					'SELECT * FROM pgmb.read_from_queue($1, 100)', [queue]
-				)
-				const queuedMsg = queueRows.find(r => r.id === rows[i].id)
-				expect(queuedMsg).toBeDefined()
-				expect(queuedMsg.headers['exchange']).toBe(exchange)
-				// ensure the message returned in "rows" is the same as the one
-				// that was sent
-				expect(queuedMsg.message).toEqual(msgs[i].message)
+			for(const queue of exchangeData.queues) {
+				queueMsgMap[queue] ||= []
+				queueMsgMap[queue].push({ id: rows[i].id, msg: msg.message })
+			}
+		}
+
+		for(const queue of queues) {
+			const msgIds = queueMsgMap[queue] || []
+			expect(msgIds.length).toBeGreaterThan(0)
+
+			const { rows: queueRows } = await client.query(
+				'SELECT * FROM pgmb.read_from_queue($1, $2)', [queue, msgsToSend]
+			)
+			expect(queueRows.length).toBe(msgIds.length)
+			for(const [i, { id, message }] of queueRows.entries()) {
+				expect(id).toBe(msgIds[i].id)
+				expect(message).toEqual(msgIds[i].msg)
 			}
 		}
 	})
