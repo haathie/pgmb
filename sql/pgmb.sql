@@ -1,4 +1,4 @@
-CREATE SCHEMA IF NOT EXISTS pgmb;
+CREATE SCHEMA pgmb;
 
 -- type to create a message that's sent to a queue
 CREATE TYPE pgmb.enqueue_msg AS (
