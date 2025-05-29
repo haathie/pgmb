@@ -1,5 +1,7 @@
 # script to install pgmb, if not already installed
 
+set -e
+
 PG_URI=$1
 if [ -z "$PG_URI" ]; then
 	echo "Usage: $0 <postgres_uri>"
