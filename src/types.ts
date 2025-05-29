@@ -189,8 +189,10 @@ export type PGMBAssertExchangeOpts<T = string> = {
 
 export type PGSentMessage = { id: string }
 
+export type PGPublishedMessage = { id: string | null }
+
 export type PGMBMakeEventBatcherOpts<M> = {
-	publish(...msgs: PgPublishMsg<M>[]): Promise<void> | void
+	publish(...msgs: PgPublishMsg<M>[]): Promise<PGPublishedMessage[]>
 
 	logger: Logger
 	/**

@@ -13,6 +13,7 @@ export class PGMBEventBatcher<M> {
 	#flushTimeout: NodeJS.Timeout | undefined
 	#flushTask: Promise<void> | undefined
 	#logger: PGMBMakeEventBatcherOpts<M>['logger']
+	#batch = 0
 
 	constructor({
 		publish,
@@ -63,11 +64,18 @@ export class PGMBEventBatcher<M> {
 	}
 
 	async #publishBatch({ messages }: Batch<M>) {
+		const batch = ++this.#batch
 		try {
-			await this.#publish(...messages)
+			const ids = await this.#publish(...messages)
+			for(const [i, { id }] of ids.entries()) {
+				this.#logger.info(
+					{ batch, id, msg: messages[i] },
+					'published message'
+				)
+			}
 		} catch(err) {
 			this.#logger.error(
-				{ err, msgs: messages },
+				{ batch, err, msgs: messages },
 				'failed to publish messages'
 			)
 		}

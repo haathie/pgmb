@@ -1,6 +1,6 @@
 import { Pool, type PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
-import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
+import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PGPublishedMessage, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
 import { serialisePgMsgConstructorsIntoSql } from '../utils'
 import { PGMBEventBatcher } from './batcher'
 import { PGMBConsumer } from './consumer'
@@ -191,7 +191,7 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		)
 		const { rows } = await this.#pool
 			.query(`SELECT pgmb.publish(${arraySql}) AS id`, params)
-		return rows as PGSentMessage[]
+		return rows as PGPublishedMessage[]
 	}
 
 	/**
