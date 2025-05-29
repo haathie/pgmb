@@ -11,7 +11,7 @@ const chance = new Chance()
 // unit tests
 describe('PGMB SQL Tests', () => {
 
-	const pool = new Pool({ connectionString: process.env.PG_URI, max: 10 })
+	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
 
 	afterAll(async() => {
 		await pool.end()
@@ -19,7 +19,7 @@ describe('PGMB SQL Tests', () => {
 
 	it('should create unique message IDs', async() => {
 		const genCount = 5000
-		const parallelCount = 10
+		const parallelCount = 20
 		const totalSet = new Set<string>()
 		const totalRows = await Promise.all(
 			Array.from({ length: parallelCount }, async() => {
