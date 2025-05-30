@@ -3,7 +3,7 @@ import { Chance } from 'chance'
 import { randomBytes } from 'crypto'
 import { Pool, PoolClient } from 'pg'
 import { PgEnqueueMsg, PgPublishMsg } from '../types'
-import { delay, serialisePgMsgConstructorsIntoSql } from '../utils'
+import { delay, getDateFromMessageId, serialisePgMsgConstructorsIntoSql } from '../utils'
 import { getQueueSchemaName, isQueueLogged, send } from './utils'
 
 const chance = new Chance()
@@ -78,6 +78,9 @@ describe('PGMB SQL Tests', () => {
 			[id]
 		)
 		expect(date).toEqual(dt)
+
+		const dateJs = getDateFromMessageId(id)
+		expect(dateJs).toEqual(dt)
 	})
 
 	testWithRollback('should create a logged queue', async client => {
