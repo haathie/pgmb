@@ -69,7 +69,7 @@ export class PGMBEventBatcher<M> {
 			const ids = await this.#publish(...messages)
 			for(const [i, { id }] of ids.entries()) {
 				this.#logger.info(
-					{ batch, id, msg: messages[i] },
+					{ batch, id, message: messages[i] },
 					'published message'
 				)
 			}
