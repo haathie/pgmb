@@ -41,6 +41,7 @@ describe('Client Tests', () => {
 		max: 1,
 		idleTimeoutMillis: IDLE_TIMEOUT_MS
 	})
+	const spiedOnConnect = jest.spyOn(pool, 'connect')
 	const defaultQueueName = 'test_queue_1'
 
 	let opts: ClientOpts
@@ -75,6 +76,7 @@ describe('Client Tests', () => {
 		await client.listen()
 
 		ON_MESSAGE_MOCK.mockClear()
+		spiedOnConnect.mockClear()
 	})
 
 	afterEach(async() => {
@@ -426,5 +428,24 @@ describe('Client Tests', () => {
 
 			expect(ON_MESSAGE_MOCK).toHaveBeenCalledTimes(1)
 		})
+	})
+
+	it('should retry till listen succeeds', async() => {
+		await client.close()
+		client = new PGMBClient(opts)
+
+		spiedOnConnect.mockImplementationOnce(() => {
+			throw new Error('Connection failed')
+		})
+
+		await client.listen()
+		// ensure the "listen" method actually used the pool's connect method
+		// -- otherwise the test makes no sense.
+		expect(spiedOnConnect).toHaveBeenCalled()
+
+		await client.send(defaultQueueName, { message: { msg: 'retry test' } })
+		while(!ON_MESSAGE_MOCK.mock.calls.length) {
+			await delay(100)
+		}
 	})
 })

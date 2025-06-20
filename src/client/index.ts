@@ -1,7 +1,7 @@
 import { Pool, type PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
 import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PGPublishedMessage, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
-import { serialisePgMsgConstructorsIntoSql } from '../utils'
+import { delay, serialisePgMsgConstructorsIntoSql } from '../utils'
 import { PGMBEventBatcher } from './batcher'
 import { PGMBConsumer } from './consumer'
 import { PGMBListener } from './listener'
@@ -44,31 +44,31 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 		this.defaultBatcher = this.createBatcher()
 	}
 
-	async listen() {
-		await this.#listener.close()
+	/**
+	 * Start the consumer listeners for all queues.
+	 * @retries - The number of times to retry listening to the queues if it fails.
+	 * 	Defaults to -1, which means it will retry indefinitely.
+	 * 	If set to 0, it will not retry.
+	 */
+	async listen(retries = -1) {
+		let retriesLeft = retries
+		for(;;) {
+			try {
+				return await this.#listen()
+			} catch(err) {
+				const willRetry = retries < 0 || retriesLeft > 0
+				this.#logger.error(
+					{ err, willRetry, retriesLeft: retriesLeft > 0 ? retriesLeft : '∞' },
+					'failed to listen to queues'
+				)
+				if(!willRetry) {
+					throw err
+				}
 
-		const queueOpts = this.#consumers.map(s => s.getOpts())
-		if(!queueOpts.length) {
-			return
-		}
-
-		const client = await this.#pool.connect()
-		try {
-			await client.query('BEGIN')
-			for(const q of queueOpts) {
-				await this.assertQueue(q, client)
+				retriesLeft--
+				await delay(PGMBListener.RECONNECT_DELAY_MS)
 			}
-
-			await client.query('COMMIT')
-		} catch(err) {
-			await client.query('ROLLBACK')
-			throw err
-		} finally {
-			client.release()
 		}
-
-		await this.#listener.subscribe(...queueOpts.map(q => String(q.name)))
-		this.#logger.info({ queues: queueOpts.length }, 'listening to queues')
 	}
 
 	/**
@@ -203,6 +203,33 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 			logger: this.#logger.child({ batcher: true }),
 			...this.#batcherOpts
 		})
+	}
+
+	async #listen() {
+		await this.#listener.close()
+
+		const queueOpts = this.#consumers.map(s => s.getOpts())
+		if(!queueOpts.length) {
+			return
+		}
+
+		const client = await this.#pool.connect()
+		try {
+			await client.query('BEGIN')
+			for(const q of queueOpts) {
+				await this.assertQueue(q, client)
+			}
+
+			await client.query('COMMIT')
+		} catch(err) {
+			await client.query('ROLLBACK')
+			throw err
+		} finally {
+			client.release()
+		}
+
+		await this.#listener.subscribe(...queueOpts.map(q => String(q.name)))
+		this.#logger.info({ queues: queueOpts.length }, 'listening to queues')
 	}
 
 	#onNotification = (notif: PGMBNotification) => {

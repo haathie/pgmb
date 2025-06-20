@@ -115,8 +115,11 @@ const pgmb = new PGMBClient({
   ]
 })
 
-// start listening for messages
+// start listening for messages. Will continue trying to establish a connection
+// until successful.
 await pgmb.listen()
+// set retriesLeft=3 to only retry 3 times before giving up
+await pgmb.listen(3)
 ```
 
 Upon the successful call to listen, the queues will be asserted with any specified
