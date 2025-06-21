@@ -34,10 +34,12 @@ export class PGMBListener {
 		this.#subscribedQueues = queueNames
 		this.#client = await this.#assertConnection()
 
-		await this.#client.query('UNLISTEN *')
-		for(const queueName of queueNames) {
-			await this.#client.query(`LISTEN ${getChannelNameForQueue(queueName)}`)
-		}
+		const queueListenStmts = queueNames
+			.map(queueName => `LISTEN ${getChannelNameForQueue(queueName)}`)
+			.join(';')
+		await this.#client.query(
+			`BEGIN; UNLISTEN *; ${queueListenStmts}; END;`
+		)
 
 		// release the client back to the pool -- so it can be used for
 		// queries
