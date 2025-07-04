@@ -86,7 +86,8 @@ export class PGMBListener {
 			return
 		}
 
-		this.logger.error({ err }, 'listener error, will reconnect...')
+		const level = err.message === CLIENT_REMOVED_ERR ? 'debug' : 'warn'
+		this.logger[level]({ err }, 'listener error, will reconnect...')
 		this.#client = undefined
 		this.#reconnectAttempt ++
 
