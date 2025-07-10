@@ -44,7 +44,7 @@
     "postgres-message-broker"
   ],
   "author": "Adhiraj Singh",
-  "license": "ISC",
+  "license": "MIT",
   "peerDependencies": {
     "pg": "^8.0.0"
   },

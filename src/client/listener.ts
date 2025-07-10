@@ -127,7 +127,7 @@ export class PGMBListener {
 				}
 
 				this.#reconnectAttempt = 0
-				this.logger.info('connected to PG')
+				this.logger.trace('connected to PG')
 				this.onNotification({ type: 'connection' })
 				return this.#client
 			} catch(err) {
