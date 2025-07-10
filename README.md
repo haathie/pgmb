@@ -56,6 +56,13 @@ Note: I'm not super sure why the PGMQ benchmarks are much lower, but I suspect i
 
 The NodeJS client is a straightforward wrapper around the SQL functions with optional type-safety. It uses the `pg` library to connect to Postgres, and provides a simple API for sending and consuming messages.
 
+Before you go ahead and use the client, please ensure that `pgmb` is installed in your postgres database.
+```sh
+psql postgres://<user>:<pass>@<host>:<port>/<db> -f sql/pgmb.sql -1
+```
+
+Note: `psql` must be installed on the machine executing this command.
+
 ### Install
 
 1. Make sure you've authenticated to GitHub packages, if not -- you can do so by running:
