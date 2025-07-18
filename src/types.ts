@@ -192,6 +192,13 @@ export type PGSentMessage = { id: string }
 export type PGPublishedMessage = { id: string | null }
 
 export type PGMBMakeEventBatcherOpts<M> = {
+	/**
+	 * Whether a particular published message should be logged.
+	 * By default, all messages are logged -- in case of certain
+	 * failures, the logs can be used to replay the messages.
+	 */
+	shouldLog?(msg: PgPublishMsg<M>): boolean
+
 	publish(...msgs: PgPublishMsg<M>[]): Promise<PGPublishedMessage[]>
 
 	logger: Logger

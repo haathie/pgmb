@@ -13,9 +13,11 @@ export class PGMBEventBatcher<M> {
 	#flushTimeout: NodeJS.Timeout | undefined
 	#flushTask: Promise<void> | undefined
 	#logger: PGMBMakeEventBatcherOpts<M>['logger']
+	#shouldLog: PGMBMakeEventBatcherOpts<M>['shouldLog'] | undefined
 	#batch = 0
 
 	constructor({
+		shouldLog,
 		publish,
 		flushIntervalMs,
 		maxBatchSize = 2500,
@@ -25,6 +27,7 @@ export class PGMBEventBatcher<M> {
 		this.#flushIntervalMs = flushIntervalMs
 		this.#maxBatchSize = maxBatchSize
 		this.#logger = logger
+		this.#shouldLog = shouldLog
 	}
 
 	async close() {
@@ -68,6 +71,10 @@ export class PGMBEventBatcher<M> {
 		try {
 			const ids = await this.#publish(...messages)
 			for(const [i, { id }] of ids.entries()) {
+				if(this.#shouldLog && !this.#shouldLog(messages[i])) {
+					continue
+				}
+
 				this.#logger.info(
 					{ batch, id, message: messages[i] },
 					'published message'
