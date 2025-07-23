@@ -306,11 +306,14 @@ describe('PGMB SQL Tests', () => {
 			[queueName, JSON.stringify({ retriesLeftS })]
 		)
 
-		const msgsCreated = await send(client, queueName, [
+		const msgsToSend: PgEnqueueMsg[] = [
 			{ message: 'data_1' },
 			{ message: 'data_2' },
-		])
+		]
+
+		const msgsCreated = await send(client, queueName, msgsToSend)
 		const nackId = msgsCreated.at(-1)?.id
+		const nackMsg = msgsToSend.at(-1)?.message
 		await client.query(
 			'SELECT pgmb.ack_msgs($1, false, $2::varchar[])',
 			[queueName, `{${nackId}}`]
@@ -336,6 +339,8 @@ describe('PGMB SQL Tests', () => {
 				originalMessageId: nackId,
 				tries: expect.any(Number),
 			})
+			expect(nackRow.message)
+				.toEqual(Buffer.from(nackMsg as string))
 			await client.query(
 				'SELECT pgmb.ack_msgs($1, false, $2::varchar[])',
 				[queueName, `{${nackRow.id}}`]
