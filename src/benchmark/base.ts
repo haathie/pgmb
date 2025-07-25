@@ -97,7 +97,7 @@ export async function benchmarkPublishing({
 			await pub.publish(queueName, msgs)
 			totalPublished += count
 			published += count
-			logger.info({ client: i, count, totalPublished }, 'published message')
+			logger.debug({ client: i, count, totalPublished }, 'published message')
 		}
 	}))
 

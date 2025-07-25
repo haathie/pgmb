@@ -47,7 +47,9 @@ if(!workerData) {
 		throw new Error('Please specify --client <client>')
 	}
 
-	const method = getArg('consume') ? 'consume' : getArg('publish') ? 'publish' : null
+	const method = getArg('consume')
+		? 'consume'
+		: (getArg('publish') ? 'publish' : null)
 	if(!method) {
 		throw new Error('Please specify --consume or --publish')
 	}
