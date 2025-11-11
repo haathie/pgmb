@@ -1,9 +1,15 @@
-DROP SCHEMA IF EXISTS "pgmb2" CASCADE;
+-- to explain inner fns: https://stackoverflow.com/a/30547418
+-- LOAD 'auto_explain';
+-- SET auto_explain.log_nested_statements = 'on';
+-- SET auto_explain.log_min_duration = 0;
+-- SET client_min_messages TO log;
+
 CREATE SCHEMA IF NOT EXISTS "pgmb2";
 
 SET search_path TO pgmb2, public;
 
--- create the configuration table for pgmb2
+-- create the configuration table for pgmb2 ----------------
+
 CREATE TYPE config_type AS ENUM(
 	'plugin_version',
 	'oldest_partition_interval',
@@ -32,7 +38,7 @@ INSERT INTO subscriptions_config(id, value)
 		('partition_size', 'hour'),
 		('tx_commit_lookback_interval', '5 minutes');
 
--- we'll create the events table next
+-- we'll create the events table next & its functions ---------------
 
 CREATE DOMAIN event_id AS VARCHAR(24);
 
@@ -77,7 +83,8 @@ CREATE TABLE IF NOT EXISTS events(
 	id event_id PRIMARY KEY DEFAULT create_event_id(),
 	topic VARCHAR(255) NOT NULL,
 	xid bigint NOT NULL DEFAULT txid_current(),
-	payload JSONB NOT NULL
+	payload JSONB NOT NULL,
+	metadata JSONB
 ) PARTITION BY RANGE (id);
 
 CREATE INDEX IF NOT EXISTS idx_events_topic_id
@@ -163,8 +170,8 @@ $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
 
 SELECT maintain_events_table();
 
--- create the readers table that will store the state of
--- their last read data
+-- readers and reader state tables ----------------
+
 CREATE TABLE IF NOT EXISTS readers (
 	id VARCHAR(64) PRIMARY KEY,
 	created_at timestamptz NOT NULL DEFAULT NOW(),
@@ -178,32 +185,9 @@ CREATE TABLE IF NOT EXISTS reader_xid_state (
 	created_at timestamptz NOT NULL DEFAULT NOW(),
 	completed_at timestamptz,
 	last_read_event_id event_id,
+	max_event_id event_id NOT NULL,
 	PRIMARY KEY (reader_id, xid)
 );
-
--- function to get active transactions on a given table
-CREATE OR REPLACE FUNCTION get_active_txs(
-	schema_name varchar(64),
-	table_name varchar(64)
-) RETURNS TABLE (xid xid) AS $$
-	SELECT DISTINCT
-		COALESCE(
-			transactionid,
-			(
-				SELECT transactionid
-				FROM pg_locks pl2
-				WHERE pl2.locktype = 'transactionid' AND pl2.virtualtransaction = pl.virtualtransaction
-				LIMIT 1
-			)
-  	) as tx_id
-	FROM pg_locks pl
-	JOIN pg_class pc ON pc.oid = pl.relation
-	JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-	WHERE pn.nspname = schema_name
-	AND pc.relname = table_name
-	AND pl.granted;
-$$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
-	SET search_path TO pgmb2, public;
 
 CREATE OR REPLACE FUNCTION read_next_events(
 	rid VARCHAR(64),
@@ -226,20 +210,25 @@ BEGIN
 		GREATEST(NOW() - lookback_interval, r_created_at)
 	);
 
-	RETURN QUERY WITH new_xids AS (
-		-- insert currently active txs into reader_last_active_xids
-		INSERT INTO reader_xid_state(reader_id, xid, completed_at)
-		SELECT rid, new_tx.xid, NOW()
-		FROM (
-			SELECT e.xid, MAX(e.id) FROM events e
-			WHERE e.id > lookback_start_eid AND e.id < now_event_id
-			GROUP BY e.xid
-		) new_tx
-		ON CONFLICT DO NOTHING
-		RETURNING xid
-	),
-	pending_xids AS (
-		SELECT DISTINCT rxs.xid FROM reader_xid_state rxs
+	RETURN QUERY WITH pending_xids AS (
+		SELECT
+			e.xid,
+			lookback_start_eid AS last_read_event_id,
+			MAX(e.id) as max_event_id
+		FROM events e
+		WHERE
+			e.id > lookback_start_eid
+			AND e.id < now_event_id
+			AND e.xid NOT IN (
+				SELECT xid FROM reader_xid_state rxs
+				WHERE rxs.reader_id = rid
+			)
+		GROUP BY e.xid
+
+		UNION ALL
+
+		SELECT rxs.xid, rxs.last_read_event_id, rxs.max_event_id
+		FROM reader_xid_state rxs
 		WHERE rxs.reader_id = rid AND rxs.completed_at IS NULL
 	),
 	next_events AS (
@@ -248,28 +237,40 @@ BEGIN
 			e.id < now_event_id
 			AND (
 				e.id > lre
-				OR e.xid IN (SELECT * FROM pending_xids)
-				OR e.xid IN (SELECT * FROM new_xids)
+				OR EXISTS (
+					SELECT 1 FROM pending_xids p
+					WHERE e.xid = p.xid AND e.id > p.last_read_event_id
+				)
 			)
-		ORDER BY e.xid, e.id
-		-- LIMIT chunk_size
+		ORDER BY e.id
+		LIMIT chunk_size
 	),
 	upsert_states AS (
-		INSERT INTO reader_xid_state(reader_id, xid, completed_at)
+		INSERT INTO reader_xid_state
+			(reader_id, xid, completed_at, last_read_event_id, max_event_id)
 			SELECT
 				rid,
 				ne.xid,
-				NOW()
+				CASE WHEN
+					MAX(p.max_event_id) IS NULL OR MAX(ne.id) >= MAX(p.max_event_id)
+					THEN NOW()
+				ELSE
+					NULL
+				END,
+				MAX(ne.id),
+				COALESCE(MAX(p.max_event_id), MAX(ne.id))
 			FROM next_events ne
+			LEFT JOIN pending_xids p ON p.xid = ne.xid
 			GROUP BY ne.xid
-		ON CONFLICT DO NOTHING
+		ON CONFLICT(reader_id, xid) DO UPDATE SET
+			completed_at = EXCLUDED.completed_at,
+			last_read_event_id = EXCLUDED.last_read_event_id
+		WHERE completed_at IS NULL
 	),
 	update_reader AS (
 		UPDATE readers r SET
-			last_read_event_id = GREATEST(
-				(SELECT MAX(ne.id) FROM next_events ne),
-				lre
-			),
+			last_read_event_id
+				= GREATEST((SELECT MAX(ne.id) FROM next_events ne), lre),
 			last_read_at = NOW()
 		WHERE id = rid
 	),
@@ -281,4 +282,99 @@ BEGIN
 	)
 	SELECT * FROM next_events;
 END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SET SEARCH_PATH TO pgmb2, public;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET SEARCH_PATH TO pgmb2, public
+	SECURITY INVOKER;
+
+-- subscription management tables and functions will go here ---------------------
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+	-- unique identifier for the subscription
+	id VARCHAR(48) PRIMARY KEY DEFAULT gen_random_uuid()::varchar,
+	reader_id VARCHAR(64) NOT NULL
+		REFERENCES readers(id) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ DEFAULT NOW(),
+	-- A SQL expression that will be used to filter events for this subscription.
+	-- The events table will be aliased as "e" in this expression. The subscription
+	-- table is available as "s".
+	-- Example: "e.topic = s.metadata->>'topic'",
+	conditions_sql TEXT NOT NULL DEFAULT 'TRUE',
+	-- if set, then this subscription will only receive changes
+	-- where the diff between the row_after and row_before
+	-- has at least one of the fields in the diff_only_fields array
+	diff_only_fields TEXT[],
+	-- if temporary, then the subscription will be removed
+	-- when the connection closes
+	is_temporary BOOLEAN NOT NULL DEFAULT TRUE,
+	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE OR REPLACE FUNCTION get_events_for_subscriptions_by_filter(
+	filter_txt TEXT, rid VARCHAR(64)
+)
+RETURNS TABLE(id event_id, subscription_ids varchar(64)[]) AS $$
+BEGIN
+	RETURN QUERY EXECUTE '
+		SELECT e.id, ARRAY_AGG(s.id)
+		FROM subscriptions s
+		INNER JOIN tmp_events e ON (' || filter_txt || ')
+		WHERE s.reader_id = $1 AND s.conditions_sql = $2
+		GROUP BY e.id'
+		USING rid, filter_txt;
+END
+$$ LANGUAGE plpgsql STABLE PARALLEL SAFE
+SET search_path TO pgmb2, public
+SECURITY INVOKER;
+
+-- Function to send changes to match & send changes to relevant subscriptions
+CREATE OR REPLACE FUNCTION read_next_events_for_subscriptions(
+	rid VARCHAR(64),
+	-- Specify how many events to fetch in a single batch. Useful to limit
+	-- compute load, and to avoid overwhelming clients with too many events
+	-- at once.
+	chunk_size int DEFAULT 250
+) RETURNS TABLE(
+	id event_id,
+	topic varchar(128),
+	payload jsonb,
+	metadata jsonb,
+	subscription_ids varchar(64)[]
+) AS $$
+BEGIN
+	CREATE TEMP TABLE IF NOT EXISTS tmp_events(
+		id event_id NOT NULL,
+		topic varchar(128) NOT NULL,
+		payload jsonb NOT NULL,
+		metadata jsonb,
+		subscription_ids varchar(64)[] NOT NULL DEFAULT '{}'
+	)
+	ON COMMIT DROP;
+
+	INSERT INTO tmp_events (id, topic, payload, metadata)
+	SELECT e.id, e.topic, e.payload, e.metadata
+	FROM read_next_events(rid, chunk_size) e;
+
+	WITH relevant_sqls AS (
+		SELECT conditions_sql
+		FROM subscriptions s
+		WHERE s.reader_id = rid
+		GROUP BY conditions_sql
+	),
+	mapped_subs AS (
+		SELECT e.id, ARRAY_AGG(u.subscription_id) AS subscription_ids
+		FROM relevant_sqls s
+		CROSS JOIN get_events_for_subscriptions_by_filter(s.conditions_sql, rid) e
+		JOIN LATERAL unnest(e.subscription_ids) AS u(subscription_id) ON true
+		GROUP BY e.id
+	)
+	UPDATE tmp_events te
+		SET subscription_ids = ms.subscription_ids
+	FROM mapped_subs ms
+	WHERE te.id = ms.id;
+
+	RETURN QUERY
+		SELECT * FROM tmp_events te WHERE array_length(te.subscription_ids, 1) > 0;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public
+	SECURITY INVOKER;
