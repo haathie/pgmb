@@ -4,6 +4,7 @@ import { after, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import type { PoolClient } from 'pg'
 import { Pool } from 'pg'
+import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, readReaderXidStates, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 describe('PG Tests', () => {
 
@@ -23,10 +24,7 @@ describe('PG Tests', () => {
 
 	beforeEach(async() => {
 		readerName = `reader_${Math.random().toString(36).substring(2, 15)}`
-		await pool.query(
-			'INSERT INTO pgmb2.readers (id) VALUES ($1)',
-			[readerName]
-		)
+		await createReader.run({ readerId: readerName }, pool)
 	})
 
 	it('should receive events', async() => {
@@ -85,12 +83,17 @@ describe('PG Tests', () => {
 	it('should not read future events', async() => {
 		const c1 = await pool.connect()
 		await c1.query('BEGIN;')
-		const { rows: [prow, frow] } = await c1.query(
-			`INSERT INTO pgmb2.events (id, topic, payload)
-			VALUES
-				(pgmb2.create_event_id(NOW()), 'test-topic', '{"a":1}'),
-				(pgmb2.create_event_id(NOW() + interval '2 seconds'), 'test-topic', '{"a":2}')
-			RETURNING *`,
+
+		const DELAY_MS = 1000
+
+		const [prow, frow] = await writeScheduledEvents.run(
+			{
+				ts: [new Date(), new Date(Date.now() + DELAY_MS)],
+				topics: ['test-topic', 'test-topic'],
+				payloads: [{ a: 1 }, { a: 2 }],
+				metadatas: [{}, {}]
+			},
+			c1
 		)
 
 		assert.deepEqual(await readEvents(pool), [])
@@ -101,13 +104,11 @@ describe('PG Tests', () => {
 		assert.partialDeepStrictEqual(await readEvents(pool), [prow])
 
 		// check the tx was marked as completed
-		const { rows: rState } = await pool.query(
-			'select * from reader_xid_state where reader_id = $1',
-			[readerName]
-		)
-		assert.ok(rState[0].completed_at)
+		const [rState] = await readReaderXidStates
+			.run({ readerId: readerName }, pool)
+		assert.ok(rState?.completedAt)
 
-		await setTimeout(2000)
+		await setTimeout(DELAY_MS)
 
 		assert.partialDeepStrictEqual(await readEvents(pool), [frow])
 	})
@@ -165,60 +166,72 @@ describe('PG Tests', () => {
 		assert.equal(events.length, eventsToWrite)
 	})
 
-
 	it('should insert event and get subscriptions', async() => {
 		await insertEvent(pool)
-		const { rows: [sub] } = await pool.query<{ id: string }>(
-			`INSERT INTO pgmb2.subscriptions (reader_id)
-			VALUES ($1)
-			RETURNING *`,
-			[readerName]
+		const [sub] = await createSubscription.run(
+			{ readerId: readerName },
+			pool
 		)
 
-		const { rows } = await pool.query(
-			'SELECT * FROM pgmb2.read_next_events_for_subscriptions($1)',
-			[readerName]
+		const rows = await readNextEventsForSubscriptions.run(
+			{ readerId: readerName, chunkSize: 10 },
+			pool
 		)
 		assert.equal(rows.length, 1)
-		assert.partialDeepStrictEqual(rows[0], { 'subscription_ids': [sub.id] })
+		assert.partialDeepStrictEqual(rows[0], { subscriptionIds: [sub.id] })
 	})
 
 	it('should match subscriptions', async() => {
-		await pool.query(
-			`INSERT INTO pgmb2.events (topic, payload)
-		VALUES ('test', '{"data": 0.7}'), ('test', '{"data": 0.3}')`,
-		)
-		const { rows: [, sub1, sub2] } = await pool.query<{ id: string }>(
-			`INSERT INTO pgmb2.subscriptions (reader_id, conditions_sql, metadata)
-			VALUES
-				($1, 'e.payload->>''non_exist'' IS NOT NULL', DEFAULT),
-				($1, $2, '{"min": 0.5}'),
-				($1, $2, '{"min": 0}')
-			RETURNING *`,
-			[readerName, 'e.payload->\'data\' > s.metadata->\'min\'']
+		await writeEvents.run(
+			{
+				topics: ['test', 'test'],
+				payloads: [{ data: 0.7 }, { data: 0.3 }],
+				metadatas: [{}, {}]
+			},
+			pool
 		)
 
-		const { rows } = await pool.query(
-			'SELECT * FROM pgmb2.read_next_events_for_subscriptions($1)',
-			[readerName]
+		await createSubscription.run(
+			{
+				readerId: readerName,
+				conditionsSql: "e.payload->>'non_exist' IS NOT NULL"
+			},
+			pool
 		)
+		const [sub1] = await createSubscription.run(
+			{
+				readerId: readerName,
+				conditionsSql: "e.payload->'data' > s.metadata->'min'",
+				metadata: { min: 0.5 }
+			},
+			pool
+		)
+		const [sub2] = await createSubscription.run(
+			{
+				readerId: readerName,
+				conditionsSql: "e.payload->'data' > s.metadata->'min'",
+				metadata: { min: 0 }
+			},
+			pool
+		)
+
+		const rows = await readNextEventsForSubscriptions
+			.run({ readerId: readerName, chunkSize: 10 }, pool)
 		assert.equal(rows.length, 2)
 		assert.partialDeepStrictEqual(
 			rows,
 			[
 				// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
-				{ 'subscription_ids': [sub1.id, sub2.id] },
+				{ subscriptionIds: [sub1.id, sub2.id] },
 				// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
-				{ 'subscription_ids': [sub2.id] }
+				{ subscriptionIds: [sub2.id] }
 			]
 		)
 	})
 
 	async function readEvents(client: Pool | PoolClient, count = 50) {
-		const { rows } = await client.query<{ topic: string, payload: unknown }>(
-			'SELECT * FROM pgmb2.read_next_events($1, $2)',
-			[readerName, count]
-		)
+		const rows = await readNextEvents
+			.run({ readerId: readerName, chunkSize: count }, client)
 		return rows
 	}
 })
@@ -226,9 +239,13 @@ describe('PG Tests', () => {
 async function insertEvent(client: Pool | PoolClient) {
 	const topic = 'test-topic'
 	const payload = { data: Math.random() }
-	await client.query(
-		'INSERT INTO pgmb2.events (topic, payload) VALUES ($1, $2)',
-		[topic, payload]
+	await writeEvents.run(
+		{
+			topics: [topic],
+			payloads: [payload],
+			metadatas: [{}]
+		},
+		client
 	)
 
 	return { topic, payload }

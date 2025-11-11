@@ -1,8 +1,12 @@
--- to explain inner fns: https://stackoverflow.com/a/30547418
--- LOAD 'auto_explain';
--- SET auto_explain.log_nested_statements = 'on';
--- SET auto_explain.log_min_duration = 0;
--- SET client_min_messages TO log;
+/*
+to explain inner fns: https://stackoverflow.com/a/30547418
+
+-- Enable auto_explain for debugging
+LOAD 'auto_explain';
+SET auto_explain.log_nested_statements = 'on';
+SET auto_explain.log_min_duration = 0;
+SET client_min_messages TO log;
+*/
 
 CREATE SCHEMA IF NOT EXISTS "pgmb2";
 
@@ -190,8 +194,7 @@ CREATE TABLE IF NOT EXISTS reader_xid_state (
 );
 
 CREATE OR REPLACE FUNCTION read_next_events(
-	rid VARCHAR(64),
-	chunk_size INT DEFAULT 100
+	rid VARCHAR(64), chunk_size INT
 ) RETURNS SETOF events AS $$
 DECLARE
 	lookback_interval INTERVAL :=
@@ -265,7 +268,7 @@ BEGIN
 		ON CONFLICT(reader_id, xid) DO UPDATE SET
 			completed_at = EXCLUDED.completed_at,
 			last_read_event_id = EXCLUDED.last_read_event_id
-		WHERE completed_at IS NULL
+		WHERE reader_xid_state.completed_at IS NULL
 	),
 	update_reader AS (
 		UPDATE readers r SET

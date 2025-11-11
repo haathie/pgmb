@@ -1,0 +1,21 @@
+{
+  "transforms": [
+    {
+      "mode": "sql",
+      "include": "**/queries.sql",
+      "emitTemplate": "src/queries.ts"
+    }
+  ],
+  "srcDir": "./",
+  "failOnError": true,
+  "camelCaseColumnNames": true,
+  "db": {
+    "host": "localhost",
+    "user": "postgres",
+    "dbName": "postgres",
+    "password": ""
+  },
+  "typesOverrides": { 
+    "jsonb": "unknown"
+  }
+}

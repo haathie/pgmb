@@ -6,17 +6,19 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "repository":"https://github.com/haathie/pgmb",
+  "repository": "https://github.com/haathie/pgmb",
   "scripts": {
     "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test",
     "prepare": "tsc",
     "build": "tsc",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
     "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx",
-    "benchmark:tsc": "node -r @swc-node/register src/benchmark/run.ts"
+    "benchmark:tsc": "node -r @swc-node/register src/benchmark/run.ts",
+    "gen:pgtyped": "pgtyped --config ./pgtyped.config.json"
   },
   "devDependencies": {
     "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",
+    "@pgtyped/cli": "^2.4.3",
     "@swc-node/register": "^1.10.10",
     "@swc/core": "^1.11.24",
     "@swc/jest": "^0.2.38",
@@ -49,6 +51,7 @@
     "pg": "^8.0.0"
   },
   "dependencies": {
+    "@pgtyped/runtime": "^2.4.2",
     "pino": "^8.4.1"
   }
 }
