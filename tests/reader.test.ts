@@ -82,9 +82,39 @@ describe('Reader Tests', () => {
 		assert.partialDeepStrictEqual(events, eventsWritten)
 	})
 
-	it.only('should not read duplicate events', async() => {
-		const writerCount = 5
-		const eventsPerWriter = 200
+	it('should not read future events', async() => {
+		const c1 = await pool.connect()
+		await c1.query('BEGIN;')
+		const { rows: [prow, frow] } = await c1.query(
+			`INSERT INTO pgmb2.events (id, topic, payload)
+			VALUES
+				(pgmb2.create_event_id(NOW()), 'test-topic', '{"a":1}'),
+				(pgmb2.create_event_id(NOW() + interval '2 seconds'), 'test-topic', '{"a":2}')
+			RETURNING *`,
+		)
+
+		assert.deepEqual(await readEvents(pool), [])
+
+		await c1.query('COMMIT;')
+		await c1.release()
+
+		assert.partialDeepStrictEqual(await readEvents(pool), [prow])
+
+		// check the tx was marked as completed
+		const { rows: rState } = await pool.query(
+			'select * from reader_xid_state where reader_id = $1',
+			[readerName]
+		)
+		assert.ok(rState[0].completed_at)
+
+		await setTimeout(2000)
+
+		assert.partialDeepStrictEqual(await readEvents(pool), [frow])
+	})
+
+	it('should not read duplicate events', async() => {
+		const writerCount = 10
+		const eventsPerWriter = 300
 		const eventsToWrite = writerCount * eventsPerWriter
 
 		const eventsWritten: { payload: unknown }[] = []
@@ -117,7 +147,7 @@ describe('Reader Tests', () => {
 
 		const events: { payload: unknown }[] = []
 		while(events.length < eventsToWrite) {
-			events.push(...await readEvents(pool, 25))
+			events.push(...await readEvents(pool, 50))
 			console.log(`Read ${events.length} / ${eventsToWrite} events so far`)
 		}
 

@@ -8,7 +8,8 @@ CREATE TYPE config_type AS ENUM(
 	'plugin_version',
 	'oldest_partition_interval',
 	'future_partitions_to_create',
-	'partition_size'
+	'partition_size',
+	'tx_commit_lookback_interval'
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions_config(
@@ -28,7 +29,8 @@ INSERT INTO subscriptions_config(id, value)
 		('plugin_version', '0.1.0'),
 		('oldest_partition_interval', '2 hours'),
 		('future_partitions_to_create', '12'),
-		('partition_size', 'hour');
+		('partition_size', 'hour'),
+		('tx_commit_lookback_interval', '5 minutes');
 
 -- we'll create the events table next
 
@@ -165,31 +167,41 @@ SELECT maintain_events_table();
 -- their last read data
 CREATE TABLE IF NOT EXISTS readers (
 	id VARCHAR(64) PRIMARY KEY,
-	last_read_xid_start bigint NOT NULL DEFAULT txid_current(),
+	created_at timestamptz NOT NULL DEFAULT NOW(),
+	last_read_event_id event_id NOT NULL DEFAULT create_event_id(),
 	last_read_at timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS reader_xid_state (
 	reader_id VARCHAR(64) NOT NULL REFERENCES readers(id) ON DELETE CASCADE,
 	xid bigint NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT NOW(),
+	completed_at timestamptz,
 	last_read_event_id event_id,
 	PRIMARY KEY (reader_id, xid)
 );
 
 -- function to get active transactions on a given table
-CREATE OR REPLACE FUNCTION get_min_active_tx(
+CREATE OR REPLACE FUNCTION get_active_txs(
 	schema_name varchar(64),
 	table_name varchar(64)
-) RETURNS bigint AS $$
-	SELECT MIN(pa.backend_xmin::text::bigint) AS xid
-	FROM pg_stat_activity pa
-	JOIN pg_locks pl ON pl.pid = pa.pid
+) RETURNS TABLE (xid xid) AS $$
+	SELECT DISTINCT
+		COALESCE(
+			transactionid,
+			(
+				SELECT transactionid
+				FROM pg_locks pl2
+				WHERE pl2.locktype = 'transactionid' AND pl2.virtualtransaction = pl.virtualtransaction
+				LIMIT 1
+			)
+  	) as tx_id
+	FROM pg_locks pl
 	JOIN pg_class pc ON pc.oid = pl.relation
 	JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-	WHERE pa.xact_start IS NOT NULL
-		AND pa.state IN ('active', 'idle in transaction')
-		AND pn.nspname = schema_name
-		AND pc.relname = table_name
+	WHERE pn.nspname = schema_name
+	AND pc.relname = table_name
+	AND pl.granted;
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
 	SET search_path TO pgmb2, public;
 
@@ -198,134 +210,75 @@ CREATE OR REPLACE FUNCTION read_next_events(
 	chunk_size INT DEFAULT 100
 ) RETURNS SETOF events AS $$
 DECLARE
-	min_xid bigint;
-	cur_active_xid bigint;
+	lookback_interval INTERVAL :=
+		get_config_value('tx_commit_lookback_interval')::INTERVAL;
+	now_event_id event_id := create_event_id(NOW());
+	lookback_start_eid event_id;
+	lre event_id;
+	r_created_at timestamptz;
 BEGIN
 	-- get the reader state
-	SELECT last_read_xid_start INTO min_xid FROM readers WHERE id = rid;
-	-- insert missing xids into reader_xid_state
-	INSERT INTO reader_xid_state(reader_id, xid)
-		SELECT rid, xid
-		FROM events e
-		WHERE e.xid >= min_xid
-		GROUP BY xid
-	ON CONFLICT DO NOTHING;
+	SELECT last_read_event_id, created_at INTO lre, r_created_at
+	FROM readers WHERE id = rid;
 
-	cur_active_xid := get_min_active_tx('pgmb2', 'events');
+	-- determine lookback start event ID
+	lookback_start_eid := create_event_id(
+		GREATEST(NOW() - lookback_interval, r_created_at)
+	);
 
-	UPDATE readers r SET
-		last_read_xid_start = COALESCE(cur_active_xid, txid_current()),
-		last_read_at = NOW()
-	WHERE id = rid;
-
-	RETURN QUERY WITH next_events AS (
-		SELECT e.* FROM events e
-		INNER JOIN reader_xid_state rla ON e.xid = rla.xid
-			AND (e.id > rla.last_read_event_id OR rla.last_read_event_id IS NULL)
-		-- WHERE
-		-- 	-- either the event is newer than the last read event
-		-- 	(
-		-- 		e.id > (SELECT last_read_event_id FROM reader_state LIMIT 1)
-		-- 		--AND e.xid NOT IN (SELECT pax.xid FROM prev_read_active_txs pax)
-		-- 	)
-		-- 	OR e.xid IN (SELECT pax.xid FROM prev_read_active_txs pax)
-		-- 	-- or it belongs to a previously active transaction,
-		-- 	-- from when we last read
-		-- 	-- OR EXISTS (
-		-- 	-- 	SELECT 1 FROM prev_read_active_txs pax
-		-- 	-- 	WHERE e.xid = pax.xid
-		-- 	-- 	-- AND (e.id > pax.last_read_event_id OR pax.last_read_event_id IS NULL)
-		-- 	-- )
-		ORDER BY e.xid, e.id
-		LIMIT chunk_size
-	),
-	-- remove old xid states that are done with reading
-	-- i.e. all xids but the last one, which returns < chunk_size events,
-	-- the last xid should match the chunk_size + 1 item, otherwise we'd discard it
-	xids_to_remove AS (
-		SELECT ne.xid, COUNT(*) < chunk_size AS has_more
-		FROM next_events ne
-		WHERE ne.xid < LEAST(min_xid, COALESCE(cur_active_xid, txid_current()))
-		GROUP BY ne.xid
-		ORDER BY ne.xid DESC
-		OFFSET 1
-	),
-	-- find the max event ID in the events table for each active transaction
-	-- and check if we've read that, in which case we can remove it from
-	-- the active transactions table
-	-- read_active_txs AS (
-	-- 	SELECT
-	-- 		pax.xid as xid,
-	-- 		(
-	-- 			SELECT MAX(e.id) FROM next_events e WHERE e.xid = pax.xid
-	-- 		) AS latest_read_event_id,
-	-- 		(SELECT MAX(e2.id) FROM events e2 WHERE e2.xid = pax.xid) AS max_event_id,
-	-- 		FALSE as is_active
-	-- 	FROM prev_read_active_txs pax
-
-	-- 	UNION ALL
-
-	-- 	SELECT
-	-- 		atx.xid as xid,
-	-- 		NULL AS latest_read_event_id,
-	-- 		NULL as max_event_id,
-	-- 		TRUE as is_active
-	-- 	FROM active_txs atx
-	-- 	WHERE NOT EXISTS (
-	-- 		SELECT 1 FROM reader_last_active_xids rla
-	-- 		WHERE rla.reader_id = reader_id AND rla.xid = atx.xid
-	-- 	)
-	-- ),
-	-- active_txs AS (
-	-- 	SELECT * FROM get_active_txs('pgmb2', 'events')
-	-- 	WHERE xid != txid_current()
-	-- ),
-	rm_old_xid_states AS (
-		DELETE FROM reader_xid_state rla
-		USING xids_to_remove rm
-		WHERE rla.reader_id = rid
-			AND (
-				rla.xid IN (SELECT rm.xid FROM xids_to_remove rm WHERE rm.has_more = FALSE)
-				OR rla.xid < min_xid
-			)
-		RETURNING rla.xid
-	),
-	update_reader_xid_states AS (
-		UPDATE reader_xid_state rla SET
-			last_read_event_id = ne.id
+	RETURN QUERY WITH new_xids AS (
+		-- insert currently active txs into reader_last_active_xids
+		INSERT INTO reader_xid_state(reader_id, xid, completed_at)
+		SELECT rid, new_tx.xid, NOW()
 		FROM (
-			SELECT ne.xid, MAX(ne.id) AS id
+			SELECT e.xid, MAX(e.id) FROM events e
+			WHERE e.id > lookback_start_eid AND e.id < now_event_id
+			GROUP BY e.xid
+		) new_tx
+		ON CONFLICT DO NOTHING
+		RETURNING xid
+	),
+	pending_xids AS (
+		SELECT DISTINCT rxs.xid FROM reader_xid_state rxs
+		WHERE rxs.reader_id = rid AND rxs.completed_at IS NULL
+	),
+	next_events AS (
+		SELECT e.* FROM events e
+		WHERE
+			e.id < now_event_id
+			AND (
+				e.id > lre
+				OR e.xid IN (SELECT * FROM pending_xids)
+				OR e.xid IN (SELECT * FROM new_xids)
+			)
+		ORDER BY e.xid, e.id
+		-- LIMIT chunk_size
+	),
+	upsert_states AS (
+		INSERT INTO reader_xid_state(reader_id, xid, completed_at)
+			SELECT
+				rid,
+				ne.xid,
+				NOW()
 			FROM next_events ne
 			GROUP BY ne.xid
-		) ne
-		WHERE rla.reader_id = rid
-			AND rla.xid = ne.xid
-			AND rla.xid NOT IN (SELECT xid FROM rm_old_xid_states)
+		ON CONFLICT DO NOTHING
+	),
+	update_reader AS (
+		UPDATE readers r SET
+			last_read_event_id = GREATEST(
+				(SELECT MAX(ne.id) FROM next_events ne),
+				lre
+			),
+			last_read_at = NOW()
+		WHERE id = rid
+	),
+	rm_old_rows AS (
+		-- drop rows before the lookback interval
+		DELETE FROM reader_xid_state
+		WHERE reader_id = rid
+		AND created_at < (NOW() - lookback_interval)
 	)
-	-- save active transactions state
-	-- new_active_txs AS (
-	-- 	INSERT INTO reader_last_active_xids(reader_id, xid)
-	-- 	SELECT rid, atx.xid FROM active_txs atx
-	-- 	ON CONFLICT DO NOTHING
-	-- )
-	-- save_active_txs AS (
-	-- 	MERGE INTO reader_last_active_xids rla
-	-- 	USING read_active_txs atx
-	-- 	ON rla.reader_id = reader_id AND rla.xid = atx.xid
-	-- 	WHEN MATCHED AND (
-	-- 		(
-	-- 			latest_read_event_id = max_event_id
-	-- 			AND max_event_id IS NOT NULL -- avoid null = null case
-	-- 		)
-	-- 		-- OR max_event_id IS NULL
-	-- 	) AND NOT is_active
-	-- 		THEN DELETE
-	-- 	WHEN MATCHED AND latest_read_event_id IS NOT NULL AND NOT is_active
-	-- 		THEN UPDATE SET last_read_event_id = latest_read_event_id
-	-- 	WHEN NOT MATCHED
-	-- 		THEN INSERT (reader_id, xid, last_read_event_id)
-	-- 		VALUES (reader_id, atx.xid, atx.latest_read_event_id)
-	-- )
 	SELECT * FROM next_events;
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SET SEARCH_PATH TO pgmb2, public;
