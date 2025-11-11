@@ -65,3 +65,7 @@ FROM unnest(
 	:metadatas!::JSONB[]
 ) AS t(ts, topic, payload, metadata)
 RETURNING id AS "id!";
+
+/* @name removeTemporarySubscriptions */
+DELETE FROM pgmb2.subscriptions
+WHERE reader_id = :readerId! AND is_temporary;

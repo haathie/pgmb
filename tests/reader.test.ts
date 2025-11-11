@@ -229,6 +229,43 @@ describe('PG Tests', () => {
 		)
 	})
 
+	it('should create events from table mutations', async() => {
+		await pool.query(`
+			DROP TABLE IF EXISTS public.test_table;
+			CREATE TABLE public.test_table (
+				id SERIAL PRIMARY KEY,
+				data TEXT NOT NULL
+			);
+			SELECT pgmb2.push_table_mutations('public.test_table'::regclass);
+		`)
+
+		await pool.query(`
+			INSERT INTO public.test_table (data) VALUES ('hello'), ('world');
+		`)
+		await pool.query(
+			'UPDATE public.test_table SET data = \'hello!!!\' WHERE id = 1;'
+		)
+		await pool.query(
+			'DELETE FROM public.test_table WHERE id = 2;'
+		)
+
+		const rows = await readEvents(pool, 10)
+		assert.equal(rows.length, 4)
+		assert.partialDeepStrictEqual(
+			rows,
+			[
+				{ topic: 'public.test_table.insert', payload: { id: 1, data: 'hello' } },
+				{ payload: { id: 2, data: 'world' } },
+				{
+					topic: 'public.test_table.update',
+					payload: { id: 1, data: 'hello!!!' },
+					metadata: { old: { id: 1, data: 'hello' } }
+				},
+				{ topic: 'public.test_table.delete', payload: { id: 2 } }
+			]
+		)
+	})
+
 	async function readEvents(client: Pool | PoolClient, count = 50) {
 		const rows = await readNextEvents
 			.run({ readerId: readerName, chunkSize: count }, client)

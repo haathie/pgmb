@@ -381,3 +381,132 @@ END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 	SET search_path TO pgmb2, public
 	SECURITY INVOKER;
+
+-- triggers to add events for specific tables ---------------------------
+
+-- Function to create a topic string for subscriptions.
+-- Eg. "public" "contacts" "INSERT" -> "public.contacts.INSERT"
+CREATE OR REPLACE FUNCTION create_topic(
+	schema_name name,
+	table_name name,
+	kind varchar(16)
+) RETURNS varchar(255) AS $$
+	SELECT lower(schema_name || '.' || table_name || '.' || kind)
+$$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
+
+
+-- Creates a function to compute the difference between two JSONB objects
+-- Treats 'null' values, and non-existent keys as equal
+-- Eg. jsonb_diff('{"a": 1, "b": 2, "c": null}', '{"a": 1, "b": null}') = '{"b": 2}'
+CREATE OR REPLACE FUNCTION jsonb_diff(a jsonb, b jsonb)
+RETURNS jsonb AS $$
+SELECT jsonb_object_agg(key, value) FROM (
+	SELECT key, value FROM jsonb_each(a) WHERE value != 'null'::jsonb
+  EXCEPT
+  SELECT key, value FROM jsonb_each(b) WHERE value != 'null'::jsonb
+)
+$$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Trigger that pushes changes to the events table
+CREATE OR REPLACE FUNCTION push_table_event()
+RETURNS TRIGGER AS $$
+DECLARE
+	start_num BIGINT = create_random_bigint();
+BEGIN
+	IF TG_OP = 'INSERT' THEN
+		INSERT INTO events(id, topic, payload)
+		SELECT
+			create_event_id(rand := start_num + row_number() OVER ()),
+			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
+			to_jsonb(n)
+		FROM NEW n;
+	ELSIF TG_OP = 'DELETE' THEN
+		INSERT INTO events(id, topic, payload)
+		SELECT
+			create_event_id(rand := start_num + row_number() OVER ()),
+			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
+			to_jsonb(o)
+		FROM OLD o;
+	ELSIF TG_OP = 'UPDATE' THEN
+		-- For updates, we can send both old and new data
+		INSERT INTO events(id, topic, payload, metadata)
+		SELECT
+			create_event_id(rand := start_num + n.rn),
+			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
+			n.data,
+			jsonb_build_object('diff', jsonb_diff(n.data, o.data), 'old', o.data)			
+		FROM (
+			SELECT to_jsonb(n) as data, row_number() OVER () AS rn FROM NEW n
+		) AS n
+		INNER JOIN (
+			SELECT to_jsonb(o) as data, row_number() OVER () AS rn FROM OLD o
+		) AS o ON n.rn = o.rn
+		-- ignore rows where data didn't change
+		WHERE n.data IS DISTINCT FROM o.data;
+	END IF;
+
+	RETURN NULL;
+END
+$$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public;
+
+-- Pushes table mutations to the events table. I.e. makes the table subscribable.
+-- and creates triggers to push changes to the events table.
+CREATE OR REPLACE FUNCTION push_table_mutations(
+	tbl regclass
+)
+RETURNS VOID AS $$
+BEGIN
+	-- Create a trigger to push changes to the subscriptions queue
+	BEGIN
+		EXECUTE 'CREATE TRIGGER
+			post_insert_event
+			AFTER INSERT ON ' || tbl::varchar || '
+			REFERENCING NEW TABLE AS NEW
+			FOR EACH STATEMENT
+			EXECUTE FUNCTION push_table_event();';
+	EXCEPTION
+		WHEN duplicate_object THEN
+			NULL;
+  END;
+	BEGIN
+		EXECUTE 'CREATE TRIGGER
+			post_delete_event
+			AFTER DELETE ON ' || tbl::varchar || '
+			REFERENCING OLD TABLE AS OLD
+			FOR EACH STATEMENT
+			EXECUTE FUNCTION push_table_event();';
+	EXCEPTION
+		WHEN duplicate_object THEN
+			NULL;
+  END;
+	BEGIN
+		EXECUTE 'CREATE TRIGGER
+			post_update_event
+			AFTER UPDATE ON ' || tbl::varchar || '
+			REFERENCING OLD TABLE AS OLD
+			NEW TABLE AS NEW
+			FOR EACH STATEMENT
+			EXECUTE FUNCTION push_table_event();';
+	EXCEPTION
+		WHEN duplicate_object THEN
+			NULL;
+  END;
+END
+$$ LANGUAGE plpgsql SECURITY DEFINER
+	VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public;
+
+-- Stops the table from being subscribable.
+-- I.e removes the triggers that push changes to the events table.
+CREATE OR REPLACE FUNCTION stop_table_mutations_push(
+	tbl regclass
+) RETURNS VOID AS $$
+BEGIN
+	-- Remove the triggers for the table
+	EXECUTE 'DROP TRIGGER IF EXISTS post_insert_event ON ' || tbl::varchar || ';';
+	EXECUTE 'DROP TRIGGER IF EXISTS post_delete_event ON ' || tbl::varchar || ';';
+	EXECUTE 'DROP TRIGGER IF EXISTS post_update_event ON ' || tbl::varchar || ';';
+END
+$$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE
+	SET search_path TO pgmb2, public;
