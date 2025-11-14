@@ -1,5 +1,5 @@
 import { deserialize as V8Decode, serialize as V8Encode } from 'v8'
-import type { Serialiser } from '../types'
+import type { Serialiser } from '../types.ts'
 
 export const V8Serialiser: Serialiser = {
 	id: 'v8',
@@ -7,7 +7,7 @@ export const V8Serialiser: Serialiser = {
 	encode: obj => {
 		try {
 			return V8Encode(obj)
-		} catch(error) {
+		} catch{
 			obj = JSON.parse(JSON.stringify(obj))
 			return V8Encode(obj)
 		}

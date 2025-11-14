@@ -1,22 +1,26 @@
-import dotenv from 'dotenv'
-dotenv.config({ })
-
 import { threadId, Worker, workerData } from 'worker_threads'
-import makeAmqpBenchmarkClient from './amqp'
-import { benchmarkConsumption, benchmarkPublishing } from './base'
-import makePgmbBenchmarkClient, { install as installPgmb } from './pgmb'
-import makePgmqBenchmarkClient, { install as installPgmq } from './pgmq'
-import { MakeBenchmarkClient } from './types'
+import makeAmqpBenchmarkClient from './amqp.ts'
+import { benchmarkConsumption, benchmarkPublishing } from './base.ts'
+import makePgmbBenchmarkClient, { install as installPgmb } from './pgmb.ts'
+import makePgmb2BenchmarkClient, { install as installPgmb2 } from './pgmb2.ts'
+import makePgmqBenchmarkClient, { install as installPgmq } from './pgmq.ts'
+import type { MakeBenchmarkClient } from './types.ts'
 
 type Client = {
 	make: MakeBenchmarkClient
 	install?: () => Promise<boolean>
 }
 
+const FILENAME = import.meta.filename
+
 const CLIENTS: { [client: string]: Client } = {
 	'pgmb': {
 		make: makePgmbBenchmarkClient,
 		install: installPgmb
+	},
+	'pgmb2': {
+		make: makePgmb2BenchmarkClient,
+		install: installPgmb2
 	},
 	'pgmq': {
 		make: makePgmqBenchmarkClient,
@@ -66,7 +70,7 @@ if(!workerData) {
 		))
 	const runWorkers = () => (
 		testQueues.map(queueName => (
-			new Worker(__filename, {
+			new Worker(FILENAME, {
 				workerData: {
 					queueName,
 					method,

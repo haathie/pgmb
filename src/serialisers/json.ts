@@ -1,4 +1,4 @@
-import type { Serialiser } from '../types'
+import type { Serialiser } from '../types.ts'
 
 export const JSONSerialiser: Serialiser = {
 	encode: obj => Buffer.from(JSON.stringify(obj)),

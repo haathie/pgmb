@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto'
 import P from 'pino'
-import { MakeBenchmarkClient } from './types'
+import type { MakeBenchmarkClient } from './types.ts'
 
 const MSG_SIZE_BYTES = 1024
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info'

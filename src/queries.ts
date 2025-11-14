@@ -38,6 +38,7 @@ export const createReader = new PreparedQuery<ICreateReaderParams,ICreateReaderR
 /** 'CreateSubscription' parameters type */
 export interface ICreateSubscriptionParams {
   conditionsSql?: string | null | void;
+  id?: string | null | void;
   metadata?: unknown | null | void;
   readerId: string;
 }
@@ -53,13 +54,22 @@ export interface ICreateSubscriptionQuery {
   result: ICreateSubscriptionResult;
 }
 
-const createSubscriptionIR: any = {"usedParamSet":{"readerId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":78,"b":87}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":99,"b":112}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":133,"b":141}]}],"statement":"INSERT INTO pgmb2.subscriptions (reader_id, conditions_sql, metadata)\nVALUES (:readerId!, COALESCE(:conditionsSql, 'TRUE'), COALESCE(:metadata::jsonb, '{}'))\nRETURNING id AS \"id!\""};
+const createSubscriptionIR: any = {"usedParamSet":{"id":true,"readerId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"id","required":false,"transform":{"type":"scalar"},"locs":[{"a":93,"b":95}]},{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":131,"b":140}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":153,"b":166}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":188,"b":196}]}],"statement":"INSERT INTO pgmb2.subscriptions (id, reader_id, conditions_sql, metadata)\nVALUES (\n\tCOALESCE(:id::text, gen_random_uuid()::text),\n\t:readerId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
  * ```
- * INSERT INTO pgmb2.subscriptions (reader_id, conditions_sql, metadata)
- * VALUES (:readerId!, COALESCE(:conditionsSql, 'TRUE'), COALESCE(:metadata::jsonb, '{}'))
+ * INSERT INTO pgmb2.subscriptions (id, reader_id, conditions_sql, metadata)
+ * VALUES (
+ * 	COALESCE(:id::text, gen_random_uuid()::text),
+ * 	:readerId!,
+ * 	COALESCE(:conditionsSql, 'TRUE'),
+ * 	COALESCE(:metadata::jsonb, '{}')
+ * )
+ * ON CONFLICT (id) DO UPDATE
+ * SET
+ * 	conditions_sql = EXCLUDED.conditions_sql,
+ * 	metadata = EXCLUDED.metadata
  * RETURNING id AS "id!"
  * ```
  */
@@ -259,5 +269,64 @@ const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"pa
  * ```
  */
 export const writeScheduledEvents = new PreparedQuery<IWriteScheduledEventsParams,IWriteScheduledEventsResult>(writeScheduledEventsIR);
+
+
+/** 'RemoveTemporarySubscriptions' parameters type */
+export interface IRemoveTemporarySubscriptionsParams {
+  readerId: string;
+}
+
+/** 'RemoveTemporarySubscriptions' return type */
+export type IRemoveTemporarySubscriptionsResult = void;
+
+/** 'RemoveTemporarySubscriptions' query type */
+export interface IRemoveTemporarySubscriptionsQuery {
+  params: IRemoveTemporarySubscriptionsParams;
+  result: IRemoveTemporarySubscriptionsResult;
+}
+
+const removeTemporarySubscriptionsIR: any = {"usedParamSet":{"readerId":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":50,"b":59}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE reader_id = :readerId! AND is_temporary"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * DELETE FROM pgmb2.subscriptions
+ * WHERE reader_id = :readerId! AND is_temporary
+ * ```
+ */
+export const removeTemporarySubscriptions = new PreparedQuery<IRemoveTemporarySubscriptionsParams,IRemoveTemporarySubscriptionsResult>(removeTemporarySubscriptionsIR);
+
+
+/** 'ReenqueueEventsForSubscription' parameters type */
+export interface IReenqueueEventsForSubscriptionParams {
+  eventIds: stringArray;
+  offsetInterval: DateOrString;
+  subscriptionId: string;
+}
+
+/** 'ReenqueueEventsForSubscription' return type */
+export interface IReenqueueEventsForSubscriptionResult {
+  reenqueuedEventIds: string;
+}
+
+/** 'ReenqueueEventsForSubscription' query type */
+export interface IReenqueueEventsForSubscriptionQuery {
+  params: IReenqueueEventsForSubscriptionParams;
+  result: IReenqueueEventsForSubscriptionResult;
+}
+
+const reenqueueEventsForSubscriptionIR: any = {"usedParamSet":{"eventIds":true,"subscriptionId":true,"offsetInterval":true},"params":[{"name":"eventIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":58}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":70,"b":85}]},{"name":"offsetInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":89,"b":104}]}],"statement":"SELECT pgmb2.reenqueue_events_for_subscription(\n\t:eventIds!::text[],\n\t:subscriptionId!,\n\t:offsetInterval!::INTERVAL\n) AS \"reenqueuedEventIds!\""};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT pgmb2.reenqueue_events_for_subscription(
+ * 	:eventIds!::text[],
+ * 	:subscriptionId!,
+ * 	:offsetInterval!::INTERVAL
+ * ) AS "reenqueuedEventIds!"
+ * ```
+ */
+export const reenqueueEventsForSubscription = new PreparedQuery<IReenqueueEventsForSubscriptionParams,IReenqueueEventsForSubscriptionResult>(reenqueueEventsForSubscriptionIR);
 
 

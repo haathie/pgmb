@@ -1,7 +1,7 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { PGMBClient } from '../client'
-import { MakeBenchmarkClient } from './types'
+import { PGMBClient } from '../client/index.ts'
+import type { MakeBenchmarkClient } from './types.ts'
 
 const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 	batchSize,

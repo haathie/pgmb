@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from 'pg'
 import type { Logger } from 'pino'
-import type { PGMBConsumerOpts, PGMBHeaders, PgTypedIncomingMessage, Serialiser } from '../types'
+import type { PGMBConsumerOpts, PGMBHeaders, PgTypedIncomingMessage, Serialiser } from '../types.ts'
 
 type PGMBMessageRecord = {
 	id: string
@@ -10,17 +10,27 @@ type PGMBMessageRecord = {
 
 export class PGMBConsumer<Q, M, Default> {
 
+	readonly pool: Pool
+	readonly opts: PGMBConsumerOpts<Q, M, Default>
+	readonly serialiser: Serialiser | undefined
+	readonly logger: Logger
+
 	#pendingCount = 0
 	#consumeDebounce: NodeJS.Timeout | undefined
 	#abortedConsuming = false
 	#currentConsumeTask: Promise<void> | undefined
 
 	constructor(
-		private pool: Pool,
-		private opts: PGMBConsumerOpts<Q, M, Default>,
-		private serialiser: Serialiser | undefined,
-		private logger: Logger,
-	) {}
+		pool: Pool,
+		opts: PGMBConsumerOpts<Q, M, Default>,
+		serialiser: Serialiser | undefined,
+		logger: Logger,
+	) {
+		this.pool = pool
+		this.opts = opts
+		this.serialiser = serialiser
+		this.logger = logger
+	}
 
 	getOpts() {
 		return this.opts

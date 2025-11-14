@@ -1,4 +1,4 @@
-import { PGMBMakeEventBatcherOpts, PgPublishMsg } from '../types'
+import type { PGMBMakeEventBatcherOpts, PgPublishMsg } from '../types.ts'
 
 type Batch<M> = {
 	messages: PgPublishMsg<M>[]

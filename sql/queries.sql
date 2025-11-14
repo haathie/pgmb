@@ -3,8 +3,17 @@ INSERT INTO pgmb2.readers (id)
 VALUES (:readerId!);
 
 /* @name createSubscription */
-INSERT INTO pgmb2.subscriptions (reader_id, conditions_sql, metadata)
-VALUES (:readerId!, COALESCE(:conditionsSql, 'TRUE'), COALESCE(:metadata::jsonb, '{}'))
+INSERT INTO pgmb2.subscriptions (id, reader_id, conditions_sql, metadata)
+VALUES (
+	COALESCE(:id::text, gen_random_uuid()::text),
+	:readerId!,
+	COALESCE(:conditionsSql, 'TRUE'),
+	COALESCE(:metadata::jsonb, '{}')
+)
+ON CONFLICT (id) DO UPDATE
+SET
+	conditions_sql = EXCLUDED.conditions_sql,
+	metadata = EXCLUDED.metadata
 RETURNING id AS "id!";
 
 /* @name readReaderXidStates */
@@ -20,12 +29,9 @@ SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload AS "payload!",
-	metadata AS "metadata!",
+	metadata AS "metadata",
 	subscription_ids AS "subscriptionIds!"
-FROM pgmb2.read_next_events_for_subscriptions(
-	:readerId!,
-	:chunkSize!
-);
+FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
 
 /* @name readNextEvents */
 SELECT
@@ -69,3 +75,10 @@ RETURNING id AS "id!";
 /* @name removeTemporarySubscriptions */
 DELETE FROM pgmb2.subscriptions
 WHERE reader_id = :readerId! AND is_temporary;
+
+/* @name reenqueueEventsForSubscription */
+SELECT pgmb2.reenqueue_events_for_subscription(
+	:eventIds!::text[],
+	:subscriptionId!,
+	:offsetInterval!::INTERVAL
+) AS "reenqueuedEventIds!";

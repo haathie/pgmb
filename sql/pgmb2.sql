@@ -88,17 +88,20 @@ CREATE TABLE IF NOT EXISTS events(
 	topic VARCHAR(255) NOT NULL,
 	xid bigint NOT NULL DEFAULT txid_current(),
 	payload JSONB NOT NULL,
-	metadata JSONB
+	metadata JSONB,
+	-- if an event is directed to a specific subscription,
+	-- this field will be set to that subscription's ID
+	subscription_id VARCHAR(48)
 ) PARTITION BY RANGE (id);
 
-CREATE INDEX IF NOT EXISTS idx_events_topic_id
-	ON events (topic, id);
+-- CREATE INDEX IF NOT EXISTS idx_events_xid
+-- 	ON events (xid, id DESC);
 
 CREATE OR REPLACE FUNCTION get_event_partition_name(
 	table_name TEXT,
 	ts timestamptz
 ) RETURNS TEXT AS $$
-	SELECT table_name || '_' || to_char(ts, 'YYYYMMDDHH24')
+	SELECT table_name || '_' || to_char(ts, 'YYYYMMDDHHMI24')
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Partition maintenance function for events table. Creates partitions for
@@ -148,6 +151,15 @@ BEGIN
 				-- fill with max possible tx id
 				create_event_id(target_ts + partition_interval, 0)
 			);
+
+			-- turn off autovacuum on the events table, since we're not
+			-- going to be updating/deleting rows from it.
+			-- Also set fillfactor to 100 since we're only inserting.
+			EXECUTE FORMAT('ALTER TABLE %I.%I SET(
+				fillfactor = 100,
+				autovacuum_enabled = false,
+				toast.autovacuum_enabled = false
+			);', schema_name, get_event_partition_name(table_name, target_ts));
 		END;
 	END LOOP;
 
@@ -192,6 +204,25 @@ CREATE TABLE IF NOT EXISTS reader_xid_state (
 	max_event_id event_id NOT NULL,
 	PRIMARY KEY (reader_id, xid)
 );
+
+
+-- get the earliest active tx start time for a table. NULL if there are
+-- no active txs for the table.
+CREATE OR REPLACE FUNCTION get_xact_start(
+	schema_name varchar(64),
+	table_name varchar(64)
+) RETURNS TIMESTAMPTZ AS $$
+	SELECT MIN(pa.xact_start)
+		FROM pg_stat_activity pa
+		JOIN pg_locks pl ON pl.pid = pa.pid
+		JOIN pg_class pc ON pc.oid = pl.relation
+		JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+		WHERE pa.xact_start IS NOT NULL
+		AND pa.state IN ('active', 'idle in transaction')
+		AND pn.nspname = schema_name
+		AND pc.relname = table_name
+$$
+LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION read_next_events(
 	rid VARCHAR(64), chunk_size INT
@@ -270,18 +301,18 @@ BEGIN
 			last_read_event_id = EXCLUDED.last_read_event_id
 		WHERE reader_xid_state.completed_at IS NULL
 	),
+	rm_old_rows AS (
+		-- drop rows before the lookback interval
+		DELETE FROM reader_xid_state
+		WHERE reader_id = rid
+		AND created_at < (NOW() - lookback_interval)
+	),
 	update_reader AS (
 		UPDATE readers r SET
 			last_read_event_id
 				= GREATEST((SELECT MAX(ne.id) FROM next_events ne), lre),
 			last_read_at = NOW()
 		WHERE id = rid
-	),
-	rm_old_rows AS (
-		-- drop rows before the lookback interval
-		DELETE FROM reader_xid_state
-		WHERE reader_id = rid
-		AND created_at < (NOW() - lookback_interval)
 	)
 	SELECT * FROM next_events;
 END;
@@ -315,13 +346,15 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE OR REPLACE FUNCTION get_events_for_subscriptions_by_filter(
 	filter_txt TEXT, rid VARCHAR(64)
 )
-RETURNS TABLE(id event_id, subscription_ids varchar(64)[]) AS $$
+RETURNS TABLE(id event_id, subscription_ids varchar(48)[]) AS $$
 BEGIN
 	RETURN QUERY EXECUTE '
 		SELECT e.id, ARRAY_AGG(s.id)
 		FROM subscriptions s
-		INNER JOIN tmp_events e ON (' || filter_txt || ')
-		WHERE s.reader_id = $1 AND s.conditions_sql = $2
+		INNER JOIN tmp_events e ON e.subscription_ids = ''{}''
+			AND (' || filter_txt	|| ')
+		WHERE
+			s.reader_id = $1 AND s.conditions_sql = $2
 		GROUP BY e.id'
 		USING rid, filter_txt;
 END
@@ -341,7 +374,7 @@ CREATE OR REPLACE FUNCTION read_next_events_for_subscriptions(
 	topic varchar(128),
 	payload jsonb,
 	metadata jsonb,
-	subscription_ids varchar(64)[]
+	subscription_ids varchar(48)[]
 ) AS $$
 BEGIN
 	CREATE TEMP TABLE IF NOT EXISTS tmp_events(
@@ -349,12 +382,17 @@ BEGIN
 		topic varchar(128) NOT NULL,
 		payload jsonb NOT NULL,
 		metadata jsonb,
-		subscription_ids varchar(64)[] NOT NULL DEFAULT '{}'
-	)
-	ON COMMIT DROP;
+		subscription_ids varchar(48)[] NOT NULL DEFAULT '{}'
+	);
+	TRUNCATE TABLE tmp_events;
 
-	INSERT INTO tmp_events (id, topic, payload, metadata)
-	SELECT e.id, e.topic, e.payload, e.metadata
+	INSERT INTO tmp_events (id, topic, payload, metadata, subscription_ids)
+	SELECT
+		e.id, e.topic, e.payload, e.metadata,
+		CASE WHEN e.subscription_id IS NOT NULL
+			THEN ARRAY[e.subscription_id]
+			ELSE '{}'
+		END
 	FROM read_next_events(rid, chunk_size) e;
 
 	WITH relevant_sqls AS (
@@ -381,6 +419,30 @@ END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 	SET search_path TO pgmb2, public
 	SECURITY INVOKER;
+
+-- Function to re-enqueue events for a specific subscription
+CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
+	event_ids event_id[],
+	sub_id VARCHAR(48),
+	_offset INTERVAL DEFAULT '1 second'
+) RETURNS SETOF event_id AS $$
+	INSERT INTO events(id, topic, payload, metadata, subscription_id)
+	SELECT
+		create_event_id(NOW() + _offset),
+		e.topic,
+		e.payload,
+		e.metadata || jsonb_build_object(
+			'reenqueued_at', NOW(),
+			'retries', COALESCE((e.metadata->>'retries')::int, 0) + 1,
+			'original_event_id', COALESCE(e.metadata->>'original_event_id', e.id)
+		),
+		sub_id
+	FROM events e
+	INNER JOIN unnest(event_ids) AS u(eid) ON e.id = u.eid
+	RETURNING id;
+$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
+SET search_path TO pgmb2, public
+SECURITY INVOKER;
 
 -- triggers to add events for specific tables ---------------------------
 

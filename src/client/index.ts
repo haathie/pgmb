@@ -1,10 +1,10 @@
 import { Pool, type PoolClient } from 'pg'
 import P, { type Logger } from 'pino'
-import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PGPublishedMessage, PgPublishMsg, PGSentMessage, Serialiser } from '../types'
-import { delay, serialisePgMsgConstructorsIntoSql } from '../utils'
-import { PGMBEventBatcher } from './batcher'
-import { PGMBConsumer } from './consumer'
-import { PGMBListener } from './listener'
+import type { DefaultDataMap, PgEnqueueMsg, PGMBAssertExchangeOpts, PGMBAssertQueueOpts, PGMBClientOpts, PGMBNotification, PGPublishedMessage, PgPublishMsg, PGSentMessage, Serialiser } from '../types.ts'
+import { delay, serialisePgMsgConstructorsIntoSql } from '../utils.ts'
+import { PGMBEventBatcher } from './batcher.ts'
+import { PGMBConsumer } from './consumer.ts'
+import { PGMBListener } from './listener.ts'
 
 export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 

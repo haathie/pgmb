@@ -4,7 +4,7 @@ import { after, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import type { PoolClient } from 'pg'
 import { Pool } from 'pg'
-import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, readReaderXidStates, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, readReaderXidStates, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 describe('PG Tests', () => {
 
@@ -181,6 +181,53 @@ describe('PG Tests', () => {
 		assert.partialDeepStrictEqual(rows[0], { subscriptionIds: [sub.id] })
 	})
 
+	it('should re-enqueue event for subscription', async() => {
+		await insertEvent(pool)
+		const [sub1] = await createSubscription.run(
+			{ readerId: readerName },
+			pool
+		)
+
+		// control subscription
+		await createSubscription.run(
+			{ readerId: readerName },
+			pool
+		)
+
+		const rows = await readNextEventsForSubscriptions.run(
+			{ readerId: readerName, chunkSize: 10 },
+			pool
+		)
+		assert.equal(rows.length, 1)
+
+		await reenqueueEventsForSubscription.run(
+			{
+				eventIds: rows.map(r => r.id),
+				subscriptionId: sub1.id,
+				offsetInterval: '1 second'
+			},
+			pool
+		)
+
+		assert.deepEqual(
+			await readNextEventsForSubscriptions.run(
+				{ readerId: readerName, chunkSize: 10 },
+				pool
+			),
+			[]
+		)
+
+		await setTimeout(1000)
+
+		assert.partialDeepStrictEqual(
+			await readNextEventsForSubscriptions.run(
+				{ readerId: readerName, chunkSize: 10 },
+				pool
+			),
+			[{ subscriptionIds: [sub1.id] }]
+		)
+	})
+
 	it('should match subscriptions', async() => {
 		await writeEvents.run(
 			{
@@ -264,6 +311,15 @@ describe('PG Tests', () => {
 				{ topic: 'public.test_table.delete', payload: { id: 2 } }
 			]
 		)
+
+		// check removing subscribable works
+		await pool.query(`
+			SELECT pgmb2.stop_table_mutations_push('public.test_table'::regclass);
+			INSERT INTO public.test_table (data) VALUES ('new data');
+		`)
+
+		const moreRows = await readEvents(pool, 10)
+		assert.equal(moreRows.length, 0)
 	})
 
 	async function readEvents(client: Pool | PoolClient, count = 50) {

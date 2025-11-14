@@ -1,7 +1,7 @@
 import type { Notification, Pool, PoolClient } from 'pg'
 import type { Logger } from 'pino'
-import type { PGMBNotification, PGMBNotificationData } from '../types'
-import { delay, getChannelNameForQueue, getQueueNameFromChannel } from '../utils'
+import type { PGMBNotification, PGMBNotificationData } from '../types.ts'
+import { delay, getChannelNameForQueue, getQueueNameFromChannel } from '../utils.ts'
 
 const CLIENT_REMOVED_ERR = 'Listener client removed from pool'
 
@@ -15,15 +15,22 @@ export class PGMBListener {
 
 	static RECONNECT_DELAY_MS = 2500
 
+	readonly pool: Pool
+	readonly logger: Logger
+	readonly onNotification: (msg: PGMBNotification) => void
+
 	#subscribedQueues: string[] = []
 	#reconnectAttempt = 0
 	#client: PoolClient | undefined
 
 	constructor(
-		private pool: Pool,
-		private onNotification: (msg: PGMBNotification) => void,
-		private logger: Logger,
+		pool: Pool,
+		onNotification: (msg: PGMBNotification) => void,
+		logger: Logger,
 	) {
+		this.pool = pool
+		this.onNotification = onNotification
+		this.logger = logger
 		this.#onNotification = this.#onNotification.bind(this)
 		this.#onListenerError = this.#onListenerError.bind(this)
 		this.#onClientRemoved = this.#onClientRemoved.bind(this)
