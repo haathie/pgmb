@@ -28,7 +28,7 @@ WHERE reader_id = :readerId!;
 SELECT
 	id AS "id!",
 	topic AS "topic!",
-	payload AS "payload!",
+	payload::text AS "payload!",
 	metadata AS "metadata",
 	subscription_ids AS "subscriptionIds!"
 FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
@@ -37,12 +37,9 @@ FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
 SELECT
 	id AS "id!",
 	topic AS "topic!",
-	payload AS "payload!",
-	metadata AS "metadata!"
-FROM pgmb2.read_next_events(
-	:readerId!,
-	:chunkSize!
-);
+	payload::text AS "payload!",
+	'' AS "metadata!"
+FROM pgmb2.read_next_events(:readerId!, :chunkSize!);
 
 /* @name writeEvents */
 INSERT INTO pgmb2.events (topic, payload, metadata)

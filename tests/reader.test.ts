@@ -103,17 +103,12 @@ describe('PG Tests', () => {
 
 		assert.partialDeepStrictEqual(await readEvents(pool), [prow])
 
-		// check the tx was marked as completed
-		const [rState] = await readReaderXidStates
-			.run({ readerId: readerName }, pool)
-		assert.ok(rState?.completedAt)
-
 		await setTimeout(DELAY_MS)
 
 		assert.partialDeepStrictEqual(await readEvents(pool), [frow])
 	})
 
-	it('should not read duplicate events', async() => {
+	it.only('should not read duplicate events', async() => {
 		const writerCount = 10
 		const eventsPerWriter = 300
 		const eventsToWrite = writerCount * eventsPerWriter

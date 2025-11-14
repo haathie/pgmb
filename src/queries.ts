@@ -119,8 +119,8 @@ export interface IReadNextEventsForSubscriptionsParams {
 /** 'ReadNextEventsForSubscriptions' return type */
 export interface IReadNextEventsForSubscriptionsResult {
   id: string;
-  metadata: unknown;
-  payload: unknown;
+  metadata: unknown | null;
+  payload: string;
   subscriptionIds: stringArray;
   topic: string;
 }
@@ -131,7 +131,7 @@ export interface IReadNextEventsForSubscriptionsQuery {
   result: IReadNextEventsForSubscriptionsResult;
 }
 
-const readNextEventsForSubscriptionsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":179,"b":188}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":192,"b":202}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_subscriptions(\n\t:readerId!,\n\t:chunkSize!\n)"};
+const readNextEventsForSubscriptionsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":182,"b":191}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":194,"b":204}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\",\n\tmetadata AS \"metadata\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -139,13 +139,10 @@ const readNextEventsForSubscriptionsIR: any = {"usedParamSet":{"readerId":true,"
  * SELECT
  * 	id AS "id!",
  * 	topic AS "topic!",
- * 	payload AS "payload!",
- * 	metadata AS "metadata!",
+ * 	payload::text AS "payload!",
+ * 	metadata AS "metadata",
  * 	subscription_ids AS "subscriptionIds!"
- * FROM pgmb2.read_next_events_for_subscriptions(
- * 	:readerId!,
- * 	:chunkSize!
- * )
+ * FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)
  * ```
  */
 export const readNextEventsForSubscriptions = new PreparedQuery<IReadNextEventsForSubscriptionsParams,IReadNextEventsForSubscriptionsResult>(readNextEventsForSubscriptionsIR);
@@ -160,8 +157,8 @@ export interface IReadNextEventsParams {
 /** 'ReadNextEvents' return type */
 export interface IReadNextEventsResult {
   id: string;
-  metadata: unknown;
-  payload: unknown;
+  metadata: string;
+  payload: string;
   topic: string;
 }
 
@@ -171,7 +168,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":120,"b":129}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":133,"b":143}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.read_next_events(\n\t:readerId!,\n\t:chunkSize!\n)"};
+const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":118,"b":127}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":130,"b":140}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\",\n\t'' AS \"metadata!\"\nFROM pgmb2.read_next_events(:readerId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -179,12 +176,9 @@ const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true}
  * SELECT
  * 	id AS "id!",
  * 	topic AS "topic!",
- * 	payload AS "payload!",
- * 	metadata AS "metadata!"
- * FROM pgmb2.read_next_events(
- * 	:readerId!,
- * 	:chunkSize!
- * )
+ * 	payload::text AS "payload!",
+ * 	'' AS "metadata!"
+ * FROM pgmb2.read_next_events(:readerId!, :chunkSize!)
  * ```
  */
 export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextEventsResult>(readNextEventsIR);

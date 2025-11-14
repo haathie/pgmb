@@ -50,7 +50,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 				.run({ readerId: READER_ID, chunkSize: batchSize }, pool)
 
 			const subIdPayloadMap: { [subscriptionId: string]: Uint8Array[] } = {}
-			for(const { payload, topic } of events) {
+			for(const { topic, payload } of events) {
 				subIdPayloadMap[topic] ||= []
 				subIdPayloadMap[topic].push(payload as Uint8Array)
 			}
@@ -60,7 +60,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 					.map(([subId, payloads]) => onMessageMap[subId]?.(payloads))
 			)
 
-			await delay(100)
+			// await delay(100)
 		}
 	}
 
@@ -76,7 +76,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 			async publish(queueName, msgs) {
 				await writeEvents.run(
 					{
-						payloads: msgs.map(m => `{"data":"${Buffer.from(m.buffer, m.byteOffset, m.byteLength).toString('base64').slice(0, m.length)}"}`),
+						payloads: msgs.map(m => `{"data":"${Buffer.from(m.buffer, m.byteOffset, m.byteLength).toString('base64')}"}`),
 						topics: msgs.map(() => queueName),
 						metadatas: msgs.map(() => null),
 					},

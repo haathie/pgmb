@@ -37,9 +37,9 @@ $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb2, public;
 INSERT INTO subscriptions_config(id, value)
 	VALUES
 		('plugin_version', '0.1.0'),
-		('oldest_partition_interval', '2 hours'),
+		('oldest_partition_interval', '1 minute'),
 		('future_partitions_to_create', '12'),
-		('partition_size', 'hour'),
+		('partition_size', 'minute'),
 		('tx_commit_lookback_interval', '5 minutes');
 
 -- we'll create the events table next & its functions ---------------
@@ -86,13 +86,33 @@ $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
 CREATE TABLE IF NOT EXISTS events(
 	id event_id PRIMARY KEY DEFAULT create_event_id(),
 	topic VARCHAR(255) NOT NULL,
-	xid bigint NOT NULL DEFAULT txid_current(),
 	payload JSONB NOT NULL,
 	metadata JSONB,
 	-- if an event is directed to a specific subscription,
 	-- this field will be set to that subscription's ID
 	subscription_id VARCHAR(48)
 ) PARTITION BY RANGE (id);
+
+CREATE TABLE unread_events(
+	id event_id PRIMARY KEY
+);
+
+-- statement level trigger to insert into unread_events table
+CREATE OR REPLACE FUNCTION mark_events_as_unread()
+RETURNS TRIGGER AS $$
+BEGIN
+	INSERT INTO unread_events(id)
+	SELECT e.id FROM NEW e;
+	RETURN NULL;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public;
+
+CREATE TRIGGER mark_events_as_unread_trigger
+AFTER INSERT ON events
+REFERENCING NEW TABLE AS NEW
+FOR EACH STATEMENT
+EXECUTE FUNCTION mark_events_as_unread();
 
 -- CREATE INDEX IF NOT EXISTS idx_events_xid
 -- 	ON events (xid, id DESC);
@@ -192,7 +212,9 @@ CREATE TABLE IF NOT EXISTS readers (
 	id VARCHAR(64) PRIMARY KEY,
 	created_at timestamptz NOT NULL DEFAULT NOW(),
 	last_read_event_id event_id NOT NULL DEFAULT create_event_id(),
-	last_read_at timestamptz
+	last_read_at timestamptz,
+	last_read_xid bigint,
+	min_events_table_xact_start timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS reader_xid_state (
@@ -205,116 +227,32 @@ CREATE TABLE IF NOT EXISTS reader_xid_state (
 	PRIMARY KEY (reader_id, xid)
 );
 
-
--- get the earliest active tx start time for a table. NULL if there are
--- no active txs for the table.
-CREATE OR REPLACE FUNCTION get_xact_start(
-	schema_name varchar(64),
-	table_name varchar(64)
-) RETURNS TIMESTAMPTZ AS $$
-	SELECT MIN(pa.xact_start)
-		FROM pg_stat_activity pa
-		JOIN pg_locks pl ON pl.pid = pa.pid
-		JOIN pg_class pc ON pc.oid = pl.relation
-		JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-		WHERE pa.xact_start IS NOT NULL
-		AND pa.state IN ('active', 'idle in transaction')
-		AND pn.nspname = schema_name
-		AND pc.relname = table_name
-$$
-LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER;
-
 CREATE OR REPLACE FUNCTION read_next_events(
 	rid VARCHAR(64), chunk_size INT
 ) RETURNS SETOF events AS $$
 DECLARE
+	lre event_id;
+	lra timestamptz;
+	lrx bigint;
+
 	lookback_interval INTERVAL :=
 		get_config_value('tx_commit_lookback_interval')::INTERVAL;
 	now_event_id event_id := create_event_id(NOW());
-	lookback_start_eid event_id;
-	lre event_id;
-	r_created_at timestamptz;
+	lookback_start_eid event_id := create_event_id(NOW() - lookback_interval, 0);
 BEGIN
-	-- get the reader state
-	SELECT last_read_event_id, created_at INTO lre, r_created_at
-	FROM readers WHERE id = rid;
-
-	-- determine lookback start event ID
-	lookback_start_eid := create_event_id(
-		GREATEST(NOW() - lookback_interval, r_created_at)
-	);
-
-	RETURN QUERY WITH pending_xids AS (
-		SELECT
-			e.xid,
-			lookback_start_eid AS last_read_event_id,
-			MAX(e.id) as max_event_id
-		FROM events e
-		WHERE
-			e.id > lookback_start_eid
-			AND e.id < now_event_id
-			AND e.xid NOT IN (
-				SELECT xid FROM reader_xid_state rxs
-				WHERE rxs.reader_id = rid
-			)
-		GROUP BY e.xid
-
-		UNION ALL
-
-		SELECT rxs.xid, rxs.last_read_event_id, rxs.max_event_id
-		FROM reader_xid_state rxs
-		WHERE rxs.reader_id = rid AND rxs.completed_at IS NULL
-	),
-	next_events AS (
-		SELECT e.* FROM events e
-		WHERE
-			e.id < now_event_id
-			AND (
-				e.id > lre
-				OR EXISTS (
-					SELECT 1 FROM pending_xids p
-					WHERE e.xid = p.xid AND e.id > p.last_read_event_id
-				)
-			)
-		ORDER BY e.id
-		LIMIT chunk_size
-	),
-	upsert_states AS (
-		INSERT INTO reader_xid_state
-			(reader_id, xid, completed_at, last_read_event_id, max_event_id)
-			SELECT
-				rid,
-				ne.xid,
-				CASE WHEN
-					MAX(p.max_event_id) IS NULL OR MAX(ne.id) >= MAX(p.max_event_id)
-					THEN NOW()
-				ELSE
-					NULL
-				END,
-				MAX(ne.id),
-				COALESCE(MAX(p.max_event_id), MAX(ne.id))
-			FROM next_events ne
-			LEFT JOIN pending_xids p ON p.xid = ne.xid
-			GROUP BY ne.xid
-		ON CONFLICT(reader_id, xid) DO UPDATE SET
-			completed_at = EXCLUDED.completed_at,
-			last_read_event_id = EXCLUDED.last_read_event_id
-		WHERE reader_xid_state.completed_at IS NULL
-	),
-	rm_old_rows AS (
-		-- drop rows before the lookback interval
-		DELETE FROM reader_xid_state
-		WHERE reader_id = rid
-		AND created_at < (NOW() - lookback_interval)
-	),
-	update_reader AS (
-		UPDATE readers r SET
-			last_read_event_id
-				= GREATEST((SELECT MAX(ne.id) FROM next_events ne), lre),
-			last_read_at = NOW()
-		WHERE id = rid
+	RETURN QUERY WITH read_ids AS (
+		DELETE FROM unread_events ue
+		USING (
+			SELECT ue.id FROM unread_events ue
+			WHERE ue.id < now_event_id
+			ORDER BY ue.id
+			LIMIT chunk_size
+		) uev
+		WHERE ue.id = uev.id
+		RETURNING ue.id
 	)
-	SELECT * FROM next_events;
+	SELECT e.* FROM read_ids r
+	INNER JOIN events e ON e.id = r.id;
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 	SET SEARCH_PATH TO pgmb2, public
