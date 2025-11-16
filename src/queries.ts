@@ -120,7 +120,7 @@ export interface IReadNextEventsForSubscriptionsParams {
 export interface IReadNextEventsForSubscriptionsResult {
   id: string;
   metadata: unknown | null;
-  payload: string;
+  payload: unknown;
   subscriptionIds: stringArray;
   topic: string;
 }
@@ -131,7 +131,44 @@ export interface IReadNextEventsForSubscriptionsQuery {
   result: IReadNextEventsForSubscriptionsResult;
 }
 
-const readNextEventsForSubscriptionsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":182,"b":191}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":194,"b":204}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\",\n\tmetadata AS \"metadata\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)"};
+const readNextEventsForSubscriptionsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":176,"b":185}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":188,"b":198}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT
+ * 	id AS "id!",
+ * 	topic AS "topic!",
+ * 	payload AS "payload!",
+ * 	metadata AS "metadata",
+ * 	subscription_ids AS "subscriptionIds!"
+ * FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)
+ * ```
+ */
+export const readNextEventsForSubscriptions = new PreparedQuery<IReadNextEventsForSubscriptionsParams,IReadNextEventsForSubscriptionsResult>(readNextEventsForSubscriptionsIR);
+
+
+/** 'ReadNextEventsForSubscriptionsText' parameters type */
+export interface IReadNextEventsForSubscriptionsTextParams {
+  chunkSize: number;
+  readerId: string;
+}
+
+/** 'ReadNextEventsForSubscriptionsText' return type */
+export interface IReadNextEventsForSubscriptionsTextResult {
+  id: string;
+  payload: string;
+  subscriptionIds: stringArray;
+  topic: string;
+}
+
+/** 'ReadNextEventsForSubscriptionsText' query type */
+export interface IReadNextEventsForSubscriptionsTextQuery {
+  params: IReadNextEventsForSubscriptionsTextParams;
+  result: IReadNextEventsForSubscriptionsTextResult;
+}
+
+const readNextEventsForSubscriptionsTextIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":157,"b":166}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":169,"b":179}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -140,12 +177,11 @@ const readNextEventsForSubscriptionsIR: any = {"usedParamSet":{"readerId":true,"
  * 	id AS "id!",
  * 	topic AS "topic!",
  * 	payload::text AS "payload!",
- * 	metadata AS "metadata",
  * 	subscription_ids AS "subscriptionIds!"
  * FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!)
  * ```
  */
-export const readNextEventsForSubscriptions = new PreparedQuery<IReadNextEventsForSubscriptionsParams,IReadNextEventsForSubscriptionsResult>(readNextEventsForSubscriptionsIR);
+export const readNextEventsForSubscriptionsText = new PreparedQuery<IReadNextEventsForSubscriptionsTextParams,IReadNextEventsForSubscriptionsTextResult>(readNextEventsForSubscriptionsTextIR);
 
 
 /** 'ReadNextEvents' parameters type */
@@ -157,8 +193,8 @@ export interface IReadNextEventsParams {
 /** 'ReadNextEvents' return type */
 export interface IReadNextEventsResult {
   id: string;
-  metadata: string;
-  payload: string;
+  metadata: unknown;
+  payload: unknown;
   topic: string;
 }
 
@@ -168,7 +204,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":118,"b":127}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":130,"b":140}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\",\n\t'' AS \"metadata!\"\nFROM pgmb2.read_next_events(:readerId!, :chunkSize!)"};
+const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":118,"b":127}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":130,"b":140}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.read_next_events(:readerId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -176,12 +212,46 @@ const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true}
  * SELECT
  * 	id AS "id!",
  * 	topic AS "topic!",
- * 	payload::text AS "payload!",
- * 	'' AS "metadata!"
+ * 	payload AS "payload!",
+ * 	metadata AS "metadata!"
  * FROM pgmb2.read_next_events(:readerId!, :chunkSize!)
  * ```
  */
 export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextEventsResult>(readNextEventsIR);
+
+
+/** 'ReadNextEventsText' parameters type */
+export interface IReadNextEventsTextParams {
+  chunkSize: number;
+  readerId: string;
+}
+
+/** 'ReadNextEventsText' return type */
+export interface IReadNextEventsTextResult {
+  id: string;
+  payload: string;
+  topic: string;
+}
+
+/** 'ReadNextEventsText' query type */
+export interface IReadNextEventsTextQuery {
+  params: IReadNextEventsTextParams;
+  result: IReadNextEventsTextResult;
+}
+
+const readNextEventsTextIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":107}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":110,"b":120}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:readerId!, :chunkSize!)"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT
+ * 	id AS "id!",
+ * 	topic AS "topic!",
+ * 	payload::text AS "payload!"
+ * FROM pgmb2.read_next_events(:readerId!, :chunkSize!)
+ * ```
+ */
+export const readNextEventsText = new PreparedQuery<IReadNextEventsTextParams,IReadNextEventsTextResult>(readNextEventsTextIR);
 
 
 /** 'WriteEvents' parameters type */

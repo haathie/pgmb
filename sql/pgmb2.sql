@@ -227,20 +227,26 @@ CREATE TABLE IF NOT EXISTS reader_xid_state (
 	PRIMARY KEY (reader_id, xid)
 );
 
-CREATE OR REPLACE FUNCTION read_next_events(
+CREATE OR REPLACE FUNCTION read_next_events_into_tmp(
 	rid VARCHAR(64), chunk_size INT
-) RETURNS SETOF events AS $$
+) RETURNS VOID AS $$
 DECLARE
-	lre event_id;
-	lra timestamptz;
-	lrx bigint;
-
-	lookback_interval INTERVAL :=
-		get_config_value('tx_commit_lookback_interval')::INTERVAL;
 	now_event_id event_id := create_event_id(NOW());
-	lookback_start_eid event_id := create_event_id(NOW() - lookback_interval, 0);
+
+	max_event_id event_id;
+	min_event_id event_id;
+	read_ids event_id[];
 BEGIN
-	RETURN QUERY WITH read_ids AS (
+	CREATE TEMP TABLE IF NOT EXISTS tmp_events(
+		id event_id NOT NULL,
+		topic varchar(128) NOT NULL,
+		payload jsonb NOT NULL,
+		metadata jsonb,
+		subscription_ids varchar(48)[] NOT NULL DEFAULT '{}'
+	);
+	TRUNCATE TABLE tmp_events;
+
+	WITH new_ids AS (
 		DELETE FROM unread_events ue
 		USING (
 			SELECT ue.id FROM unread_events ue
@@ -251,11 +257,45 @@ BEGIN
 		WHERE ue.id = uev.id
 		RETURNING ue.id
 	)
-	SELECT e.* FROM read_ids r
-	INNER JOIN events e ON e.id = r.id;
+	SELECT ARRAY_AGG(ue.id), MAX(ue.id), MIN(ue.id)
+		INTO read_ids, max_event_id, min_event_id
+	FROM new_ids ue;
+
+	IF max_event_id IS NULL THEN
+		RETURN;
+	END IF;
+
+	INSERT INTO tmp_events
+	SELECT
+		e.id, e.topic, e.payload, e.metadata,
+		CASE WHEN e.subscription_id IS NOT NULL
+			THEN ARRAY[e.subscription_id]
+			ELSE '{}'
+		END
+	FROM events e
+	INNER JOIN UNNEST(read_ids) AS u(id) USING (id)
+	WHERE e.id <= max_event_id AND e.id >= min_event_id
+	ORDER BY e.id;
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 	SET SEARCH_PATH TO pgmb2, public
+	SECURITY INVOKER;
+
+CREATE OR REPLACE FUNCTION read_next_events(
+	rid VARCHAR(64), chunk_size INT
+) RETURNS TABLE(
+	id event_id,
+	topic varchar(128),
+	payload jsonb,
+	metadata jsonb
+) AS $$
+BEGIN
+	PERFORM read_next_events_into_tmp(rid, chunk_size);
+	RETURN QUERY
+		SELECT t.id, t.topic, t.payload, t.metadata FROM tmp_events t;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public
 	SECURITY INVOKER;
 
 -- subscription management tables and functions will go here ---------------------
@@ -300,6 +340,68 @@ $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 SET search_path TO pgmb2, public
 SECURITY INVOKER;
 
+CREATE OR REPLACE FUNCTION prepare_subscription_read_statement(
+	sql_statements TEXT[]
+) RETURNS VOID AS $$
+BEGIN
+	EXECUTE FORMAT('CREATE OR REPLACE FUNCTION distribute_events_to_subscriptions(
+		event_ids event_id[],
+		max_event_id event_id,
+		min_event_id event_id
+	) RETURNS TABLE(
+		id event_id,
+		topic varchar(128),
+		payload jsonb,
+		metadata jsonb,
+		subscription_ids varchar(48)[]
+	) AS $body$
+		SELECT e.id, e.topic, e.payload, e.metadata, ARRAY_AGG(s.id)
+		FROM events e
+		INNER JOIN subscriptions s ON
+			s.id = e.subscription_id
+			OR (
+				e.subscription_id IS NULL
+				AND (('
+					|| array_to_string(
+						ARRAY(
+							SELECT
+								stmt || ' AND s.conditions_sql = %L'
+							FROM unnest(sql_statements) AS arr(stmt)
+						),
+						') OR ('
+					)
+				|| '))
+			)
+		INNER JOIN unnest(event_ids) AS u(id) ON e.id = u.id
+		WHERE e.id <= max_event_id AND e.id >= min_event_id
+		GROUP BY e.id;
+	$body$ LANGUAGE sql STABLE STRICT PARALLEL SAFE
+	SET search_path TO pgmb2, public
+	SECURITY INVOKER;', VARIADIC sql_statements);
+END;
+$$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE SET search_path TO pgmb2, public
+SECURITY DEFINER;
+
+SELECT prepare_subscription_read_statement(ARRAY['true']);
+
+-- we'll prepare the subscription read statement whenever subscriptions are created/updated/deleted
+CREATE OR REPLACE FUNCTION refresh_subscription_read_statements()
+RETURNS TRIGGER AS $$
+BEGIN
+	PERFORM prepare_subscription_read_statement(
+		ARRAY(SELECT DISTINCT conditions_sql FROM subscriptions)
+	);
+	RETURN NULL;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public
+	SECURITY INVOKER;
+
+CREATE TRIGGER refresh_subscription_read_statements_trigger
+AFTER INSERT OR UPDATE OR DELETE ON subscriptions
+FOR EACH STATEMENT
+EXECUTE FUNCTION refresh_subscription_read_statements();
+
 -- Function to send changes to match & send changes to relevant subscriptions
 CREATE OR REPLACE FUNCTION read_next_events_for_subscriptions(
 	rid VARCHAR(64),
@@ -314,45 +416,35 @@ CREATE OR REPLACE FUNCTION read_next_events_for_subscriptions(
 	metadata jsonb,
 	subscription_ids varchar(48)[]
 ) AS $$
+DECLARE
+	now_event_id event_id := create_event_id(NOW());
+
+	max_event_id event_id;
+	min_event_id event_id;
+	read_ids event_id[];
 BEGIN
-	CREATE TEMP TABLE IF NOT EXISTS tmp_events(
-		id event_id NOT NULL,
-		topic varchar(128) NOT NULL,
-		payload jsonb NOT NULL,
-		metadata jsonb,
-		subscription_ids varchar(48)[] NOT NULL DEFAULT '{}'
-	);
-	TRUNCATE TABLE tmp_events;
-
-	INSERT INTO tmp_events (id, topic, payload, metadata, subscription_ids)
-	SELECT
-		e.id, e.topic, e.payload, e.metadata,
-		CASE WHEN e.subscription_id IS NOT NULL
-			THEN ARRAY[e.subscription_id]
-			ELSE '{}'
-		END
-	FROM read_next_events(rid, chunk_size) e;
-
-	WITH relevant_sqls AS (
-		SELECT conditions_sql
-		FROM subscriptions s
-		WHERE s.reader_id = rid
-		GROUP BY conditions_sql
-	),
-	mapped_subs AS (
-		SELECT e.id, ARRAY_AGG(u.subscription_id) AS subscription_ids
-		FROM relevant_sqls s
-		CROSS JOIN get_events_for_subscriptions_by_filter(s.conditions_sql, rid) e
-		JOIN LATERAL unnest(e.subscription_ids) AS u(subscription_id) ON true
-		GROUP BY e.id
+	-- fetch all unread events up to now_event_id
+	WITH new_ids AS (
+		DELETE FROM unread_events ue
+		USING (
+			SELECT ue.id FROM unread_events ue
+			WHERE ue.id < now_event_id
+			ORDER BY ue.id
+			LIMIT chunk_size
+		) uev
+		WHERE ue.id = uev.id
+		RETURNING ue.id
 	)
-	UPDATE tmp_events te
-		SET subscription_ids = ms.subscription_ids
-	FROM mapped_subs ms
-	WHERE te.id = ms.id;
+	SELECT ARRAY_AGG(ue.id), MAX(ue.id), MIN(ue.id)
+		INTO read_ids, max_event_id, min_event_id
+	FROM new_ids ue;
 
-	RETURN QUERY
-		SELECT * FROM tmp_events te WHERE array_length(te.subscription_ids, 1) > 0;
+	IF max_event_id IS NULL THEN
+		RETURN;
+	END IF;
+
+	RETURN QUERY SELECT *
+	FROM distribute_events_to_subscriptions(read_ids, max_event_id, min_event_id);
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 	SET search_path TO pgmb2, public

@@ -28,8 +28,17 @@ WHERE reader_id = :readerId!;
 SELECT
 	id AS "id!",
 	topic AS "topic!",
-	payload::text AS "payload!",
+	payload AS "payload!",
 	metadata AS "metadata",
+	subscription_ids AS "subscriptionIds!"
+FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
+
+
+/* @name readNextEventsForSubscriptionsText */
+SELECT
+	id AS "id!",
+	topic AS "topic!",
+	payload::text AS "payload!",
 	subscription_ids AS "subscriptionIds!"
 FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
 
@@ -37,8 +46,15 @@ FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
 SELECT
 	id AS "id!",
 	topic AS "topic!",
-	payload::text AS "payload!",
-	'' AS "metadata!"
+	payload AS "payload!",
+	metadata AS "metadata!"
+FROM pgmb2.read_next_events(:readerId!, :chunkSize!);
+
+/* @name readNextEventsText */
+SELECT
+	id AS "id!",
+	topic AS "topic!",
+	payload::text AS "payload!"
 FROM pgmb2.read_next_events(:readerId!, :chunkSize!);
 
 /* @name writeEvents */

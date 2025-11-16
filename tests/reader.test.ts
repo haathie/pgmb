@@ -4,7 +4,7 @@ import { after, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import type { PoolClient } from 'pg'
 import { Pool } from 'pg'
-import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, readReaderXidStates, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 describe('PG Tests', () => {
 
@@ -108,7 +108,7 @@ describe('PG Tests', () => {
 		assert.partialDeepStrictEqual(await readEvents(pool), [frow])
 	})
 
-	it.only('should not read duplicate events', async() => {
+	it('should not read duplicate events', async() => {
 		const writerCount = 10
 		const eventsPerWriter = 300
 		const eventsToWrite = writerCount * eventsPerWriter

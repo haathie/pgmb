@@ -1,6 +1,6 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, writeEvents } from '../queries.ts'
+import { createReader, createSubscription, readNextEventsForSubscriptionsText, readNextEventsText, writeEvents } from '../queries.ts'
 import { delay } from '../utils.ts'
 import type { MakeBenchmarkClient } from './types.ts'
 
@@ -46,7 +46,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	let closed = false
 	const run = async() => {
 		while(!closed) {
-			const events = await readNextEventsForSubscriptions
+			const events = await readNextEventsForSubscriptionsText
 				.run({ readerId: READER_ID, chunkSize: batchSize }, pool)
 
 			const subIdPayloadMap: { [subscriptionId: string]: Uint8Array[] } = {}
