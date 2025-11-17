@@ -33,7 +33,6 @@ SELECT
 	subscription_ids AS "subscriptionIds!"
 FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
 
-
 /* @name readNextEventsForSubscriptionsText */
 SELECT
 	id AS "id!",
