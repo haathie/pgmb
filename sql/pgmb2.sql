@@ -8,6 +8,7 @@ SET auto_explain.log_min_duration = 0;
 SET client_min_messages TO log;
 */
 
+-- DROP SCHEMA IF EXISTS pgmb2 CASCADE;
 CREATE SCHEMA IF NOT EXISTS "pgmb2";
 
 SET search_path TO pgmb2, public;
@@ -91,32 +92,11 @@ CREATE TABLE IF NOT EXISTS events(
 	subscription_id VARCHAR(48)
 ) PARTITION BY RANGE (id);
 
-CREATE TABLE unread_events(
-	id event_id
-);
-
--- statement level trigger to insert into unread_events table
-CREATE OR REPLACE FUNCTION mark_events_as_unread()
-RETURNS TRIGGER AS $$
-BEGIN
-	INSERT INTO unread_events(id)
-	SELECT e.id FROM NEW e;
-	RETURN NULL;
-END
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb2, public;
-
-CREATE TRIGGER mark_events_as_unread_trigger
-AFTER INSERT ON events
-REFERENCING NEW TABLE AS NEW
-FOR EACH STATEMENT
-EXECUTE FUNCTION mark_events_as_unread();
-
-CREATE OR REPLACE FUNCTION get_event_partition_name(
-	table_name TEXT,
+CREATE OR REPLACE FUNCTION get_time_partition_name(
+	table_id regclass,
 	ts timestamptz
 ) RETURNS TEXT AS $$
-	SELECT table_name || '_' || to_char(ts, 'YYYYMMDDHHMI24')
+	SELECT table_id || '_' || to_char(ts, 'YYYYMMDDHHMI24')
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Partition maintenance function for events table. Creates partitions for
@@ -124,13 +104,12 @@ $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 -- configured time interval.
 -- Exact partition size and oldest partition interval can be configured
 -- using the "subscriptions_config" table.
-CREATE OR REPLACE FUNCTION maintain_events_table(
+CREATE OR REPLACE FUNCTION maintain_time_partitions_using_event_id(
+	table_id regclass,
 	current_ts timestamptz DEFAULT NOW()
 )
 RETURNS void AS $$
 DECLARE
-	schema_name TEXT := 'pgmb2';
-	table_name TEXT := 'events';
 	partition_size TEXT := get_config_value('partition_size');
 	partition_interval INTERVAL := ('1 ' || partition_size);
 
@@ -140,7 +119,7 @@ DECLARE
 		get_config_value('future_partitions_to_create')::INT;
 
 	lock_key BIGINT :=
-		hashtext(schema_name || '.' || table_name || '.partition_maintenance');
+		hashtext(table_id || '.partition_maintenance');
 
 	ts_trunc timestamptz := date_trunc(partition_size, current_ts);
 	p_info RECORD;
@@ -156,12 +135,10 @@ BEGIN
 			target_ts timestamptz := ts_trunc + (i * partition_interval);
 		BEGIN
 			EXECUTE format(
-				'CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %I.%I
+				'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I
 					FOR VALUES FROM (%L) TO (%L)',
-				schema_name,
-				get_event_partition_name(table_name, target_ts),
-				schema_name,
-				table_name,
+				get_time_partition_name(table_id, target_ts),
+				table_id,
 				create_event_id(target_ts, 0),
 				-- fill with max possible tx id
 				create_event_id(target_ts + partition_interval, 0)
@@ -170,27 +147,23 @@ BEGIN
 			-- turn off autovacuum on the events table, since we're not
 			-- going to be updating/deleting rows from it.
 			-- Also set fillfactor to 100 since we're only inserting.
-			EXECUTE FORMAT('ALTER TABLE %I.%I SET(
+			EXECUTE FORMAT('ALTER TABLE %I SET(
 				fillfactor = 100,
 				autovacuum_enabled = false,
 				toast.autovacuum_enabled = false
-			);', schema_name, get_event_partition_name(table_name, target_ts));
+			);', get_time_partition_name(table_id, target_ts));
 		END;
 	END LOOP;
 
 	-- Drop old partitions
 	FOR p_info IN (
-		SELECT relname FROM pg_class
-		WHERE
-			relname < get_event_partition_name(
-				table_name, current_ts - oldest_partition_interval
-			)
-			AND relname LIKE (table_name || '_%')
-			AND relkind = 'r'
-			AND relnamespace 
-				= (SELECT oid FROM pg_namespace WHERE nspname = schema_name)
+		SELECT inhrelid::regclass AS child -- optionally cast to text
+		FROM pg_catalog.pg_inherits
+		WHERE inhparent = table_id
+			AND inhrelid::regclass::text <
+				get_time_partition_name(table_id, current_ts - oldest_partition_interval)
 	) LOOP
-		EXECUTE format('DROP TABLE IF EXISTS %I.%I', schema_name, p_info.relname);
+		EXECUTE format('DROP TABLE IF EXISTS %I', p_info.child);
 	END LOOP;
 
 	-- unlock the advisory lock
@@ -198,8 +171,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
 	SET search_path TO pgmb2, public;
-
-SELECT maintain_events_table();
 
 -- reader, subscription management tables and functions will go here ----------------
 
@@ -229,72 +200,105 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 CREATE TABLE IF NOT EXISTS subscription_unread_events (
 	event_id event_id NOT NULL,
-	reader_id VARCHAR(64) NOT NULL
-		REFERENCES readers(id) ON DELETE CASCADE,
-	subscription_ids VARCHAR(48)[] NOT NULL,
-	read_at timestamptz,
-	PRIMARY KEY(reader_id, event_id)
-);
+	reader_id VARCHAR(64) NOT NULL,
+	subscription_ids VARCHAR(48)[],
+	read_at timestamptz
+) PARTITION BY RANGE (event_id);
 
-CREATE OR REPLACE FUNCTION distribute_events_to_subscriptions_tmpl(
+CREATE INDEX IF NOT EXISTS idx_subscription_unread_events_reader_id
+	ON subscription_unread_events(reader_id, (read_at IS NULL), event_id);
+
+-- statement level trigger to insert into unread_events table
+CREATE OR REPLACE FUNCTION mark_events_as_unread()
+RETURNS TRIGGER AS $$
+BEGIN
+	INSERT INTO subscription_unread_events(event_id, reader_id)
+	SELECT e.id, r.id FROM NEW e
+	CROSS JOIN readers r;
+	RETURN NULL;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public;
+
+CREATE TRIGGER mark_events_as_unread_trigger
+AFTER INSERT ON events
+REFERENCING NEW TABLE AS NEW
+FOR EACH STATEMENT
+EXECUTE FUNCTION mark_events_as_unread();
+
+CREATE OR REPLACE FUNCTION read_next_events_tmpl(
+	rid VARCHAR(64),
 	-- Specify how many events to fetch in a single batch. Useful to limit
 	-- compute load, and to avoid overwhelming clients with too many events
 	-- at once.
 	chunk_size int DEFAULT 250
 )
-RETURNS VOID AS $body$
+RETURNS TABLE(
+	id event_id,
+	topic VARCHAR(255),
+	payload JSONB,
+	metadata JSONB,
+	subscription_ids VARCHAR(48)[]
+) AS $body$
 DECLARE
-	now_event_id event_id := create_event_id(NOW());
+	now_event_id event_id := create_event_id(NOW(), 0);
 
-	max_event_id event_id;
-	min_event_id event_id;
-	event_ids event_id[];
+	partition_size TEXT := get_config_value('partition_size');
+	cur_partition_start_id event_id := create_event_id(
+		date_trunc(partition_size, NOW()),
+		0
+	);
 BEGIN
--- fetch all unread events up to now_event_id
-	WITH new_ids AS (
-		DELETE FROM unread_events ue
-		USING (
-			SELECT ue.id FROM unread_events ue
-			WHERE ue.id < now_event_id
-			ORDER BY ue.id
+	RETURN QUERY UPDATE subscription_unread_events ue
+		SET
+			read_at = NOW(),
+			subscription_ids = e.subscription_ids
+		FROM (
+			SELECT
+				ue.event_id as id, e.topic, e.payload, e.metadata,
+				ARRAY_AGG(s.id) as subscription_ids
+			FROM subscription_unread_events ue
+			LEFT JOIN events e ON e.id = ue.event_id
+			LEFT JOIN subscriptions s ON
+				s.reader_id = rid
+				AND (
+					s.id = e.subscription_id
+					OR (
+						e.subscription_id IS NULL
+						AND (
+							-- Do not edit this line directly. Will be replaced
+							-- in the prepared function.
+							TRUE -- CONDITIONS_SQL_PLACEHOLDER --
+						)
+					)
+				)
+			WHERE
+				e.id < now_event_id AND e.id > cur_partition_start_id
+				AND ue.event_id < now_event_id AND ue.event_id > cur_partition_start_id
+				AND ue.reader_id = rid
+				AND ue.read_at IS NULL
+			GROUP BY ue.event_id, e.topic, e.payload, e.metadata
+			ORDER BY ue.event_id
 			LIMIT chunk_size
-		) uev
-		WHERE ue.id = uev.id
-		RETURNING ue.id
-	)
-	SELECT ARRAY_AGG(ue.id), MAX(ue.id), MIN(ue.id)
-		INTO event_ids, max_event_id, min_event_id
-	FROM new_ids ue;
-
-	IF max_event_id IS NULL THEN
-		RETURN;
-	END IF;
-
-	INSERT INTO subscription_unread_events(reader_id, event_id, subscription_ids)
-	SELECT s.reader_id, e.id, ARRAY_AGG(s.id)
-	FROM events e
-	INNER JOIN subscriptions s ON
-		s.id = e.subscription_id
-		OR (
-			e.subscription_id IS NULL
-			AND (
-				TRUE -- CONDITIONS_SQL_PLACEHOLDER --
-			)
-		)
-	INNER JOIN unnest(event_ids) AS u(id) ON e.id = u.id
-	WHERE e.id <= max_event_id AND e.id >= min_event_id
-	GROUP BY s.reader_id, e.id;
+		) e
+		WHERE
+			reader_id = rid
+			AND read_at IS NULL
+			AND ue.event_id = e.id
+			AND ue.event_id < now_event_id
+			AND ue.event_id > cur_partition_start_id
+		RETURNING e.*;
 END;
 $body$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
 SET search_path TO pgmb2, public
 SECURITY INVOKER;
 
-CREATE OR REPLACE FUNCTION prepare_distribute_events_to_subscriptions_fn(
+CREATE OR REPLACE FUNCTION prepare_read_next_events_fn(
 	sql_statements TEXT[]
 ) RETURNS VOID AS $$
 DECLARE
 	tmpl_proc_name constant TEXT :=
-		'distribute_events_to_subscriptions_tmpl';
+		'read_next_events_tmpl';
 	tmpl_proc_placeholder constant TEXT :=
 		'TRUE -- CONDITIONS_SQL_PLACEHOLDER --';
 	condition_sql TEXT;
@@ -323,11 +327,7 @@ BEGIN
 
 	-- replace the placeholder with the actual condition SQL
 	proc_src := REPLACE(proc_src, tmpl_proc_placeholder, condition_sql);
-	proc_src := REPLACE(
-		proc_src,
-		tmpl_proc_name,
-		'distribute_events_to_subscriptions'
-	);
+	proc_src := REPLACE(proc_src, tmpl_proc_name, 'read_next_events');
 
 	EXECUTE proc_src;
 END;
@@ -335,13 +335,13 @@ $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
 SET search_path TO pgmb2, public
 SECURITY DEFINER;
 
-SELECT prepare_distribute_events_to_subscriptions_fn(ARRAY['true']);
+SELECT prepare_read_next_events_fn(ARRAY['true']);
 
 -- we'll prepare the subscription read statement whenever subscriptions are created/updated/deleted
 CREATE OR REPLACE FUNCTION refresh_subscription_read_statements()
 RETURNS TRIGGER AS $$
 BEGIN
-	PERFORM prepare_distribute_events_to_subscriptions_fn(
+	PERFORM prepare_read_next_events_fn(
 		ARRAY(SELECT DISTINCT conditions_sql FROM subscriptions)
 	);
 	RETURN NULL;
@@ -397,6 +397,19 @@ $$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb2, public
 SECURITY INVOKER;
 
+CREATE OR REPLACE FUNCTION maintain_events_table()
+RETURNS VOID AS $$
+BEGIN
+	PERFORM maintain_time_partitions_using_event_id('pgmb2.events'::regclass);
+	PERFORM maintain_time_partitions_using_event_id(
+		'pgmb2.subscription_unread_events'::regclass
+	);
+END;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+SET search_path TO pgmb2, public;
+
+SELECT maintain_events_table();
+
 -- triggers to add events for specific tables ---------------------------
 
 -- Function to create a topic string for subscriptions.
@@ -408,7 +421,6 @@ CREATE OR REPLACE FUNCTION create_topic(
 ) RETURNS varchar(255) AS $$
 	SELECT lower(schema_name || '.' || table_name || '.' || kind)
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
-
 
 -- Creates a function to compute the difference between two JSONB objects
 -- Treats 'null' values, and non-existent keys as equal

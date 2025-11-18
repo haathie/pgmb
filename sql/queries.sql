@@ -16,37 +16,13 @@ SET
 	metadata = EXCLUDED.metadata
 RETURNING id AS "id!";
 
-/* @name readReaderXidStates */
-SELECT
-	reader_id AS "readerId!",
-	xid AS "xid!",
-	completed_at AS "completedAt!"
-FROM pgmb2.reader_xid_state
-WHERE reader_id = :readerId!;
-
-/* @name readNextEventsForSubscriptions */
+/* @name readNextEvents */
 SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload AS "payload!",
 	metadata AS "metadata",
 	subscription_ids AS "subscriptionIds!"
-FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
-
-/* @name readNextEventsForSubscriptionsText */
-SELECT
-	id AS "id!",
-	topic AS "topic!",
-	payload::text AS "payload!",
-	subscription_ids AS "subscriptionIds!"
-FROM pgmb2.read_next_events_for_subscriptions(:readerId!, :chunkSize!);
-
-/* @name readNextEvents */
-SELECT
-	id AS "id!",
-	topic AS "topic!",
-	payload AS "payload!",
-	metadata AS "metadata!"
 FROM pgmb2.read_next_events(:readerId!, :chunkSize!);
 
 /* @name readNextEventsText */
@@ -94,3 +70,6 @@ SELECT pgmb2.reenqueue_events_for_subscription(
 	:subscriptionId!,
 	:offsetInterval!::INTERVAL
 ) AS "reenqueuedEventIds!";
+
+/* @name maintainEventsTable */
+SELECT pgmb2.maintain_events_table();

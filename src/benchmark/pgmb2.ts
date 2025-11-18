@@ -1,6 +1,6 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { createReader, createSubscription, readNextEventsForSubscriptionsText, writeEvents } from '../queries.ts'
+import { createReader, createSubscription, maintainEventsTable, readNextEventsText, writeEvents } from '../queries.ts'
 import type { MakeBenchmarkClient } from './types.ts'
 
 const READER_ID = 'benchmark'
@@ -20,6 +20,17 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	const pool = new Pool({ max: poolSize, connectionString: uri })
 	const onMessageMap:
 		{ [subscriptionId: string]: (msgs: Uint8Array[]) => Promise<void> } = {}
+
+	await maintainEventsTable.run(undefined, pool)
+	const maintaintask = publishers ?
+		setInterval(
+			async() => {
+				await maintainEventsTable.run(undefined, pool)
+				console.log('Maintained events table')
+			},
+			60_000
+		)
+		: undefined
 
 	try {
 		await createReader.run({ readerId: READER_ID }, pool)
@@ -45,7 +56,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	let closed = false
 	const run = async() => {
 		while(!closed) {
-			const events = await readNextEventsForSubscriptionsText
+			const events = await readNextEventsText
 				.run({ readerId: READER_ID, chunkSize: batchSize }, pool)
 
 			const subIdPayloadMap: { [subscriptionId: string]: string[] } = {}
@@ -70,17 +81,19 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 			closed = true
 			await task
 			await pool.end()
+			clearInterval(maintaintask)
 		},
 		publishers: Array.from({ length: publishers }, () => ({
 			async publish(queueName, msgs) {
-				await writeEvents.run(
-					{
-						payloads: msgs.map(m => `{"data":"${Buffer.from(m.buffer, m.byteOffset, m.byteLength).toString('base64')}"}`),
-						topics: msgs.map(() => queueName),
-						metadatas: msgs.map(() => null),
-					},
-					pool,
-				)
+				const payloads: string[] = []
+				const metadatas: (string | null)[] = []
+				const topics: string[] = []
+				for(const msg of msgs) {
+					payloads.push(`{"data":"${Buffer.from(msg.buffer, msg.byteOffset, msg.byteLength).toString('base64')}"}`)
+					metadatas.push(null)
+					topics.push(queueName)
+				}
+				await writeEvents.run({ payloads, topics, metadatas }, pool)
 			},
 		})),
 	}

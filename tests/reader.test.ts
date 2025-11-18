@@ -4,12 +4,13 @@ import { after, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import type { PoolClient } from 'pg'
 import { Pool } from 'pg'
-import { createReader, createSubscription, readNextEvents, readNextEventsForSubscriptions, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { createReader, createSubscription, readNextEvents, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 describe('PG Tests', () => {
 
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
 	let readerName: string
+	let mainReaderSub: string
 
 	before(async() => {
 		await pool.query('DROP SCHEMA IF EXISTS pgmb2 CASCADE;')
@@ -24,7 +25,12 @@ describe('PG Tests', () => {
 
 	beforeEach(async() => {
 		readerName = `reader_${Math.random().toString(36).substring(2, 15)}`
+		mainReaderSub = `${readerName}_main`
 		await createReader.run({ readerId: readerName }, pool)
+		await createSubscription.run(
+			{ readerId: readerName, id: mainReaderSub, conditionsSql: 'TRUE' },
+			pool
+		)
 	})
 
 	it('should receive events', async() => {
@@ -163,36 +169,24 @@ describe('PG Tests', () => {
 
 	it('should insert event and get subscriptions', async() => {
 		await insertEvent(pool)
-		const [sub] = await createSubscription.run(
-			{ readerId: readerName },
-			pool
-		)
+		const [sub] = await createSubscription
+			.run({ readerId: readerName }, pool)
 
-		const rows = await readNextEventsForSubscriptions.run(
-			{ readerId: readerName, chunkSize: 10 },
-			pool
-		)
+		const rows = await readNextEvents
+			.run({ readerId: readerName, chunkSize: 10 }, pool)
 		assert.equal(rows.length, 1)
 		assert.partialDeepStrictEqual(rows[0], { subscriptionIds: [sub.id] })
 	})
 
 	it('should re-enqueue event for subscription', async() => {
 		await insertEvent(pool)
-		const [sub1] = await createSubscription.run(
-			{ readerId: readerName },
-			pool
-		)
+		const [sub1] = await createSubscription.run({ readerId: readerName }, pool)
 
 		// control subscription
-		await createSubscription.run(
-			{ readerId: readerName },
-			pool
-		)
+		await createSubscription.run({ readerId: readerName }, pool)
 
-		const rows = await readNextEventsForSubscriptions.run(
-			{ readerId: readerName, chunkSize: 10 },
-			pool
-		)
+		const rows = await readNextEvents
+			.run({ readerId: readerName, chunkSize: 10 }, pool)
 		assert.equal(rows.length, 1)
 
 		await reenqueueEventsForSubscription.run(
@@ -205,20 +199,14 @@ describe('PG Tests', () => {
 		)
 
 		assert.deepEqual(
-			await readNextEventsForSubscriptions.run(
-				{ readerId: readerName, chunkSize: 10 },
-				pool
-			),
+			await readNextEvents.run({ readerId: readerName, chunkSize: 10 }, pool),
 			[]
 		)
 
 		await setTimeout(1000)
 
 		assert.partialDeepStrictEqual(
-			await readNextEventsForSubscriptions.run(
-				{ readerId: readerName, chunkSize: 10 },
-				pool
-			),
+			await readNextEvents.run({ readerId: readerName, chunkSize: 10 }, pool),
 			[{ subscriptionIds: [sub1.id] }]
 		)
 	})
@@ -257,17 +245,16 @@ describe('PG Tests', () => {
 			pool
 		)
 
-		const rows = await readNextEventsForSubscriptions
+		const rows = await readNextEvents
 			.run({ readerId: readerName, chunkSize: 10 }, pool)
 		assert.equal(rows.length, 2)
-		assert.partialDeepStrictEqual(
-			rows,
-			[
-				// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
-				{ subscriptionIds: [sub1.id, sub2.id] },
-				// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
-				{ subscriptionIds: [sub2.id] }
-			]
+		// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
+		assert.deepStrictEqual(
+			rows[0].subscriptionIds, [mainReaderSub, sub1.id, sub2.id]
+		)
+		// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
+		assert.deepStrictEqual(
+			rows[1].subscriptionIds, [mainReaderSub, sub2.id]
 		)
 	})
 
