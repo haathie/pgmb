@@ -62,10 +62,7 @@ $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 -- 1. 'ps' prefix
 -- 2. 13-character hex representation of the timestamp in microseconds
 -- 3. remaining random
-CREATE OR REPLACE FUNCTION create_event_id(
-	ts timestamptz DEFAULT clock_timestamp(),
-	rand bigint DEFAULT create_random_bigint()
-)
+CREATE OR REPLACE FUNCTION create_event_id(ts timestamptz, rand bigint)
 RETURNS event_id AS $$
 SELECT substr(
 	-- ensure we're always 28 characters long by right-padding with '0's
@@ -79,11 +76,17 @@ SELECT substr(
 	1,
 	24
 )
+$$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SECURITY DEFINER
+ SET search_path TO pgmb2, public;
+
+CREATE OR REPLACE FUNCTION create_event_id_default()
+RETURNS event_id AS $$
+	SELECT create_event_id(clock_timestamp(), create_random_bigint())
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
  SET search_path TO pgmb2, public;
 
 CREATE TABLE IF NOT EXISTS events(
-	id event_id PRIMARY KEY DEFAULT create_event_id(),
+	id event_id PRIMARY KEY DEFAULT create_event_id_default(),
 	topic VARCHAR(255) NOT NULL,
 	payload JSONB NOT NULL,
 	metadata JSONB,
@@ -91,6 +94,27 @@ CREATE TABLE IF NOT EXISTS events(
 	-- this field will be set to that subscription's ID
 	subscription_id VARCHAR(48)
 ) PARTITION BY RANGE (id);
+
+CREATE UNLOGGED TABLE IF NOT EXISTS unread_events (
+	event_id event_id PRIMARY KEY
+);
+
+-- statement level trigger to insert into unread_events table
+CREATE OR REPLACE FUNCTION mark_events_as_unread()
+RETURNS TRIGGER AS $$
+BEGIN
+	INSERT INTO unread_events(event_id)
+	SELECT e.id FROM NEW e;
+	RETURN NULL;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	SET search_path TO pgmb2, public;
+
+CREATE TRIGGER mark_events_as_unread_trigger
+AFTER INSERT ON events
+REFERENCING NEW TABLE AS NEW
+FOR EACH STATEMENT
+EXECUTE FUNCTION mark_events_as_unread();
 
 CREATE OR REPLACE FUNCTION get_time_partition_name(
 	table_id regclass,
@@ -172,12 +196,22 @@ END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
 	SET search_path TO pgmb2, public;
 
+CREATE OR REPLACE FUNCTION maintain_events_table()
+RETURNS VOID AS $$
+BEGIN
+	PERFORM maintain_time_partitions_using_event_id('pgmb2.events'::regclass);
+END;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+SET search_path TO pgmb2, public;
+
+SELECT maintain_events_table();
+
 -- reader, subscription management tables and functions will go here ----------------
 
 CREATE TABLE IF NOT EXISTS readers (
 	id VARCHAR(64) PRIMARY KEY,
 	created_at timestamptz NOT NULL DEFAULT NOW(),
-	last_read_event_id event_id NOT NULL DEFAULT create_event_id(),
+	last_read_event_id event_id NOT NULL DEFAULT create_event_id(NOW(), 0),
 	last_read_at timestamptz
 );
 
@@ -198,40 +232,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE TABLE IF NOT EXISTS subscription_unread_events (
-	event_id event_id NOT NULL,
-	reader_id VARCHAR(64) NOT NULL,
-	subscription_ids VARCHAR(48)[],
-	read_at timestamptz
-) PARTITION BY RANGE (event_id);
-
-CREATE INDEX IF NOT EXISTS idx_subscription_unread_events_reader_id
-	ON subscription_unread_events(reader_id, (read_at IS NULL), event_id);
-
--- statement level trigger to insert into unread_events table
-CREATE OR REPLACE FUNCTION mark_events_as_unread()
-RETURNS TRIGGER AS $$
-BEGIN
-	INSERT INTO subscription_unread_events(event_id, reader_id)
-	SELECT e.id, r.id FROM NEW e
-	CROSS JOIN readers r;
-	RETURN NULL;
-END
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb2, public;
-
-CREATE TRIGGER mark_events_as_unread_trigger
-AFTER INSERT ON events
-REFERENCING NEW TABLE AS NEW
-FOR EACH STATEMENT
-EXECUTE FUNCTION mark_events_as_unread();
-
 CREATE OR REPLACE FUNCTION read_next_events_tmpl(
 	rid VARCHAR(64),
-	-- Specify how many events to fetch in a single batch. Useful to limit
-	-- compute load, and to avoid overwhelming clients with too many events
-	-- at once.
-	chunk_size int DEFAULT 250
+	chunk_size INT DEFAULT 100
 )
 RETURNS TABLE(
 	id event_id,
@@ -241,53 +244,55 @@ RETURNS TABLE(
 	subscription_ids VARCHAR(48)[]
 ) AS $body$
 DECLARE
-	now_event_id event_id := create_event_id(NOW(), 0);
-
-	partition_size TEXT := get_config_value('partition_size');
-	cur_partition_start_id event_id := create_event_id(
-		date_trunc(partition_size, NOW()),
-		0
-	);
+	read_ids event_id[];
+	max_id event_id;
+	min_id event_id;
 BEGIN
-	RETURN QUERY UPDATE subscription_unread_events ue
-		SET
-			read_at = NOW(),
-			subscription_ids = e.subscription_ids
-		FROM (
-			SELECT
-				ue.event_id as id, e.topic, e.payload, e.metadata,
-				ARRAY_AGG(s.id) as subscription_ids
-			FROM subscription_unread_events ue
-			LEFT JOIN events e ON e.id = ue.event_id
-			LEFT JOIN subscriptions s ON
-				s.reader_id = rid
+	WITH to_delete AS (
+		SELECT td.event_id
+		FROM unread_events td
+		WHERE td.event_id < create_event_id(NOW(), 0)
+		-- ORDER BY td.event_id
+		LIMIT chunk_size
+	),
+	deleted AS (
+		DELETE FROM unread_events re
+		USING to_delete td
+		WHERE re.event_id = td.event_id
+	)
+	SELECT
+		MAX(event_id),
+		MIN(event_id),
+		ARRAY_AGG(event_id)
+	INTO max_id, min_id, read_ids
+	FROM to_delete;
+
+	IF max_id IS NULL THEN
+		RETURN;
+	END IF;
+
+	RETURN QUERY SELECT
+		e.id, e.topic, e.payload, e.metadata,
+		ARRAY_AGG(s.id) as subscription_ids
+	FROM events e
+	INNER JOIN unnest(read_ids) r(id) ON e.id = r.id
+	LEFT JOIN subscriptions s ON
+		s.reader_id = rid
+		AND (
+			s.id = e.subscription_id
+			OR (
+				e.subscription_id IS NULL
 				AND (
-					s.id = e.subscription_id
-					OR (
-						e.subscription_id IS NULL
-						AND (
-							-- Do not edit this line directly. Will be replaced
-							-- in the prepared function.
-							TRUE -- CONDITIONS_SQL_PLACEHOLDER --
-						)
-					)
+					-- Do not edit this line directly. Will be replaced
+					-- in the prepared function.
+					TRUE -- CONDITIONS_SQL_PLACEHOLDER --
 				)
-			WHERE
-				e.id < now_event_id AND e.id > cur_partition_start_id
-				AND ue.event_id < now_event_id AND ue.event_id > cur_partition_start_id
-				AND ue.reader_id = rid
-				AND ue.read_at IS NULL
-			GROUP BY ue.event_id, e.topic, e.payload, e.metadata
-			ORDER BY ue.event_id
-			LIMIT chunk_size
-		) e
-		WHERE
-			reader_id = rid
-			AND read_at IS NULL
-			AND ue.event_id = e.id
-			AND ue.event_id < now_event_id
-			AND ue.event_id > cur_partition_start_id
-		RETURNING e.*;
+			)
+		)
+	WHERE
+		e.id <= max_id AND e.id >= min_id
+		AND s.id IS NOT NULL
+	GROUP BY e.id;
 END;
 $body$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
 SET search_path TO pgmb2, public
@@ -381,7 +386,7 @@ CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
 ) RETURNS SETOF event_id AS $$
 	INSERT INTO events(id, topic, payload, metadata, subscription_id)
 	SELECT
-		create_event_id(NOW() + _offset),
+		create_event_id(NOW() + _offset, create_random_bigint()),
 		e.topic,
 		e.payload,
 		e.metadata || jsonb_build_object(
@@ -396,19 +401,6 @@ CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
 $$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb2, public
 SECURITY INVOKER;
-
-CREATE OR REPLACE FUNCTION maintain_events_table()
-RETURNS VOID AS $$
-BEGIN
-	PERFORM maintain_time_partitions_using_event_id('pgmb2.events'::regclass);
-	PERFORM maintain_time_partitions_using_event_id(
-		'pgmb2.subscription_unread_events'::regclass
-	);
-END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb2, public;
-
-SELECT maintain_events_table();
 
 -- triggers to add events for specific tables ---------------------------
 
@@ -443,14 +435,14 @@ BEGIN
 	IF TG_OP = 'INSERT' THEN
 		INSERT INTO events(id, topic, payload)
 		SELECT
-			create_event_id(rand := start_num + row_number() OVER ()),
+			create_event_id(clock_timestamp(), rand := start_num + row_number() OVER ()),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
 			to_jsonb(n)
 		FROM NEW n;
 	ELSIF TG_OP = 'DELETE' THEN
 		INSERT INTO events(id, topic, payload)
 		SELECT
-			create_event_id(rand := start_num + row_number() OVER ()),
+			create_event_id(clock_timestamp(), rand := start_num + row_number() OVER ()),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
 			to_jsonb(o)
 		FROM OLD o;
@@ -458,7 +450,7 @@ BEGIN
 		-- For updates, we can send both old and new data
 		INSERT INTO events(id, topic, payload, metadata)
 		SELECT
-			create_event_id(rand := start_num + n.rn),
+			create_event_id(clock_timestamp(), rand := start_num + n.rn),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
 			n.data,
 			jsonb_build_object('diff', jsonb_diff(n.data, o.data), 'old', o.data)			
