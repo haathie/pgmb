@@ -8,6 +8,10 @@ on:
       - main
     types: 
       - completed
+  push:
+    branches:
+      # change to main when merging to main
+      - v2
 
 jobs:
   build:
@@ -17,7 +21,7 @@ jobs:
     permissions:
       packages: write
       contents: read
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
 
     steps:
       - name: Checkout
