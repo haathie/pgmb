@@ -100,7 +100,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	}
 }
 
-export async function install() {
+export async function install(fresh?: boolean) {
 	const uri = process.env.PG_URI
 	if(!uri) {
 		throw new Error('PG_URI is not set')
@@ -108,6 +108,10 @@ export async function install() {
 
 	const conn = new Client({ connectionString: uri })
 	await conn.connect()
+
+	if(fresh) {
+		await conn.query('DROP SCHEMA IF EXISTS pgmb2 CASCADE')
+	}
 
 	const { rowCount } = await conn.query(
 		'SELECT schema_name FROM information_schema.schemata'

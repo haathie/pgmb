@@ -8,7 +8,7 @@ import type { MakeBenchmarkClient } from './types.ts'
 
 type Client = {
 	make: MakeBenchmarkClient
-	install?: () => Promise<boolean>
+	install?: (fresh?: boolean) => Promise<boolean>
 }
 
 const FILENAME = import.meta.filename
@@ -56,6 +56,8 @@ if(!workerData) {
 		: (getArg('publish') ? 'publish' : null)
 	const methods = methodArg ? [methodArg] : ['consume', 'publish']
 
+	const fresh = !!getArg('fresh')
+
 	const batchSize = getArg('batch')
 
 	const replicas = getArg('replicas') || '1'
@@ -83,7 +85,11 @@ if(!workerData) {
 
 	const install = CLIENTS[clientId]?.install
 	if(install) {
-		install()
+		if(fresh) {
+			console.log(`Installing fresh client ${clientId}...`)
+		}
+
+		install(fresh)
 			.then(installed => {
 				console.log(
 					installed
