@@ -1,9 +1,7 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { createReader, createSubscription, maintainEventsTable, readNextEventsText, writeEvents } from '../queries.ts'
+import { createSubscription, maintainEventsTable, pollForEvents, readNextEventsText, writeEvents } from '../queries.ts'
 import type { BenchmarkConsumer, MakeBenchmarkClient } from './types.ts'
-
-const READER_ID = 'benchmark'
 
 const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	batchSize,
@@ -32,18 +30,25 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 		)
 		: undefined
 
-	try {
-		await createReader.run({ readerId: READER_ID }, pool)
-	} catch(err: any) {
-		// Reader already exists
-		if(err.code !== '23505') {
-			throw err
-		}
-	}
+	let polling = false
+	const pollTask = consumers.length
+		? setInterval(
+			async() => {
+				if(polling) {
+					return
+				}
+
+				polling = true
+				const [{ count }] = await pollForEvents.run(undefined, pool)
+				console.log(`Polled for events, found ${count}`)
+				polling = false
+			},
+			200
+		)
+		: undefined
 
 	for(const name of assertQueues) {
 		await createSubscription.run({
-			readerId: READER_ID,
 			id: name,
 			conditionsSql: 'e.topic = s.id',
 		}, pool)
@@ -56,8 +61,13 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	let closed = false
 	const run = async() => {
 		while(!closed) {
+			if(polling) {
+				await new Promise(resolve => setTimeout(resolve, 100))
+				continue
+			}
+
 			const events = await readNextEventsText
-				.run({ readerId: READER_ID, chunkSize: batchSize }, pool)
+				.run({ subscriptionId: consumers[0].queueName, chunkSize: batchSize }, pool)
 
 			const subIdPayloadMap: { [subscriptionId: string]: string[] } = {}
 			for(const { topic, payload } of events) {
@@ -81,6 +91,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 			closed = true
 			await task
 			await pool.end()
+			clearInterval(pollTask)
 			clearInterval(maintaintask)
 		},
 		publishers: Array.from({ length: publishers }, () => ({

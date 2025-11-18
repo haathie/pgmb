@@ -9,38 +9,12 @@ export type stringArray = (string)[];
 
 export type unknownArray = (unknown)[];
 
-/** 'CreateReader' parameters type */
-export interface ICreateReaderParams {
-  readerId: string;
-}
-
-/** 'CreateReader' return type */
-export type ICreateReaderResult = void;
-
-/** 'CreateReader' query type */
-export interface ICreateReaderQuery {
-  params: ICreateReaderParams;
-  result: ICreateReaderResult;
-}
-
-const createReaderIR: any = {"usedParamSet":{"readerId":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":39,"b":48}]}],"statement":"INSERT INTO pgmb2.readers (id)\nVALUES (:readerId!)"};
-
-/**
- * Query generated from SQL:
- * ```
- * INSERT INTO pgmb2.readers (id)
- * VALUES (:readerId!)
- * ```
- */
-export const createReader = new PreparedQuery<ICreateReaderParams,ICreateReaderResult>(createReaderIR);
-
-
 /** 'CreateSubscription' parameters type */
 export interface ICreateSubscriptionParams {
   conditionsSql?: string | null | void;
+  groupId?: string | null | void;
   id?: string | null | void;
   metadata?: unknown | null | void;
-  readerId: string;
 }
 
 /** 'CreateSubscription' return type */
@@ -54,15 +28,15 @@ export interface ICreateSubscriptionQuery {
   result: ICreateSubscriptionResult;
 }
 
-const createSubscriptionIR: any = {"usedParamSet":{"id":true,"readerId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"id","required":false,"transform":{"type":"scalar"},"locs":[{"a":93,"b":95}]},{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":131,"b":140}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":153,"b":166}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":188,"b":196}]}],"statement":"INSERT INTO pgmb2.subscriptions (id, reader_id, conditions_sql, metadata)\nVALUES (\n\tCOALESCE(:id::text, gen_random_uuid()::text),\n\t:readerId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
+const createSubscriptionIR: any = {"usedParamSet":{"id":true,"groupId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"id","required":false,"transform":{"type":"scalar"},"locs":[{"a":92,"b":94}]},{"name":"groupId","required":false,"transform":{"type":"scalar"},"locs":[{"a":130,"b":137}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":150,"b":163}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":185,"b":193}]}],"statement":"INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata)\nVALUES (\n\tCOALESCE(:id::text, gen_random_uuid()::text),\n\t:groupId,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
  * ```
- * INSERT INTO pgmb2.subscriptions (id, reader_id, conditions_sql, metadata)
+ * INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata)
  * VALUES (
  * 	COALESCE(:id::text, gen_random_uuid()::text),
- * 	:readerId!,
+ * 	:groupId,
  * 	COALESCE(:conditionsSql, 'TRUE'),
  * 	COALESCE(:metadata::jsonb, '{}')
  * )
@@ -76,18 +50,42 @@ const createSubscriptionIR: any = {"usedParamSet":{"id":true,"readerId":true,"co
 export const createSubscription = new PreparedQuery<ICreateSubscriptionParams,ICreateSubscriptionResult>(createSubscriptionIR);
 
 
+/** 'PollForEvents' parameters type */
+export type IPollForEventsParams = void;
+
+/** 'PollForEvents' return type */
+export interface IPollForEventsResult {
+  count: number;
+}
+
+/** 'PollForEvents' query type */
+export interface IPollForEventsQuery {
+  params: IPollForEventsParams;
+  result: IPollForEventsResult;
+}
+
+const pollForEventsIR: any = {"usedParamSet":{},"params":[],"statement":"SELECT count AS \"count!\" FROM pgmb2.poll_for_events() AS count"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT count AS "count!" FROM pgmb2.poll_for_events() AS count
+ * ```
+ */
+export const pollForEvents = new PreparedQuery<IPollForEventsParams,IPollForEventsResult>(pollForEventsIR);
+
+
 /** 'ReadNextEvents' parameters type */
 export interface IReadNextEventsParams {
   chunkSize: number;
-  readerId: string;
+  subscriptionId: string;
 }
 
 /** 'ReadNextEvents' return type */
 export interface IReadNextEventsResult {
   id: string;
-  metadata: unknown | null;
+  metadata: unknown;
   payload: unknown;
-  subscriptionIds: stringArray;
   topic: string;
 }
 
@@ -97,7 +95,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":158,"b":167}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":170,"b":180}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events(:readerId!, :chunkSize!)"};
+const readNextEventsIR: any = {"usedParamSet":{"subscriptionId":true,"chunkSize":true},"params":[{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":118,"b":133}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":136,"b":146}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -106,9 +104,8 @@ const readNextEventsIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true}
  * 	id AS "id!",
  * 	topic AS "topic!",
  * 	payload AS "payload!",
- * 	metadata AS "metadata",
- * 	subscription_ids AS "subscriptionIds!"
- * FROM pgmb2.read_next_events(:readerId!, :chunkSize!)
+ * 	metadata AS "metadata!"
+ * FROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)
  * ```
  */
 export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextEventsResult>(readNextEventsIR);
@@ -117,7 +114,7 @@ export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextE
 /** 'ReadNextEventsText' parameters type */
 export interface IReadNextEventsTextParams {
   chunkSize: number;
-  readerId: string;
+  subscriptionId: string;
 }
 
 /** 'ReadNextEventsText' return type */
@@ -133,7 +130,7 @@ export interface IReadNextEventsTextQuery {
   result: IReadNextEventsTextResult;
 }
 
-const readNextEventsTextIR: any = {"usedParamSet":{"readerId":true,"chunkSize":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":107}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":110,"b":120}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:readerId!, :chunkSize!)"};
+const readNextEventsTextIR: any = {"usedParamSet":{"subscriptionId":true,"chunkSize":true},"params":[{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":113}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":116,"b":126}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -142,10 +139,48 @@ const readNextEventsTextIR: any = {"usedParamSet":{"readerId":true,"chunkSize":t
  * 	id AS "id!",
  * 	topic AS "topic!",
  * 	payload::text AS "payload!"
- * FROM pgmb2.read_next_events(:readerId!, :chunkSize!)
+ * FROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)
  * ```
  */
 export const readNextEventsText = new PreparedQuery<IReadNextEventsTextParams,IReadNextEventsTextResult>(readNextEventsTextIR);
+
+
+/** 'ReadNextEventsForGroup' parameters type */
+export interface IReadNextEventsForGroupParams {
+  chunkSize: number;
+  groupId: string;
+}
+
+/** 'ReadNextEventsForGroup' return type */
+export interface IReadNextEventsForGroupResult {
+  id: string;
+  metadata: unknown;
+  payload: unknown;
+  subscriptionIds: stringArray;
+  topic: string;
+}
+
+/** 'ReadNextEventsForGroup' query type */
+export interface IReadNextEventsForGroupQuery {
+  params: IReadNextEventsForGroupParams;
+  result: IReadNextEventsForGroupResult;
+}
+
+const readNextEventsForGroupIR: any = {"usedParamSet":{"groupId":true,"chunkSize":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":169,"b":177}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":180,"b":190}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_group(:groupId!, :chunkSize!)"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT
+ * 	id AS "id!",
+ * 	topic AS "topic!",
+ * 	payload AS "payload!",
+ * 	metadata AS "metadata!",
+ * 	subscription_ids AS "subscriptionIds!"
+ * FROM pgmb2.read_next_events_for_group(:groupId!, :chunkSize!)
+ * ```
+ */
+export const readNextEventsForGroup = new PreparedQuery<IReadNextEventsForGroupParams,IReadNextEventsForGroupResult>(readNextEventsForGroupIR);
 
 
 /** 'WriteEvents' parameters type */
@@ -206,14 +241,14 @@ export interface IWriteScheduledEventsQuery {
   result: IWriteScheduledEventsResult;
 }
 
-const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"payloads":true,"metadatas":true},"params":[{"name":"ts","required":true,"transform":{"type":"scalar"},"locs":[{"a":164,"b":167}]},{"name":"topics","required":true,"transform":{"type":"scalar"},"locs":[{"a":186,"b":193}]},{"name":"payloads","required":true,"transform":{"type":"scalar"},"locs":[{"a":205,"b":214}]},{"name":"metadatas","required":true,"transform":{"type":"scalar"},"locs":[{"a":227,"b":237}]}],"statement":"INSERT INTO pgmb2.events (id, topic, payload, metadata)\nSELECT\n\tpgmb2.create_event_id( COALESCE(ts, clock_timestamp()) ),\n\ttopic,\n\tpayload,\n\tmetadata\nFROM unnest(\n\t:ts!::TIMESTAMPTZ[],\n\t:topics!::TEXT[],\n\t:payloads!::JSONB[],\n\t:metadatas!::JSONB[]\n) AS t(ts, topic, payload, metadata)\nRETURNING id AS \"id!\""};
+const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"payloads":true,"metadatas":true},"params":[{"name":"ts","required":true,"transform":{"type":"scalar"},"locs":[{"a":192,"b":195}]},{"name":"topics","required":true,"transform":{"type":"scalar"},"locs":[{"a":214,"b":221}]},{"name":"payloads","required":true,"transform":{"type":"scalar"},"locs":[{"a":233,"b":242}]},{"name":"metadatas","required":true,"transform":{"type":"scalar"},"locs":[{"a":255,"b":265}]}],"statement":"INSERT INTO pgmb2.events (id, topic, payload, metadata)\nSELECT\n\tpgmb2.create_event_id(COALESCE(ts, clock_timestamp()), pgmb2.create_random_bigint()),\n\ttopic,\n\tpayload,\n\tmetadata\nFROM unnest(\n\t:ts!::TIMESTAMPTZ[],\n\t:topics!::TEXT[],\n\t:payloads!::JSONB[],\n\t:metadatas!::JSONB[]\n) AS t(ts, topic, payload, metadata)\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
  * ```
  * INSERT INTO pgmb2.events (id, topic, payload, metadata)
  * SELECT
- * 	pgmb2.create_event_id( COALESCE(ts, clock_timestamp()) ),
+ * 	pgmb2.create_event_id(COALESCE(ts, clock_timestamp()), pgmb2.create_random_bigint()),
  * 	topic,
  * 	payload,
  * 	metadata
@@ -231,7 +266,7 @@ export const writeScheduledEvents = new PreparedQuery<IWriteScheduledEventsParam
 
 /** 'RemoveTemporarySubscriptions' parameters type */
 export interface IRemoveTemporarySubscriptionsParams {
-  readerId: string;
+  groupId: string;
 }
 
 /** 'RemoveTemporarySubscriptions' return type */
@@ -243,13 +278,13 @@ export interface IRemoveTemporarySubscriptionsQuery {
   result: IRemoveTemporarySubscriptionsResult;
 }
 
-const removeTemporarySubscriptionsIR: any = {"usedParamSet":{"readerId":true},"params":[{"name":"readerId","required":true,"transform":{"type":"scalar"},"locs":[{"a":50,"b":59}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE reader_id = :readerId! AND is_temporary"};
+const removeTemporarySubscriptionsIR: any = {"usedParamSet":{"groupId":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":57}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE group_id = :groupId! AND is_temporary"};
 
 /**
  * Query generated from SQL:
  * ```
  * DELETE FROM pgmb2.subscriptions
- * WHERE reader_id = :readerId! AND is_temporary
+ * WHERE group_id = :groupId! AND is_temporary
  * ```
  */
 export const removeTemporarySubscriptions = new PreparedQuery<IRemoveTemporarySubscriptionsParams,IRemoveTemporarySubscriptionsResult>(removeTemporarySubscriptionsIR);

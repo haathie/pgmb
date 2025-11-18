@@ -16,4 +16,4 @@ RUN npm ci
 COPY . .
 
 # Run the application
-CMD ["npm", "run", "benchmark:tsc"]
+CMD ["npm", "run", "benchmark"]

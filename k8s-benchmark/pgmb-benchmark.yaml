@@ -145,89 +145,42 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: consumer
+  name: benchmark-runner
   namespace: pgmb-benchmark
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: consumer
+      app: benchmark-runner
   template:
     metadata:
       labels:
-        app: consumer
+        app: benchmark-runner
     spec:
       containers:
-        - name: consumer
+        - name: benchmark-runner
           image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
           command:
             [
               "npm",
               "run",
-              "benchmark:tsc",
+              "benchmark",
               "--",
-              "--consume",
               "--batch",
-              "500",
-              "--replicas",
+              "5000",
+              "--fresh",
               "1",
               # change to pgmq when wanting to benchmark pgmq
               "--client",
-              "pgmb"
+              "pgmb2",
             ]
           envFrom:
             - configMapRef:
                 name: benchmark-config
           resources:
             limits:
-              cpu: "1"
-              memory: "2048Mi"
+              cpu: "2"
+              memory: "1536Mi"
             requests:
-              cpu: "1"
-              memory: "1024Mi"
-
----
-# Publisher Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: publisher
-  namespace: pgmb-benchmark
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: publisher
-  template:
-    metadata:
-      labels:
-        app: publisher
-    spec:
-      containers:
-        - name: publisher
-          image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
-          command:
-            [
-              "npm",
-              "run",
-              "benchmark:tsc",
-              "--",
-              "--publish",
-              "--replicas",
-              "1",
-              "--batch",
-              "100",
-              "--client",
-              # change to pgmq when wanting to benchmark pgmq
-              "pgmb",
-            ]
-          envFrom:
-            - configMapRef:
-                name: benchmark-config
-          resources:
-            limits:
-              cpu: "1"
-              memory: "2048Mi"
-            requests:
-              cpu: "1"
-              memory: "1024Mi"
+              cpu: "2"
+              memory: "1536Mi"
