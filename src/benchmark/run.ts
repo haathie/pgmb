@@ -51,12 +51,10 @@ if(!workerData) {
 		throw new Error('Please specify --client <client>')
 	}
 
-	const method = getArg('consume')
+	const methodArg = getArg('consume')
 		? 'consume'
 		: (getArg('publish') ? 'publish' : null)
-	if(!method) {
-		throw new Error('Please specify --consume or --publish')
-	}
+	const methods = methodArg ? [methodArg] : ['consume', 'publish']
 
 	const batchSize = getArg('batch')
 
@@ -69,15 +67,17 @@ if(!workerData) {
 				.map(() => `test_queue_${i}`)
 		))
 	const runWorkers = () => (
-		testQueues.map(queueName => (
-			new Worker(FILENAME, {
-				workerData: {
-					queueName,
-					method,
-					clientId,
-					batchSize: batchSize ? Number(batchSize) : undefined,
-				}
-			})
+		testQueues.flatMap(queueName => (
+			methods.map(method => (
+				new Worker(FILENAME, {
+					workerData: {
+						queueName,
+						method,
+						clientId,
+						batchSize: batchSize ? Number(batchSize) : undefined,
+					}
+				})
+			))
 		))
 	)
 

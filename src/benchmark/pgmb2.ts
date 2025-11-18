@@ -1,7 +1,7 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
 import { createReader, createSubscription, maintainEventsTable, readNextEventsText, writeEvents } from '../queries.ts'
-import type { MakeBenchmarkClient } from './types.ts'
+import type { BenchmarkConsumer, MakeBenchmarkClient } from './types.ts'
 
 const READER_ID = 'benchmark'
 
@@ -19,7 +19,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	const poolSize = Math.max(1, publishers, consumers.length)
 	const pool = new Pool({ max: poolSize, connectionString: uri })
 	const onMessageMap:
-		{ [subscriptionId: string]: (msgs: Uint8Array[]) => Promise<void> } = {}
+		{ [subscriptionId: string]: BenchmarkConsumer['onMessage'] } = {}
 
 	await maintainEventsTable.run(undefined, pool)
 	const maintaintask = publishers ?
@@ -93,6 +93,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 					metadatas.push(null)
 					topics.push(queueName)
 				}
+
 				await writeEvents.run({ payloads, topics, metadatas }, pool)
 			},
 		})),
