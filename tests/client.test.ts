@@ -1,15 +1,21 @@
 import assert from 'assert'
 import { readFile } from 'fs/promises'
-import { after, before, beforeEach, describe, it } from 'node:test'
+import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
-import type { PoolClient } from 'pg'
-import { Pool } from 'pg'
-import { createSubscription, pollForEvents, readNextEvents, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { Pool, type PoolClient } from 'pg'
+import { pino } from 'pino'
+import { Pgmb2Client } from '../src/client2/index.ts'
+import type { IReadNextEventsResult } from '../src/queries.ts'
+import { reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
-describe('SQL Tests', () => {
+const LOGGER = pino({ level: 'trace' })
+
+describe('PGMB Client Tests', () => {
 
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
-	let mainSubName: string
+
+	let client: Pgmb2Client
+	let groupId: string
 
 	before(async() => {
 		await pool.query('DROP SCHEMA IF EXISTS pgmb2 CASCADE;')
@@ -23,19 +29,28 @@ describe('SQL Tests', () => {
 	})
 
 	beforeEach(async() => {
-		mainSubName = `sb${Math.random().toString(36).substring(2, 15)}`
-		await createSubscription.run({ id: mainSubName }, pool)
+		groupId = `grp${Math.random().toString(36).substring(2, 15)}`
+
+		client = new Pgmb2Client({ pool, logger: LOGGER, poll: true, groupId })
+		await client.initGroup()
 	})
 
-	it('should receive events', async() => {
+	afterEach(async() => {
+		await client.end()
+	})
+
+	it.only('should receive events', async() => {
 		const inserted = await insertEvent(pool)
 
-		const rows = await pollAndReadEvents(pool)
-		assert.equal(rows.length, 1)
-		assert.partialDeepStrictEqual(rows[0], inserted)
+		const sub = await client.registerSubscription({}, true)
+		for await (const { items } of sub) {
+			assert.partialDeepStrictEqual(items, [inserted])
+			break
+		}
 
-		const rows2 = await pollAndReadEvents(pool)
-		assert.equal(rows2.length, 0)
+		const sub2 = await client.registerSubscription({}, true)
+		const rslt = await Promise.race([sub2.next(), setTimeout(250)])
+		assert.equal(rslt, undefined)
 	})
 
 	it('should not read uncommitted events', async() => {
@@ -43,18 +58,42 @@ describe('SQL Tests', () => {
 		await c1.query('BEGIN;')
 		const ins = await insertEvent(c1)
 
-		assert.deepEqual(await pollAndReadEvents(pool), [])
+		const sub = await client.registerSubscription({}, true)
+		const received: IReadNextEventsResult[] = []
+		const readPromise = (async() => {
+			for await (const evs of sub) {
+				received.push(...evs.items)
+				break
+			}
+		})()
+
+		await setTimeout(250)
+
+		assert.equal(received.length, 0)
 
 		await c1.query('COMMIT;')
 		await c1.release()
 
-		assert.partialDeepStrictEqual(await pollAndReadEvents(pool), [ins])
+		await readPromise
+
+		assert.partialDeepStrictEqual(received, [ins])
 	})
 
 	it('should receive events from concurrent transactions', async() => {
 		const eventcount = 500
 		const c1 = await pool.connect()
 		await c1.query('BEGIN;')
+
+		const events: unknown[] = []
+		const sub = await client.registerSubscription({}, true)
+		const readPromise = (async() => {
+			for await (const evs of sub) {
+				events.push(...evs.items)
+				if(events.length >= eventcount) {
+					break
+				}
+			}
+		})()
 
 		const eventsWritten: unknown[] = []
 
@@ -66,12 +105,7 @@ describe('SQL Tests', () => {
 			await c1.query('COMMIT;')
 		})()
 
-		const events: unknown[] = []
-		while(events.length < eventcount) {
-			events.push(...await pollAndReadEvents(pool))
-		}
-
-		await writeEvents
+		await Promise.all([readPromise, writeEvents])
 
 		assert.equal(events.length, eventcount)
 
@@ -81,10 +115,9 @@ describe('SQL Tests', () => {
 	})
 
 	it('should not read future events', async() => {
-		const c1 = await pool.connect()
-		await c1.query('BEGIN;')
-
 		const DELAY_MS = 1000
+
+		const sub = await client.registerSubscription({}, true)
 
 		const [prow, frow] = await writeScheduledEvents.run(
 			{
@@ -93,25 +126,37 @@ describe('SQL Tests', () => {
 				payloads: [{ a: 1 }, { a: 2 }],
 				metadatas: [{}, {}]
 			},
-			c1
+			pool
 		)
 
-		assert.deepEqual(await pollAndReadEvents(pool), [])
-
-		await c1.query('COMMIT;')
-		await c1.release()
-
-		assert.partialDeepStrictEqual(await pollAndReadEvents(pool), [prow])
+		const nxt = await sub.next()
+		assert(!nxt.done)
+		assert.equal(nxt.value.items.length, 1)
+		assert.partialDeepStrictEqual(nxt.value, { items: [prow] })
 
 		await setTimeout(DELAY_MS)
 
-		assert.partialDeepStrictEqual(await pollAndReadEvents(pool), [frow])
+		const nxt2 = await sub.next()
+		assert(!nxt2.done)
+		assert.equal(nxt2.value.items.length, 1)
+		assert.partialDeepStrictEqual(nxt2.value, { items: [frow] })
 	})
 
 	it('should not read duplicate events', async() => {
 		const writerCount = 10
 		const eventsPerWriter = 300
 		const eventsToWrite = writerCount * eventsPerWriter
+
+		const events: { payload: unknown }[] = []
+		const sub = await client.registerSubscription({}, true)
+		const readPromise = (async() => {
+			for await (const evs of sub) {
+				events.push(...evs.items)
+				if(events.length >= eventsToWrite) {
+					break
+				}
+			}
+		})()
 
 		const eventsWritten: { payload: unknown }[] = []
 		const task = Promise.all(Array.from({ length: writerCount }).map(async() => {
@@ -139,12 +184,8 @@ describe('SQL Tests', () => {
 
 			await c.release()
 		}))
-		// .then(() => console.log('Writers completed'))
 
-		const events: { payload: unknown }[] = []
-		while(events.length < eventsToWrite) {
-			events.push(...await pollAndReadEvents(pool))
-		}
+		await readPromise
 
 		// ensure all events got read
 		for(const ev of events) {
@@ -161,62 +202,63 @@ describe('SQL Tests', () => {
 	})
 
 	it('should re-enqueue event for subscription', async() => {
-		const groupId = 'reader1'
-		const [sub1] = await createSubscription.run({ groupId }, pool)
-
+		const sub1 = await client.registerSubscription({ groupId }, false)
 		// control subscription
-		const [sub2] = await createSubscription.run({ groupId }, pool)
+		const sub2 = await client.registerSubscription({ groupId }, false)
 
 		await insertEvent(pool)
 
-		const rows = await pollAndReadEvents(pool, groupId)
-		assert.equal(rows.length, 1)
-		assert.deepEqual(rows[0].subscriptionIds.sort(), [sub1.id, sub2.id].sort())
+		const [{ done, value }] = await Promise.all([sub1.next(), sub2.next()])
+		assert(!done)
+		assert.equal(value.items.length, 1)
 
+		const now = Date.now()
+		const reSubId = value.items[0].subscriptionIds[0]
 		await reenqueueEventsForSubscription.run(
 			{
-				eventIds: rows.map(r => r.id),
-				subscriptionId: sub1.id,
+				eventIds: [value.items[0].id],
+				subscriptionId: reSubId,
 				offsetInterval: '1 second'
 			},
 			pool
 		)
 
-		assert.deepEqual(await pollAndReadEvents(pool, groupId), [])
+		const e2 = await Promise.race([sub1.next(), sub2.next()])
+		assert(!e2.done)
 
-		await setTimeout(1000)
+		// shouldve come after at least 1 second
+		assert.ok(Date.now() - now >= 1000)
 
-		assert.partialDeepStrictEqual(
-			await pollAndReadEvents(pool, groupId),
-			[{ subscriptionIds: [sub1.id] }]
-		)
+		assert.equal(e2.value.items.length, 1)
+		assert.deepEqual(e2.value.items[0].subscriptionIds, [reSubId])
 	})
 
 	it('should match subscriptions', async() => {
-		const groupId = 'group2'
-
-		await createSubscription.run(
+		const noSub = await client.registerSubscription(
 			{
 				groupId,
 				conditionsSql: "e.payload->>'non_exist' IS NOT NULL"
 			},
-			pool
+			true
 		)
-		const [sub1] = await createSubscription.run(
+
+		const noSubItems = Array.fromAsync(noSub)
+
+		const sub1 = await client.registerSubscription(
 			{
 				groupId,
 				conditionsSql: "e.payload->'data' > s.metadata->'min'",
 				metadata: { min: 0.5 }
 			},
-			pool
+			true
 		)
-		const [sub2] = await createSubscription.run(
+		const sub2 = await client.registerSubscription(
 			{
 				groupId,
 				conditionsSql: "e.payload->'data' > s.metadata->'min'",
 				metadata: { min: 0 }
 			},
-			pool
+			true
 		)
 
 		await writeEvents.run(
@@ -228,19 +270,32 @@ describe('SQL Tests', () => {
 			pool
 		)
 
-		const rows = await pollAndReadEvents(pool, groupId)
-		assert.equal(rows.length, 2)
-		// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
-		assert.deepStrictEqual(
-			rows[0].subscriptionIds, [sub1.id, sub2.id]
-		)
 		// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
-		assert.deepStrictEqual(
-			rows[1].subscriptionIds, [sub2.id]
-		)
+		const sub1Nxt = await sub1.next()
+		assert(!sub1Nxt.done)
+		assert.equal(sub1Nxt.value.items.length, 1)
+
+		// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
+		const sub2Nxt = await sub2.next()
+		assert(!sub2Nxt.done)
+		assert.equal(sub2Nxt.value.items.length, 2)
+
+		noSub.return?.()
+		assert.deepEqual(await noSubItems, [])
 	})
 
 	it('should create events from table mutations', async() => {
+		const sub = await client.registerSubscription(
+			{ conditionsSql: "e.topic LIKE 'public.test_table.%%'" },
+			false
+		)
+		const events: unknown[] = []
+		const task = (async() => {
+			for await (const { items } of sub) {
+				events.push(...items)
+			}
+		})()
+
 		await pool.query(`
 			DROP TABLE IF EXISTS public.test_table;
 			CREATE TABLE public.test_table (
@@ -260,10 +315,13 @@ describe('SQL Tests', () => {
 			'DELETE FROM public.test_table WHERE id = 2;'
 		)
 
-		const rows = await pollAndReadEvents(pool)
-		assert.equal(rows.length, 4)
+		while(!events.length) {
+			await setTimeout(50)
+		}
+
+		assert.equal(events.length, 4)
 		assert.partialDeepStrictEqual(
-			rows,
+			events,
 			[
 				{ topic: 'public.test_table.insert', payload: { id: 1, data: 'hello' } },
 				{ payload: { id: 2, data: 'world' } },
@@ -282,20 +340,13 @@ describe('SQL Tests', () => {
 			INSERT INTO public.test_table (data) VALUES ('new data');
 		`)
 
-		const moreRows = await pollAndReadEvents(pool)
-		assert.equal(moreRows.length, 0)
-	})
+		// ensure no new events come in
+		await setTimeout(500)
+		sub.return?.()
 
-	async function pollAndReadEvents(
-		client: Pool | PoolClient,
-		fetchId = mainSubName,
-		count = 50
-	) {
-		await pollForEvents.run(undefined, client)
-		const rows = await readNextEvents
-			.run({ fetchId, chunkSize: count }, client)
-		return rows
-	}
+		await task
+		assert.equal(events.length, 4)
+	})
 })
 
 async function insertEvent(client: Pool | PoolClient) {

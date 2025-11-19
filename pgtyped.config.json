@@ -16,6 +16,8 @@
     "password": ""
   },
   "typesOverrides": { 
-    "jsonb": "unknown"
+    "jsonb": "unknown",
+    "subscription_id": "string",
+    "event_id": "string"
   }
 }

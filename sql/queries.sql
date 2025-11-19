@@ -1,16 +1,24 @@
-/* @name createSubscription */
-INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata)
+/* @name assertSubscription */
+INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata, type)
 VALUES (
-	COALESCE(:id::text, gen_random_uuid()::text),
+	COALESCE(:id, pgmb2.create_subscription_id(COALESCE(:type::pgmb2.subscription_type, 'custom'))),
 	:groupId,
 	COALESCE(:conditionsSql, 'TRUE'),
-	COALESCE(:metadata::jsonb, '{}')
+	COALESCE(:metadata::jsonb, '{}'),
+	COALESCE(:type::pgmb2.subscription_type, 'custom')
 )
 ON CONFLICT (id) DO UPDATE
 SET
 	conditions_sql = EXCLUDED.conditions_sql,
 	metadata = EXCLUDED.metadata
 RETURNING id AS "id!";
+
+/*
+ @name deleteSubscriptions
+ @param ids -> (...)
+ */
+DELETE FROM pgmb2.subscriptions
+WHERE id IN :ids!;
 
 /* @name pollForEvents */
 SELECT count AS "count!" FROM pgmb2.poll_for_events() AS count;
@@ -21,7 +29,7 @@ SELECT
 	topic AS "topic!",
 	payload AS "payload!",
 	metadata AS "metadata!",
-	subscription_ids AS "subscriptionIds!"
+	subscription_ids::text[] AS "subscriptionIds!"
 FROM pgmb2.read_next_events(:fetchId!, :chunkSize!);
 
 /* @name readNextEventsText */

@@ -1,6 +1,8 @@
 /** Types generated for queries found in "sql/queries.sql" */
 import { PreparedQuery } from '@pgtyped/runtime';
 
+export type subscription_type = 'custom' | 'http' | 'webhook';
+
 export type DateOrString = Date | string;
 
 export type DateOrStringArray = (DateOrString)[];
@@ -9,36 +11,38 @@ export type stringArray = (string)[];
 
 export type unknownArray = (unknown)[];
 
-/** 'CreateSubscription' parameters type */
-export interface ICreateSubscriptionParams {
+/** 'AssertSubscription' parameters type */
+export interface IAssertSubscriptionParams {
   conditionsSql?: string | null | void;
   groupId?: string | null | void;
   id?: string | null | void;
   metadata?: unknown | null | void;
+  type?: subscription_type | null | void;
 }
 
-/** 'CreateSubscription' return type */
-export interface ICreateSubscriptionResult {
+/** 'AssertSubscription' return type */
+export interface IAssertSubscriptionResult {
   id: string;
 }
 
-/** 'CreateSubscription' query type */
-export interface ICreateSubscriptionQuery {
-  params: ICreateSubscriptionParams;
-  result: ICreateSubscriptionResult;
+/** 'AssertSubscription' query type */
+export interface IAssertSubscriptionQuery {
+  params: IAssertSubscriptionParams;
+  result: IAssertSubscriptionResult;
 }
 
-const createSubscriptionIR: any = {"usedParamSet":{"id":true,"groupId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"id","required":false,"transform":{"type":"scalar"},"locs":[{"a":92,"b":94}]},{"name":"groupId","required":false,"transform":{"type":"scalar"},"locs":[{"a":130,"b":137}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":150,"b":163}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":185,"b":193}]}],"statement":"INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata)\nVALUES (\n\tCOALESCE(:id::text, gen_random_uuid()::text),\n\t:groupId,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
+const assertSubscriptionIR: any = {"usedParamSet":{"id":true,"type":true,"groupId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"id","required":false,"transform":{"type":"scalar"},"locs":[{"a":98,"b":100}]},{"name":"type","required":false,"transform":{"type":"scalar"},"locs":[{"a":141,"b":145},{"a":277,"b":281}]},{"name":"groupId","required":false,"transform":{"type":"scalar"},"locs":[{"a":187,"b":194}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":207,"b":220}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":242,"b":250}]}],"statement":"INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata, type)\nVALUES (\n\tCOALESCE(:id, pgmb2.create_subscription_id(COALESCE(:type::pgmb2.subscription_type, 'custom'))),\n\t:groupId,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}'),\n\tCOALESCE(:type::pgmb2.subscription_type, 'custom')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
  * ```
- * INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata)
+ * INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata, type)
  * VALUES (
- * 	COALESCE(:id::text, gen_random_uuid()::text),
+ * 	COALESCE(:id, pgmb2.create_subscription_id(COALESCE(:type::pgmb2.subscription_type, 'custom'))),
  * 	:groupId,
  * 	COALESCE(:conditionsSql, 'TRUE'),
- * 	COALESCE(:metadata::jsonb, '{}')
+ * 	COALESCE(:metadata::jsonb, '{}'),
+ * 	COALESCE(:type::pgmb2.subscription_type, 'custom')
  * )
  * ON CONFLICT (id) DO UPDATE
  * SET
@@ -47,7 +51,33 @@ const createSubscriptionIR: any = {"usedParamSet":{"id":true,"groupId":true,"con
  * RETURNING id AS "id!"
  * ```
  */
-export const createSubscription = new PreparedQuery<ICreateSubscriptionParams,ICreateSubscriptionResult>(createSubscriptionIR);
+export const assertSubscription = new PreparedQuery<IAssertSubscriptionParams,IAssertSubscriptionResult>(assertSubscriptionIR);
+
+
+/** 'DeleteSubscriptions' parameters type */
+export interface IDeleteSubscriptionsParams {
+  ids: readonly (string)[];
+}
+
+/** 'DeleteSubscriptions' return type */
+export type IDeleteSubscriptionsResult = void;
+
+/** 'DeleteSubscriptions' query type */
+export interface IDeleteSubscriptionsQuery {
+  params: IDeleteSubscriptionsParams;
+  result: IDeleteSubscriptionsResult;
+}
+
+const deleteSubscriptionsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"array_spread"},"locs":[{"a":44,"b":48}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE id IN :ids!"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * DELETE FROM pgmb2.subscriptions
+ * WHERE id IN :ids!
+ * ```
+ */
+export const deleteSubscriptions = new PreparedQuery<IDeleteSubscriptionsParams,IDeleteSubscriptionsResult>(deleteSubscriptionsIR);
 
 
 /** 'PollForEvents' parameters type */
@@ -96,7 +126,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":159,"b":167}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":170,"b":180}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events(:fetchId!, :chunkSize!)"};
+const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":167,"b":175}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":178,"b":188}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids::text[] AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events(:fetchId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -106,7 +136,7 @@ const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},
  * 	topic AS "topic!",
  * 	payload AS "payload!",
  * 	metadata AS "metadata!",
- * 	subscription_ids AS "subscriptionIds!"
+ * 	subscription_ids::text[] AS "subscriptionIds!"
  * FROM pgmb2.read_next_events(:fetchId!, :chunkSize!)
  * ```
  */

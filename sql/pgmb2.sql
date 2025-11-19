@@ -197,10 +197,12 @@ CREATE TYPE subscription_type AS ENUM(
 	'custom'
 );
 
+CREATE DOMAIN subscription_id AS VARCHAR(24);
+
 -- reader, subscription management tables and functions will go here ----------------
 CREATE TABLE IF NOT EXISTS subscriptions (
 	-- unique identifier for the subscription
-	id VARCHAR(48) PRIMARY KEY DEFAULT gen_random_uuid()::varchar,
+	id subscription_id PRIMARY KEY DEFAULT gen_random_uuid()::varchar,
 	-- define how the subscription is grouped. subscriptions belonging
 	-- to the same group can be read in one batch.
 	-- Leave NULL to only allow independent fetching
@@ -220,9 +222,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
 	fetch_id VARCHAR(48),
 	event_id event_id,
-	subscription_id VARCHAR(48),
+	subscription_id subscription_id,
 	PRIMARY KEY (fetch_id, event_id, subscription_id)
 );
+
+CREATE OR REPLACE FUNCTION create_subscription_id(type subscription_type)
+RETURNS subscription_id AS $$
+	SELECT substring(type::text, 1, 2) || substring(
+		create_event_id(NOW(), create_random_bigint())
+		FROM 3
+	);
+$$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
+ SET search_path TO pgmb2, public;
 
 -- we'll also validate the conditions_sql on insert/update
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
@@ -328,6 +339,11 @@ DECLARE
 	condition_sql TEXT;
 	proc_src TEXT;
 BEGIN
+	IF sql_statements = '{}' THEN
+		-- no subscriptions, so just use 'FALSE' to avoid any matches
+		sql_statements := ARRAY['FALSE'];
+	END IF;
+
 	condition_sql := FORMAT(
 		'('
 		|| array_to_string(
@@ -353,6 +369,8 @@ BEGIN
 	proc_src := REPLACE(proc_src, tmpl_proc_placeholder, condition_sql);
 	proc_src := REPLACE(proc_src, tmpl_proc_name, 'poll_for_events');
 
+	RAISE NOTICE 'Preparing poll_for_events with conditions: %', proc_src;
+
 	EXECUTE proc_src;
 END;
 $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
@@ -366,7 +384,11 @@ CREATE OR REPLACE FUNCTION refresh_subscription_read_statements()
 RETURNS TRIGGER AS $$
 BEGIN
 	PERFORM prepare_poll_for_events_fn(
-		ARRAY(SELECT DISTINCT conditions_sql FROM subscriptions)
+		ARRAY(
+			SELECT DISTINCT conditions_sql
+			FROM subscriptions
+			WHERE conditions_sql IS NOT NULL
+		)
 	);
 	RETURN NULL;
 END
@@ -414,7 +436,7 @@ CREATE OR REPLACE FUNCTION read_next_events(
 	topic VARCHAR(255),
 	payload JSONB,
 	metadata JSONB,
-	subscription_ids VARCHAR(48)[]
+	subscription_ids subscription_id[]
 ) AS $$
 	WITH next_events AS (
 		SELECT
