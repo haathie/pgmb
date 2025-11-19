@@ -42,13 +42,19 @@ data:
 
     # Enable asynchronous commits for better throughput
     synchronous_commit = off 
+    checkpoint_timeout = 5min
+    commit_delay = 500
+    # Background writer
+    bgwriter_lru_maxpages = 1000
+    bgwriter_lru_multiplier = 5.0
     # For high-turnover message tables
     # See: https://www.tembo.io/blog/optimizing-postgres-auto-vacuum
     autovacuum = on
-    autovacuum_max_workers = 2
+    autovacuum_max_workers = 1
     autovacuum_work_mem = 1GB
     autovacuum_naptime = 10s
     autovacuum_vacuum_scale_factor = 0.05    # Vacuum when 5% of table changes
+    autovacuum_analyze_scale_factor = 0.05
     autovacuum_vacuum_cost_delay = 0         # Remove autovacuum throttling
     autovacuum_vacuum_cost_limit = 10000
     autovacuum_vacuum_threshold = 100
@@ -81,9 +87,12 @@ spec:
       labels:
         app: postgres
     spec:
+      securityContext:
+        fsGroup: 26
+        runAsUser: 26
       containers:
       - name: postgres
-        image: postgres:17-bullseye
+        image: ghcr.io/haathie/postgres:17
         ports:
         - containerPort: 5432
           name: postgres
@@ -159,20 +168,18 @@ spec:
     spec:
       containers:
         - name: benchmark-runner
-          image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
+          image: ghcr.io/haathie/pgmb:e24f88597f4339adf5057916a825cbdddafc6cfd
           command:
             [
               "npm",
               "run",
               "benchmark",
               "--",
-              "--batch",
-              "5000",
               "--fresh",
               "1",
               # change to pgmq when wanting to benchmark pgmq
               "--client",
-              "pgmb2",
+              "pgmb",
             ]
           envFrom:
             - configMapRef:
