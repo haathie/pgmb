@@ -1,4 +1,4 @@
-import type { PgEnqueueMsg, PgPublishMsg } from './types'
+import type { PgEnqueueMsg, PgPublishMsg } from './types.ts'
 
 export function getChannelNameForQueue(queueName: string) {
 	return `chn_${queueName}`
