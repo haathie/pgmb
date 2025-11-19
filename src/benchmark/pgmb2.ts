@@ -14,7 +14,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 		throw new Error('PG_URI is not set')
 	}
 
-	const poolSize = Math.max(1, publishers, consumers.length)
+	const poolSize = Math.max(5, publishers, consumers.length)
 	const pool = new Pool({ max: poolSize, connectionString: uri })
 	const onMessageMap:
 		{ [subscriptionId: string]: BenchmarkConsumer['onMessage'] } = {}
@@ -43,7 +43,7 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 				console.log(`Polled for events, found ${count}`)
 				polling = false
 			},
-			200
+			250
 		)
 		: undefined
 
@@ -61,26 +61,19 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	let closed = false
 	const run = async() => {
 		while(!closed) {
-			if(polling) {
-				await new Promise(resolve => setTimeout(resolve, 100))
-				continue
-			}
-
-			const events = await readNextEventsText
-				.run({ subscriptionId: consumers[0].queueName, chunkSize: batchSize }, pool)
-
-			const subIdPayloadMap: { [subscriptionId: string]: string[] } = {}
-			for(const { topic, payload } of events) {
-				subIdPayloadMap[topic] ||= []
-				subIdPayloadMap[topic].push(payload)
-			}
-
 			await Promise.all(
-				Object.entries(subIdPayloadMap)
-					.map(([subId, payloads]) => onMessageMap[subId]?.(payloads))
-			)
+				Object.entries(onMessageMap).map(async([subscriptionId, onMessage]) => {
+					const rows = await readNextEventsText.run(
+						{
+							fetchId: subscriptionId,
+							chunkSize: batchSize,
+						},
+						pool
+					)
 
-			// await delay(100)
+					onMessage(rows.map(r => r.payload))
+				})
+			)
 		}
 	}
 

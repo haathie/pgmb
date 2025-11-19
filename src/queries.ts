@@ -78,7 +78,7 @@ export const pollForEvents = new PreparedQuery<IPollForEventsParams,IPollForEven
 /** 'ReadNextEvents' parameters type */
 export interface IReadNextEventsParams {
   chunkSize: number;
-  subscriptionId: string;
+  fetchId: string;
 }
 
 /** 'ReadNextEvents' return type */
@@ -86,6 +86,7 @@ export interface IReadNextEventsResult {
   id: string;
   metadata: unknown;
   payload: unknown;
+  subscriptionIds: stringArray;
   topic: string;
 }
 
@@ -95,7 +96,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"subscriptionId":true,"chunkSize":true},"params":[{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":118,"b":133}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":136,"b":146}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)"};
+const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":159,"b":167}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":170,"b":180}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events(:fetchId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -104,8 +105,9 @@ const readNextEventsIR: any = {"usedParamSet":{"subscriptionId":true,"chunkSize"
  * 	id AS "id!",
  * 	topic AS "topic!",
  * 	payload AS "payload!",
- * 	metadata AS "metadata!"
- * FROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)
+ * 	metadata AS "metadata!",
+ * 	subscription_ids AS "subscriptionIds!"
+ * FROM pgmb2.read_next_events(:fetchId!, :chunkSize!)
  * ```
  */
 export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextEventsResult>(readNextEventsIR);
@@ -114,7 +116,7 @@ export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextE
 /** 'ReadNextEventsText' parameters type */
 export interface IReadNextEventsTextParams {
   chunkSize: number;
-  subscriptionId: string;
+  fetchId: string;
 }
 
 /** 'ReadNextEventsText' return type */
@@ -130,7 +132,7 @@ export interface IReadNextEventsTextQuery {
   result: IReadNextEventsTextResult;
 }
 
-const readNextEventsTextIR: any = {"usedParamSet":{"subscriptionId":true,"chunkSize":true},"params":[{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":113}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":116,"b":126}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)"};
+const readNextEventsTextIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":106}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":109,"b":119}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:fetchId!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -139,48 +141,10 @@ const readNextEventsTextIR: any = {"usedParamSet":{"subscriptionId":true,"chunkS
  * 	id AS "id!",
  * 	topic AS "topic!",
  * 	payload::text AS "payload!"
- * FROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!)
+ * FROM pgmb2.read_next_events(:fetchId!, :chunkSize!)
  * ```
  */
 export const readNextEventsText = new PreparedQuery<IReadNextEventsTextParams,IReadNextEventsTextResult>(readNextEventsTextIR);
-
-
-/** 'ReadNextEventsForGroup' parameters type */
-export interface IReadNextEventsForGroupParams {
-  chunkSize: number;
-  groupId: string;
-}
-
-/** 'ReadNextEventsForGroup' return type */
-export interface IReadNextEventsForGroupResult {
-  id: string;
-  metadata: unknown;
-  payload: unknown;
-  subscriptionIds: stringArray;
-  topic: string;
-}
-
-/** 'ReadNextEventsForGroup' query type */
-export interface IReadNextEventsForGroupQuery {
-  params: IReadNextEventsForGroupParams;
-  result: IReadNextEventsForGroupResult;
-}
-
-const readNextEventsForGroupIR: any = {"usedParamSet":{"groupId":true,"chunkSize":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":169,"b":177}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":180,"b":190}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events_for_group(:groupId!, :chunkSize!)"};
-
-/**
- * Query generated from SQL:
- * ```
- * SELECT
- * 	id AS "id!",
- * 	topic AS "topic!",
- * 	payload AS "payload!",
- * 	metadata AS "metadata!",
- * 	subscription_ids AS "subscriptionIds!"
- * FROM pgmb2.read_next_events_for_group(:groupId!, :chunkSize!)
- * ```
- */
-export const readNextEventsForGroup = new PreparedQuery<IReadNextEventsForGroupParams,IReadNextEventsForGroupResult>(readNextEventsForGroupIR);
 
 
 /** 'WriteEvents' parameters type */
@@ -264,30 +228,30 @@ const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"pa
 export const writeScheduledEvents = new PreparedQuery<IWriteScheduledEventsParams,IWriteScheduledEventsResult>(writeScheduledEventsIR);
 
 
-/** 'RemoveTemporarySubscriptions' parameters type */
-export interface IRemoveTemporarySubscriptionsParams {
+/** 'RemoveHttpSubscriptionsInGroup' parameters type */
+export interface IRemoveHttpSubscriptionsInGroupParams {
   groupId: string;
 }
 
-/** 'RemoveTemporarySubscriptions' return type */
-export type IRemoveTemporarySubscriptionsResult = void;
+/** 'RemoveHttpSubscriptionsInGroup' return type */
+export type IRemoveHttpSubscriptionsInGroupResult = void;
 
-/** 'RemoveTemporarySubscriptions' query type */
-export interface IRemoveTemporarySubscriptionsQuery {
-  params: IRemoveTemporarySubscriptionsParams;
-  result: IRemoveTemporarySubscriptionsResult;
+/** 'RemoveHttpSubscriptionsInGroup' query type */
+export interface IRemoveHttpSubscriptionsInGroupQuery {
+  params: IRemoveHttpSubscriptionsInGroupParams;
+  result: IRemoveHttpSubscriptionsInGroupResult;
 }
 
-const removeTemporarySubscriptionsIR: any = {"usedParamSet":{"groupId":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":57}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE group_id = :groupId! AND is_temporary"};
+const removeHttpSubscriptionsInGroupIR: any = {"usedParamSet":{"groupId":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":57}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE group_id = :groupId! AND type = 'http'"};
 
 /**
  * Query generated from SQL:
  * ```
  * DELETE FROM pgmb2.subscriptions
- * WHERE group_id = :groupId! AND is_temporary
+ * WHERE group_id = :groupId! AND type = 'http'
  * ```
  */
-export const removeTemporarySubscriptions = new PreparedQuery<IRemoveTemporarySubscriptionsParams,IRemoveTemporarySubscriptionsResult>(removeTemporarySubscriptionsIR);
+export const removeHttpSubscriptionsInGroup = new PreparedQuery<IRemoveHttpSubscriptionsInGroupParams,IRemoveHttpSubscriptionsInGroupResult>(removeHttpSubscriptionsInGroupIR);
 
 
 /** 'ReenqueueEventsForSubscription' parameters type */

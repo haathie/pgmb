@@ -4,7 +4,7 @@ import { after, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import type { PoolClient } from 'pg'
 import { Pool } from 'pg'
-import { createSubscription, pollForEvents, readNextEvents, readNextEventsForGroup, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { createSubscription, pollForEvents, readNextEvents, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 describe('SQL Tests', () => {
 
@@ -68,7 +68,7 @@ describe('SQL Tests', () => {
 
 		const events: unknown[] = []
 		while(events.length < eventcount) {
-			events.push(...await pollAndReadEvents(pool, 25))
+			events.push(...await pollAndReadEvents(pool))
 		}
 
 		await writeEvents
@@ -108,7 +108,7 @@ describe('SQL Tests', () => {
 		assert.partialDeepStrictEqual(await pollAndReadEvents(pool), [frow])
 	})
 
-	it.only('should not read duplicate events', async() => {
+	it('should not read duplicate events', async() => {
 		const writerCount = 10
 		const eventsPerWriter = 300
 		const eventsToWrite = writerCount * eventsPerWriter
@@ -143,7 +143,7 @@ describe('SQL Tests', () => {
 
 		const events: { payload: unknown }[] = []
 		while(events.length < eventsToWrite) {
-			events.push(...await pollAndReadEvents(pool, 30))
+			events.push(...await pollAndReadEvents(pool))
 		}
 
 		// ensure all events got read
@@ -165,12 +165,13 @@ describe('SQL Tests', () => {
 		const [sub1] = await createSubscription.run({ groupId }, pool)
 
 		// control subscription
-		await createSubscription.run({ groupId }, pool)
+		const [sub2] = await createSubscription.run({ groupId }, pool)
 
 		await insertEvent(pool)
 
-		const rows = await pollAndReadGroup(pool, groupId)
+		const rows = await pollAndReadEvents(pool, groupId)
 		assert.equal(rows.length, 1)
+		assert.deepEqual(rows[0].subscriptionIds.sort(), [sub1.id, sub2.id].sort())
 
 		await reenqueueEventsForSubscription.run(
 			{
@@ -181,12 +182,12 @@ describe('SQL Tests', () => {
 			pool
 		)
 
-		assert.deepEqual(await pollAndReadGroup(pool, groupId), [])
+		assert.deepEqual(await pollAndReadEvents(pool, groupId), [])
 
 		await setTimeout(1000)
 
 		assert.partialDeepStrictEqual(
-			await pollAndReadGroup(pool, groupId),
+			await pollAndReadEvents(pool, groupId),
 			[{ subscriptionIds: [sub1.id] }]
 		)
 	})
@@ -227,7 +228,7 @@ describe('SQL Tests', () => {
 			pool
 		)
 
-		const rows = await pollAndReadGroup(pool, groupId)
+		const rows = await pollAndReadEvents(pool, groupId)
 		assert.equal(rows.length, 2)
 		// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
 		assert.deepStrictEqual(
@@ -259,7 +260,7 @@ describe('SQL Tests', () => {
 			'DELETE FROM public.test_table WHERE id = 2;'
 		)
 
-		const rows = await pollAndReadEvents(pool, 10)
+		const rows = await pollAndReadEvents(pool)
 		assert.equal(rows.length, 4)
 		assert.partialDeepStrictEqual(
 			rows,
@@ -281,21 +282,18 @@ describe('SQL Tests', () => {
 			INSERT INTO public.test_table (data) VALUES ('new data');
 		`)
 
-		const moreRows = await pollAndReadEvents(pool, 10)
+		const moreRows = await pollAndReadEvents(pool)
 		assert.equal(moreRows.length, 0)
 	})
 
-	async function pollAndReadGroup(client: Pool | PoolClient, groupId: string) {
-		await pollForEvents.run(undefined, client)
-		const rows = await readNextEventsForGroup
-			.run({ groupId, chunkSize: 10 }, client)
-		return rows
-	}
-
-	async function pollAndReadEvents(client: Pool | PoolClient, count = 50) {
+	async function pollAndReadEvents(
+		client: Pool | PoolClient,
+		fetchId = mainSubName,
+		count = 50
+	) {
 		await pollForEvents.run(undefined, client)
 		const rows = await readNextEvents
-			.run({ subscriptionId: mainSubName, chunkSize: count }, client)
+			.run({ fetchId, chunkSize: count }, client)
 		return rows
 	}
 })

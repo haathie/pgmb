@@ -11,7 +11,7 @@ type Client = {
 	install?: (fresh?: boolean) => Promise<boolean>
 }
 
-const FILENAME = import.meta.filename
+const FILENAME = process.argv[1]
 
 const CLIENTS: { [client: string]: Client } = {
 	'pgmb': {

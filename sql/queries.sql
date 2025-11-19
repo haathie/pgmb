@@ -20,24 +20,16 @@ SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload AS "payload!",
-	metadata AS "metadata!"
-FROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!);
+	metadata AS "metadata!",
+	subscription_ids AS "subscriptionIds!"
+FROM pgmb2.read_next_events(:fetchId!, :chunkSize!);
 
 /* @name readNextEventsText */
 SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload::text AS "payload!"
-FROM pgmb2.read_next_events(:subscriptionId!, :chunkSize!);
-
-/* @name readNextEventsForGroup */
-SELECT
-	id AS "id!",
-	topic AS "topic!",
-	payload AS "payload!",
-	metadata AS "metadata!",
-	subscription_ids AS "subscriptionIds!"
-FROM pgmb2.read_next_events_for_group(:groupId!, :chunkSize!);
+FROM pgmb2.read_next_events(:fetchId!, :chunkSize!);
 
 /* @name writeEvents */
 INSERT INTO pgmb2.events (topic, payload, metadata)
@@ -67,9 +59,9 @@ FROM unnest(
 ) AS t(ts, topic, payload, metadata)
 RETURNING id AS "id!";
 
-/* @name removeTemporarySubscriptions */
+/* @name removeHttpSubscriptionsInGroup */
 DELETE FROM pgmb2.subscriptions
-WHERE group_id = :groupId! AND is_temporary;
+WHERE group_id = :groupId! AND type = 'http';
 
 /* @name reenqueueEventsForSubscription */
 SELECT pgmb2.reenqueue_events_for_subscription(

@@ -24,7 +24,7 @@ CREATE TYPE config_type AS ENUM(
 	'lookback_interval'
 );
 
-CREATE TABLE IF NOT EXISTS subscriptions_config(
+CREATE TABLE IF NOT EXISTS config(
 	-- unique identifier for the subscription config
 	id config_type PRIMARY KEY,
 	value TEXT
@@ -33,10 +33,10 @@ CREATE TABLE IF NOT EXISTS subscriptions_config(
 CREATE OR REPLACE FUNCTION get_config_value(
 	config_id config_type
 ) RETURNS TEXT AS $$
-	SELECT value FROM subscriptions_config WHERE id = config_id
+	SELECT value FROM config WHERE id = config_id
 $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb2, public;
 
-INSERT INTO subscriptions_config(id, value)
+INSERT INTO config(id, value)
 	VALUES
 		('plugin_version', '0.1.0'),
 		('oldest_partition_interval', '1 minute'),
@@ -189,10 +189,21 @@ END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
 	SET search_path TO pgmb2, public;
 
+-- subscriptions table and related functions ----------------
+
+CREATE TYPE subscription_type AS ENUM(
+	'http',
+	'webhook',
+	'custom'
+);
+
 -- reader, subscription management tables and functions will go here ----------------
 CREATE TABLE IF NOT EXISTS subscriptions (
 	-- unique identifier for the subscription
 	id VARCHAR(48) PRIMARY KEY DEFAULT gen_random_uuid()::varchar,
+	-- define how the subscription is grouped. subscriptions belonging
+	-- to the same group can be read in one batch.
+	-- Leave NULL to only allow independent fetching
 	group_id VARCHAR(48),
 	created_at TIMESTAMPTZ DEFAULT NOW(),
 	-- A SQL expression that will be used to filter events for this subscription.
@@ -202,8 +213,15 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 	conditions_sql TEXT NOT NULL DEFAULT 'TRUE',
 	-- if temporary, then the subscription will be removed on reboot of
 	-- the reader its attached to.
-	is_temporary BOOLEAN NOT NULL DEFAULT TRUE,
+	type subscription_type NOT NULL DEFAULT 'custom',
 	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
+	fetch_id VARCHAR(48),
+	event_id event_id,
+	subscription_id VARCHAR(48),
+	PRIMARY KEY (fetch_id, event_id, subscription_id)
 );
 
 -- we'll also validate the conditions_sql on insert/update
@@ -223,17 +241,6 @@ CREATE TRIGGER validate_subscription_conditions_sql_trigger
 BEFORE INSERT OR UPDATE ON subscriptions
 FOR EACH ROW
 EXECUTE FUNCTION validate_subscription_conditions_sql();
-
-CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
-	event_id event_id,
-	subscription_id VARCHAR(48),
-	group_id VARCHAR(64),
-	is_read BOOLEAN DEFAULT FALSE,
-	PRIMARY KEY (subscription_id, event_id)
-) PARTITION BY RANGE (event_id);
-
-CREATE INDEX IF NOT EXISTS idx_subscription_events_group_id
-	ON subscription_events(group_id, event_id);
 
 CREATE OR REPLACE FUNCTION poll_for_events_tmpl()
 RETURNS INT AS $body$
@@ -279,8 +286,11 @@ BEGIN
 		RETURN 0;
 	END IF;
 
-	INSERT INTO subscription_events(subscription_id, group_id, event_id)
-	SELECT s.id, s.group_id, e.id
+	INSERT INTO subscription_events(fetch_id, subscription_id, event_id)
+	SELECT
+		CASE WHEN s.group_id IS NOT NULL THEN s.group_id ELSE s.id END,
+		CASE WHEN s.group_id IS NOT NULL THEN s.id ELSE '' END,
+		e.id
 	FROM events e
 	INNER JOIN unnest(read_ids) r(id) ON e.id = r.id
 	INNER JOIN subscriptions s ON
@@ -369,8 +379,7 @@ AFTER INSERT OR UPDATE OR DELETE ON subscriptions
 FOR EACH STATEMENT
 EXECUTE FUNCTION refresh_subscription_read_statements();
 
--- read events from array
-CREATE OR REPLACE FUNCTION read_events_from_ids(
+CREATE OR REPLACE FUNCTION read_events(
 	event_ids event_id[]
 ) RETURNS SETOF events AS $$
 DECLARE
@@ -398,52 +407,7 @@ $$ LANGUAGE plpgsql STRICT STABLE PARALLEL SAFE
 SET search_path TO pgmb2, public;
 
 CREATE OR REPLACE FUNCTION read_next_events(
-	sub_id VARCHAR(48),
-	chunk_size INT DEFAULT 100
-) RETURNS TABLE(
-	id event_id,
-	topic VARCHAR(255),
-	payload JSONB,
-	metadata JSONB
-) AS $$
-DECLARE
-	now_id event_id := create_event_id(NOW(), 0);
-	min_id event_id := create_event_id(
-		NOW() - get_config_value('lookback_interval')::INTERVAL,
-		0
-	);
-BEGIN
-	RETURN QUERY WITH next_events AS (
-		UPDATE subscription_events se
-		SET is_read = TRUE
-		FROM (
-			SELECT se.event_id
-			FROM subscription_events se
-			WHERE se.subscription_id = sub_id
-				AND se.event_id < now_id
-				AND se.event_id > min_id
-				AND NOT se.is_read
-			LIMIT chunk_size
-		) se2
-		WHERE se.subscription_id = sub_id
-			AND se.event_id = se2.event_id
-			AND se2.event_id < now_id
-			AND se2.event_id > min_id
-		RETURNING se.event_id
-	)
-	SELECT 
-		e.id,
-		e.topic,
-		e.payload,
-		e.metadata
-	FROM read_events_from_ids(ARRAY(SELECT ne.event_id FROM next_events ne)) e;
-END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb2, public
-SECURITY INVOKER;
-
-CREATE OR REPLACE FUNCTION read_next_events_for_group(
-	gid VARCHAR(48),
+	fid VARCHAR(48),
 	chunk_size INT DEFAULT 100
 ) RETURNS TABLE(
 	id event_id,
@@ -452,36 +416,31 @@ CREATE OR REPLACE FUNCTION read_next_events_for_group(
 	metadata JSONB,
 	subscription_ids VARCHAR(48)[]
 ) AS $$
-DECLARE
-	lre event_id;
-	now_id event_id := get_earliest_event_id_for_read();
-BEGIN
-	SELECT last_read_event_id FROM group_cursors s WHERE s.id = gid INTO lre;
-	IF lre IS NULL THEN
-		INSERT INTO group_cursors(id, last_read_event_id)
-		SELECT s.group_id, MAX(last_read_event_id)
-		FROM subscriptions s
-		WHERE s.group_id = gid
-		GROUP BY s.group_id
-		RETURNING last_read_event_id INTO lre;
-	END IF;
-
-	RETURN QUERY WITH next_events AS (
-		SELECT se.event_id, ARRAY_AGG(se.subscription_id) AS subscription_ids
+	WITH next_events AS (
+		SELECT
+			se.event_id,
+			CASE WHEN se.subscription_id = ''
+				THEN se.fetch_id
+				ELSE se.subscription_id END
+			AS subscription_id
 		FROM subscription_events se
-		WHERE se.group_id = gid
-			AND se.event_id > lre
-			AND se.event_id < now_id
+		WHERE se.fetch_id = fid
+			AND se.event_id < create_event_id(NOW(), 0)
 		-- ORDER BY se.event_id
-		GROUP BY se.event_id
 		LIMIT chunk_size
+		FOR UPDATE SKIP LOCKED
 	),
-	update_s AS (
-		UPDATE group_cursors s
-			SET last_read_event_id = (
-				SELECT MAX(event_id) FROM next_events
-			)
-		WHERE s.id = gid AND EXISTS (SELECT 1 FROM next_events LIMIT 1)
+	dels AS (
+		DELETE FROM subscription_events se
+		USING next_events se2
+		WHERE se.fetch_id = fid
+		AND se.event_id = se2.event_id
+	),
+	next_events_grp AS (
+		SELECT ne.event_id, ARRAY_AGG(ne.subscription_id) AS subscription_ids
+		FROM next_events ne
+		GROUP BY ne.event_id
+		ORDER BY ne.event_id
 	)
 	SELECT
 		e.id,
@@ -489,10 +448,9 @@ BEGIN
 		e.payload,
 		e.metadata,
 		ne.subscription_ids
-	FROM read_events_from_ids(ARRAY(SELECT ne.event_id FROM next_events ne)) e
-	INNER JOIN next_events ne ON ne.event_id = e.id;
-END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+	FROM read_events(ARRAY(SELECT ne.event_id FROM next_events_grp ne)) e
+	INNER JOIN next_events_grp ne ON ne.event_id = e.id
+$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb2, public
 SECURITY INVOKER;
 
@@ -530,9 +488,9 @@ BEGIN
 	PERFORM pg_advisory_lock(lock_key);
 
 	PERFORM maintain_time_partitions_using_event_id('pgmb2.events'::regclass);
-	PERFORM maintain_time_partitions_using_event_id(
-		'pgmb2.subscription_events'::regclass
-	);
+	-- PERFORM maintain_time_partitions_using_event_id(
+	-- 	'pgmb2.subscription_events'::regclass
+	-- );
 
 	PERFORM pg_advisory_unlock(lock_key);
 END;
