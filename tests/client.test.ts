@@ -31,7 +31,7 @@ describe('PGMB Client Tests', () => {
 	beforeEach(async() => {
 		groupId = `grp${Math.random().toString(36).substring(2, 15)}`
 
-		client = new Pgmb2Client({ pool, logger: LOGGER, poll: true, groupId })
+		client = new Pgmb2Client({ client: pool, logger: LOGGER, poll: true, groupId })
 		await client.initGroup()
 	})
 

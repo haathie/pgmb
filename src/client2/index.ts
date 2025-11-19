@@ -1,5 +1,5 @@
+import type { IDatabaseConnection } from '@pgtyped/runtime'
 import assert from 'assert'
-import type { Pool } from 'pg'
 import type { Logger } from 'pino'
 import { PassThrough, type Writable } from 'stream'
 import { setTimeout } from 'timers/promises'
@@ -7,7 +7,7 @@ import type { IAssertSubscriptionParams } from '../queries.ts'
 import { assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeHttpSubscriptionsInGroup } from '../queries.ts'
 
 type Pgmb2ClientOpts = {
-	pool: Pool
+	client: IDatabaseConnection
 	logger: Logger
 	groupId?: string
 	sleepDurationMs?: number
@@ -29,7 +29,7 @@ type IActiveSubscription = {
 
 export class Pgmb2Client {
 
-	readonly pool: Pool
+	readonly client: IDatabaseConnection
 	readonly logger: Logger
 	readonly groupId: string | undefined
 	readonly sleepDurationMs: number
@@ -41,12 +41,12 @@ export class Pgmb2Client {
 	#pollTask?: CancelFn
 
 	constructor({
-		pool, logger, groupId,
+		client, logger, groupId,
 		sleepDurationMs = 500,
 		readChunkSize = 1000,
 		poll
 	}: Pgmb2ClientOpts) {
-		this.pool = pool
+		this.client = client
 		this.logger = logger
 		this.groupId = groupId
 		this.sleepDurationMs = sleepDurationMs
@@ -62,7 +62,7 @@ export class Pgmb2Client {
 		}
 
 		await removeHttpSubscriptionsInGroup
-			.run({ groupId: this.groupId }, this.pool)
+			.run({ groupId: this.groupId }, this.client)
 		this.#cancelGroupRead = this.#startReadLoop(this.groupId)
 	}
 
@@ -90,7 +90,7 @@ export class Pgmb2Client {
 
 		if(subsToDel.length) {
 			tasks.push(
-				deleteSubscriptions.run({ ids: subsToDel }, this.pool)
+				deleteSubscriptions.run({ ids: subsToDel }, this.client)
 			)
 		}
 
@@ -109,7 +109,7 @@ export class Pgmb2Client {
 			'Cannot register subscription with different groupId than client'
 		)
 
-		const [{ id: subId }] = await assertSubscription.run(params, this.pool)
+		const [{ id: subId }] = await assertSubscription.run(params, this.client)
 		const cancelRead = params.groupId
 			? undefined
 			: this.#startReadLoop(subId)
@@ -151,7 +151,7 @@ export class Pgmb2Client {
 
 		if(sub.deleteOnClose) {
 			try {
-				await deleteSubscriptions.run({ ids: [subId] }, this.pool)
+				await deleteSubscriptions.run({ ids: [subId] }, this.client)
 			} catch(err) {
 				this.logger.error({ subId, err }, 'error deleting subscription')
 			}
@@ -190,7 +190,7 @@ export class Pgmb2Client {
 	async #executeReadLoop(fetchId: string, signal: AbortSignal) {
 		this.logger.trace({ fetchId }, 'starting read loop')
 
-		while(!signal.aborted && !this.pool.ended) {
+		while(!signal.aborted && !this.#isClientEnded()) {
 			let rowsRead = 0
 			try {
 				rowsRead = await this.readChanges(fetchId)
@@ -227,9 +227,9 @@ export class Pgmb2Client {
 	}
 
 	async #executePollLoop(signal: AbortSignal) {
-		while(!signal.aborted && !this.pool.ended) {
+		while(!signal.aborted && !this.#isClientEnded()) {
 			try {
-				await pollForEvents.run(undefined, this.pool)
+				await pollForEvents.run(undefined, this.client)
 			} catch(err) {
 				this.logger.error({ err }, 'error polling for events')
 			}
@@ -242,7 +242,7 @@ export class Pgmb2Client {
 		const now = Date.now()
 		const rows = await readNextEvents.run(
 			{ fetchId, chunkSize: this.readChunkSize },
-			this.pool
+			this.client
 		)
 
 		const subToEventMap:
@@ -289,5 +289,13 @@ export class Pgmb2Client {
 		}
 
 		return rows.length
+	}
+
+	#isClientEnded() {
+		if('ended' in this.client) {
+			return this.client.ended
+		}
+
+		return false
 	}
 }

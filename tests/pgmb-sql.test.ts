@@ -1,10 +1,10 @@
 import assert from 'assert'
 import { Chance } from 'chance'
 import { randomBytes } from 'crypto'
-import { Pool, PoolClient } from 'pg'
-import { PgEnqueueMsg, PgPublishMsg } from '../types'
-import { delay, getDateFromMessageId, serialisePgMsgConstructorsIntoSql } from '../utils'
-import { getQueueSchemaName, isQueueLogged, send } from './utils'
+import { Pool, type PoolClient } from 'pg'
+import type { PgEnqueueMsg, PgPublishMsg } from '../src/types.ts'
+import { delay, getDateFromMessageId, serialisePgMsgConstructorsIntoSql } from '../src/utils.ts'
+import { getQueueSchemaName, isQueueLogged, send } from './utils.ts'
 
 const chance = new Chance()
 

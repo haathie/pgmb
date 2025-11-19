@@ -1,6 +1,6 @@
-import { PoolClient } from 'pg'
-import { PgEnqueueMsg } from '../types'
-import { serialisePgMsgConstructorsIntoSql } from '../utils'
+import type { PoolClient } from 'pg'
+import type { PgEnqueueMsg } from '../src/types.ts'
+import { serialisePgMsgConstructorsIntoSql } from '../src/utils.ts'
 
 export async function send(
 	client: PoolClient, queueName: string, msgs: PgEnqueueMsg[]

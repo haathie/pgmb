@@ -237,6 +237,6 @@ export type Serialiser = {
 	 * @example 'application/json'
 	 */
 	contentType: string | undefined
-	encode: (msg: unknown) => Uint8Array | string
+	encode: (msg: unknown) => Uint8Array<ArrayBufferLike> | string
 	decode: (msg: Uint8Array) => unknown
 }

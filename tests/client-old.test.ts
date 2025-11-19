@@ -1,10 +1,10 @@
 import assert from 'assert'
 import { Pool } from 'pg'
 import P from 'pino'
-import { PGMBClient } from '../client'
-import { V8Serialiser } from '../serialisers/v8'
-import { PGMBClientOpts, PGMBOnMessageOpts } from '../types'
-import { delay } from '../utils'
+import { PGMBClient } from '../src/client'
+import { V8Serialiser } from '../src/serialisers/v8'
+import type { PGMBClientOpts, PGMBOnMessageOpts } from '../src/types.ts'
+import { delay } from '../src/utils'
 import { getQueueSchemaName, send } from './utils'
 
 type QueueTypeMap = {

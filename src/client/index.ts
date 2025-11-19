@@ -245,13 +245,14 @@ export class PGMBClient<QM = DefaultDataMap, EM = DefaultDataMap> {
 	}
 
 	#createConsumers(opts: PGMBClientOpts<QM, EM>['consumers']) {
-		return opts.flatMap(s => (
-			Array.from({ length: s.replicas || 1 }, (_, i) => (
+		return opts.flatMap(opt => (
+			Array.from({ length: opt.replicas || 1 }, (_, i) => (
 				new PGMBConsumer<keyof QM, EM, QM[keyof QM]>(
 					this.#pool,
-					s,
+					// @ts-expect-error
+					opt,
 					this.#serialiser,
-					this.#logger.child({ queue: s.name, r: i }),
+					this.#logger.child({ queue: opt.name, r: i }),
 				)
 			))
 		))
