@@ -219,6 +219,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
+	SELECT DISTINCT conditions_sql FROM subscriptions
+	ORDER BY conditions_sql
+);
+
 CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
 	fetch_id VARCHAR(48),
 	event_id event_id,
@@ -357,6 +362,7 @@ BEGIN
 		|| ')',
 		VARIADIC sql_statements
 	);
+	condition_sql := FORMAT('/* updated at %s */', NOW()) || condition_sql;
 
 	-- fetch the source of the template procedure
 	select pg_get_functiondef(oid) INTO proc_src
@@ -369,8 +375,6 @@ BEGIN
 	proc_src := REPLACE(proc_src, tmpl_proc_placeholder, condition_sql);
 	proc_src := REPLACE(proc_src, tmpl_proc_name, 'poll_for_events');
 
-	RAISE NOTICE 'Preparing poll_for_events with conditions: %', proc_src;
-
 	EXECUTE proc_src;
 END;
 $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
@@ -382,14 +386,22 @@ SELECT prepare_poll_for_events_fn(ARRAY['true']);
 -- we'll prepare the subscription read statement whenever subscriptions are created/updated/deleted
 CREATE OR REPLACE FUNCTION refresh_subscription_read_statements()
 RETURNS TRIGGER AS $$
+DECLARE
+	needs_refresh BOOLEAN := FALSE;
+	old_conditions_sql TEXT[];
+	conditions_sql TEXT[];
 BEGIN
-	PERFORM prepare_poll_for_events_fn(
-		ARRAY(
-			SELECT DISTINCT conditions_sql
-			FROM subscriptions
-			WHERE conditions_sql IS NOT NULL
-		)
-	);
+	old_conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
+
+	REFRESH MATERIALIZED VIEW subscription_cond_sqls;
+
+	conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
+
+	IF conditions_sql = old_conditions_sql THEN
+		RETURN NULL;
+	END IF;
+
+	PERFORM prepare_poll_for_events_fn(conditions_sql);
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE

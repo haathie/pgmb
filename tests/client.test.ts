@@ -39,7 +39,7 @@ describe('PGMB Client Tests', () => {
 		await client.end()
 	})
 
-	it.only('should receive events', async() => {
+	it('should receive events', async() => {
 		const inserted = await insertEvent(pool)
 
 		const sub = await client.registerSubscription({}, true)
@@ -199,6 +199,40 @@ describe('PGMB Client Tests', () => {
 		assert.equal(events.length, eventsToWrite)
 
 		await task
+	})
+
+	it('should update poll fn when conditions_sql uniquely changed', async() => {
+		const cond = 'e.topic = e.metadata->>\'topic\''
+		const fnData0 = await getPollFnData()
+		await client
+			.registerSubscription({ groupId, conditionsSql: cond }, true)
+		const fnData1 = await getPollFnData()
+		assert.notEqual(fnData0.prosrc, fnData1.prosrc)
+
+		const sub2 = await client
+			.registerSubscription({ groupId, conditionsSql: cond }, true)
+		const fnData2 = await getPollFnData()
+		assert.deepEqual(fnData1.prosrc, fnData2.prosrc)
+		await sub2.return?.()
+
+		await setTimeout(500)
+
+		const fnData3 = await getPollFnData()
+		assert.deepEqual(fnData2.prosrc, fnData3.prosrc)
+
+		async function getPollFnData() {
+			const { rows: [row] } = await pool.query(
+				'select * from pg_proc where proname = \'poll_for_events\''
+			)
+			assert(row)
+			return row
+		}
+	})
+
+	it('should fail to create subscription with invalid conditions SQL', async() => {
+		await assert.rejects(
+			() => client.registerSubscription({ conditionsSql: 'INVALID SQL' }, true)
+		)
 	})
 
 	it('should re-enqueue event for subscription', async() => {
