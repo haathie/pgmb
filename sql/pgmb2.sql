@@ -70,7 +70,7 @@ CREATE OR REPLACE FUNCTION create_event_id(ts timestamptz, rand bigint)
 RETURNS event_id AS $$
 SELECT substr(
 	-- ensure we're always 28 characters long by right-padding with '0's
-	'ps'
+	'pm'
 	-- we'll give 13 hex characters for microsecond timestamp
 	|| lpad(to_hex((extract(epoch from ts) * 1000000)::bigint), 13,	'0')
 	-- xids are 32 bits, so 8 hex characters

@@ -6,7 +6,7 @@ import { setTimeout } from 'timers/promises'
 import type { IAssertSubscriptionParams } from '../queries.ts'
 import { assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeHttpSubscriptionsInGroup } from '../queries.ts'
 
-type Pgmb2ClientOpts = {
+export type Pgmb2ClientOpts = {
 	client: IDatabaseConnection
 	logger: Logger
 	groupId?: string
@@ -38,6 +38,8 @@ export class Pgmb2Client {
 	#subscribers: { [topic: string]: IActiveSubscription } = {}
 	#eventsPublished = 0
 	#cancelGroupRead?: CancelFn
+
+	readonly #shouldPoll: boolean
 	#pollTask?: CancelFn
 
 	constructor({
@@ -51,12 +53,14 @@ export class Pgmb2Client {
 		this.groupId = groupId
 		this.sleepDurationMs = sleepDurationMs
 		this.readChunkSize = readChunkSize
-		if(poll) {
-			this.#pollTask = this.#startPollLoop()
-		}
+		this.#shouldPoll = !!poll
 	}
 
-	async initGroup() {
+	async init() {
+		if(this.#shouldPoll) {
+			this.#pollTask = this.#startPollLoop()
+		}
+
 		if(!this.groupId) {
 			return
 		}
@@ -67,6 +71,8 @@ export class Pgmb2Client {
 	}
 
 	async end() {
+		await this.#pollTask?.()
+
 		const tasks: Promise<unknown>[] = []
 		const subsToDel: string[] = []
 		for(const [id, sub] of Object.entries(this.#subscribers)) {
@@ -212,6 +218,10 @@ export class Pgmb2Client {
 		const controller = new AbortController()
 		const task = this.#executePollLoop(controller.signal)
 			.catch(err => {
+				if(err instanceof Error && err.name === 'AbortError') {
+					return
+				}
+
 				if(controller.signal.aborted) {
 					this.logger.error({ err }, 'poll loop error after abort')
 					return

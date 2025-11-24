@@ -32,7 +32,7 @@ describe('PGMB Client Tests', () => {
 		groupId = `grp${Math.random().toString(36).substring(2, 15)}`
 
 		client = new Pgmb2Client({ client: pool, logger: LOGGER, poll: true, groupId })
-		await client.initGroup()
+		await client.init()
 	})
 
 	afterEach(async() => {
@@ -43,10 +43,20 @@ describe('PGMB Client Tests', () => {
 		const inserted = await insertEvent(pool)
 
 		const sub = await client.registerSubscription({}, true)
+		const recv: unknown[] = []
+
 		for await (const { items } of sub) {
-			assert.partialDeepStrictEqual(items, [inserted])
-			break
+			recv.push(...items)
+			if(recv.length === 1) {
+				await insertEvent(pool)
+			}
+
+			if(recv.length >= 2) {
+				break
+			}
 		}
+
+		assert.partialDeepStrictEqual(recv[0], inserted)
 
 		const sub2 = await client.registerSubscription({}, true)
 		const rslt = await Promise.race([sub2.next(), setTimeout(250)])
