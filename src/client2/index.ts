@@ -27,6 +27,8 @@ type IActiveSubscription = {
 	cancelRead?: CancelFn
 }
 
+export type IRegisteredSubscription = AsyncIterableIterator<IReadEvent, void>
+
 export class Pgmb2Client {
 
 	readonly client: IDatabaseConnection
@@ -104,6 +106,7 @@ export class Pgmb2Client {
 
 		this.#subscribers = {}
 		this.#cancelGroupRead = undefined
+		this.#pollTask = undefined
 	}
 
 	async registerSubscription(
@@ -124,7 +127,7 @@ export class Pgmb2Client {
 
 	#listenForEvents(
 		subId: string, deleteOnClose: boolean, cancelRead?: CancelFn,
-	): AsyncIterableIterator<IReadEvent, void> {
+	): IRegisteredSubscription {
 		const stream = new PassThrough({ objectMode: true, highWaterMark: 1 })
 		this.#subscribers[subId] = { stream, deleteOnClose, cancelRead }
 

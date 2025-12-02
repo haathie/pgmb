@@ -17,7 +17,7 @@ SET search_path TO pgmb2, public;
 
 CREATE TYPE config_type AS ENUM(
 	'plugin_version',
-	'oldest_partition_interval',
+	'partition_retention_interval',
 	'future_partitions_to_create',
 	'partition_size',
 	'poll_chunk_size',
@@ -39,7 +39,7 @@ $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb2, public;
 INSERT INTO config(id, value)
 	VALUES
 		('plugin_version', '0.1.0'),
-		('oldest_partition_interval', '1 minute'),
+		('partition_retention_interval', '1 minute'),
 		('future_partitions_to_create', '12'),
 		('partition_size', 'minute'),
 		('poll_chunk_size', '10000'),
@@ -134,19 +134,15 @@ $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 -- using the "subscriptions_config" table.
 CREATE OR REPLACE FUNCTION maintain_time_partitions_using_event_id(
 	table_id regclass,
+	partition_interval INTERVAL,
+	future_partitions_to_create INT,
+	retention_period INTERVAL,
+	additional_sql TEXT DEFAULT NULL,
 	current_ts timestamptz DEFAULT NOW()
 )
 RETURNS void AS $$
 DECLARE
-	partition_size TEXT := get_config_value('partition_size');
-	partition_interval INTERVAL := ('1 ' || partition_size);
-
-	oldest_partition_interval INTERVAL :=
-		get_config_value('oldest_partition_interval')::INTERVAL;
-	future_partitions_to_create INT :=
-		get_config_value('future_partitions_to_create')::INT;
-
-	ts_trunc timestamptz := date_trunc(partition_size, current_ts);
+	ts_trunc timestamptz := date_bin(partition_interval, current_ts, '2000-1-1');
 	p_info RECORD;
 BEGIN
 	-- Ensure current and next hour partitions exist
@@ -157,37 +153,47 @@ BEGIN
 			EXECUTE format(
 				'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I
 					FOR VALUES FROM (%L) TO (%L)',
-				get_time_partition_name(table_id, target_ts),
+				pgmb2.get_time_partition_name(table_id, target_ts),
 				table_id,
-				create_event_id(target_ts, 0),
+				pgmb2.create_event_id(target_ts, 0),
 				-- fill with max possible tx id
-				create_event_id(target_ts + partition_interval, 0)
+				pgmb2.create_event_id(target_ts + partition_interval, 0)
 			);
 
-			-- turn off autovacuum on the events table, since we're not
-			-- going to be updating/deleting rows from it.
-			-- Also set fillfactor to 100 since we're only inserting.
-			EXECUTE FORMAT('ALTER TABLE %I SET(
-				fillfactor = 100,
-				autovacuum_enabled = false,
-				toast.autovacuum_enabled = false
-			);', get_time_partition_name(table_id, target_ts));
+			IF additional_sql IS NOT NULL THEN
+				EXECUTE REPLACE(
+					additional_sql,
+					'$1',
+					pgmb2.get_time_partition_name(table_id, target_ts)
+				);
+			END IF;
 		END;
 	END LOOP;
 
 	-- Drop old partitions
 	FOR p_info IN (
-		SELECT inhrelid::regclass AS child -- optionally cast to text
+		SELECT inhrelid::regclass AS child
 		FROM pg_catalog.pg_inherits
 		WHERE inhparent = table_id
 			AND inhrelid::regclass::text <
-				get_time_partition_name(table_id, current_ts - oldest_partition_interval)
+				pgmb2.get_time_partition_name(table_id, current_ts - retention_period)
 	) LOOP
 		EXECUTE format('DROP TABLE IF EXISTS %I', p_info.child);
 	END LOOP;
 END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
-	SET search_path TO pgmb2, public;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION get_current_partition(
+	table_id regclass,
+	current_ts timestamptz DEFAULT NOW()
+) RETURNS regclass AS $$
+	SELECT inhrelid::regclass
+	FROM pg_catalog.pg_inherits
+	WHERE inhparent = table_id
+		AND inhrelid::regclass::text < pgmb2.get_time_partition_name(table_id, current_ts)
+	ORDER BY inhrelid DESC
+	LIMIT 1
+$$ LANGUAGE sql STABLE PARALLEL SAFE SECURITY DEFINER;
 
 -- subscriptions table and related functions ----------------
 
@@ -223,6 +229,9 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 	SELECT DISTINCT conditions_sql FROM subscriptions
 	ORDER BY conditions_sql
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+	subscription_cond_sqls_idx ON subscription_cond_sqls(conditions_sql);
 
 CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
 	fetch_id VARCHAR(48),
@@ -390,10 +399,13 @@ DECLARE
 	needs_refresh BOOLEAN := FALSE;
 	old_conditions_sql TEXT[];
 	conditions_sql TEXT[];
+
+	lk_name CONSTANT bigint :=
+		hashtext('pgmb2.refresh_subscription_read_statements');
 BEGIN
 	old_conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
 
-	REFRESH MATERIALIZED VIEW subscription_cond_sqls;
+	REFRESH MATERIALIZED VIEW CONCURRENTLY subscription_cond_sqls;
 
 	conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
 
@@ -521,10 +533,20 @@ BEGIN
 	-- acquire lock to prevent concurrent maintenance
 	PERFORM pg_advisory_lock(lock_key);
 
-	PERFORM maintain_time_partitions_using_event_id('pgmb2.events'::regclass);
-	-- PERFORM maintain_time_partitions_using_event_id(
-	-- 	'pgmb2.subscription_events'::regclass
-	-- );
+	PERFORM maintain_time_partitions_using_event_id(
+		'pgmb2.events'::regclass,
+		partition_interval := ('1' || get_config_value('partition_size'))::INTERVAL,
+		future_partitions_to_create := get_config_value('future_partitions_to_create')::INT,
+		retention_period := get_config_value('partition_retention_interval')::INTERVAL,
+		-- turn off autovacuum on the events table, since we're not
+		-- going to be updating/deleting rows from it.
+		-- Also set fillfactor to 100 since we're only inserting.
+		additional_sql := 'ALTER TABLE $1 SET(
+			fillfactor = 100,
+			autovacuum_enabled = false,
+			toast.autovacuum_enabled = false
+		);'
+	);
 
 	PERFORM pg_advisory_unlock(lock_key);
 END;
@@ -557,6 +579,21 @@ SELECT jsonb_object_agg(key, value) FROM (
 )
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 
+CREATE OR REPLACE FUNCTION serialise_record_for_event(
+	tabl oid,
+	op TEXT,
+	record RECORD,
+	serialised OUT JSONB,
+	emit OUT BOOLEAN
+) AS $$
+BEGIN
+	serialised := to_jsonb(record);
+	emit := TRUE;
+	RETURN;
+END
+$$ LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
+	SECURITY INVOKER;
+
 -- Trigger that pushes changes to the events table
 CREATE OR REPLACE FUNCTION push_table_event()
 RETURNS TRIGGER AS $$
@@ -568,31 +605,42 @@ BEGIN
 		SELECT
 			create_event_id(clock_timestamp(), rand := start_num + row_number() OVER ()),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
-			to_jsonb(n)
-		FROM NEW n;
+			jsonb_strip_nulls(s.data)
+		FROM NEW n
+		CROSS JOIN LATERAL
+			serialise_record_for_event(TG_RELID, TG_OP, n) AS s(data, emit)
+		WHERE s.emit;
 	ELSIF TG_OP = 'DELETE' THEN
 		INSERT INTO events(id, topic, payload)
 		SELECT
 			create_event_id(clock_timestamp(), rand := start_num + row_number() OVER ()),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
-			to_jsonb(o)
-		FROM OLD o;
+			jsonb_strip_nulls(to_jsonb(s.data))
+		FROM OLD o
+		CROSS JOIN LATERAL
+			serialise_record_for_event(TG_RELID, TG_OP, o) AS s(data, emit)
+		WHERE s.emit;
 	ELSIF TG_OP = 'UPDATE' THEN
 		-- For updates, we can send both old and new data
 		INSERT INTO events(id, topic, payload, metadata)
 		SELECT
 			create_event_id(clock_timestamp(), rand := start_num + n.rn),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
-			n.data,
-			jsonb_build_object('diff', jsonb_diff(n.data, o.data), 'old', o.data)			
+			jsonb_strip_nulls(jsonb_diff(n.data, o.data)),
+			jsonb_build_object('old', jsonb_strip_nulls(o.data))
 		FROM (
-			SELECT to_jsonb(n) as data, row_number() OVER () AS rn FROM NEW n
+			SELECT s.data, s.emit, row_number() OVER () AS rn
+			FROM NEW n
+			CROSS JOIN LATERAL
+				serialise_record_for_event(TG_RELID, TG_OP, n) AS s(data, emit)
 		) AS n
 		INNER JOIN (
-			SELECT to_jsonb(o) as data, row_number() OVER () AS rn FROM OLD o
+			SELECT s.data, row_number() OVER () AS rn FROM OLD o
+			CROSS JOIN LATERAL
+				serialise_record_for_event(TG_RELID, TG_OP, o) AS s(data, emit)
 		) AS o ON n.rn = o.rn
 		-- ignore rows where data didn't change
-		WHERE n.data IS DISTINCT FROM o.data;
+		WHERE n.data IS DISTINCT FROM o.data AND n.emit;
 	END IF;
 
 	RETURN NULL;
@@ -603,45 +651,56 @@ $$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
 -- Pushes table mutations to the events table. I.e. makes the table subscribable.
 -- and creates triggers to push changes to the events table.
 CREATE OR REPLACE FUNCTION push_table_mutations(
-	tbl regclass
+	tbl regclass,
+	insert BOOLEAN DEFAULT TRUE,
+	delete BOOLEAN DEFAULT TRUE,
+	update BOOLEAN DEFAULT TRUE
 )
 RETURNS VOID AS $$
 BEGIN
-	-- Create a trigger to push changes to the subscriptions queue
-	BEGIN
-		EXECUTE 'CREATE TRIGGER
-			post_insert_event
-			AFTER INSERT ON ' || tbl::varchar || '
-			REFERENCING NEW TABLE AS NEW
-			FOR EACH STATEMENT
-			EXECUTE FUNCTION push_table_event();';
-	EXCEPTION
-		WHEN duplicate_object THEN
-			NULL;
-  END;
-	BEGIN
-		EXECUTE 'CREATE TRIGGER
-			post_delete_event
-			AFTER DELETE ON ' || tbl::varchar || '
-			REFERENCING OLD TABLE AS OLD
-			FOR EACH STATEMENT
-			EXECUTE FUNCTION push_table_event();';
-	EXCEPTION
-		WHEN duplicate_object THEN
-			NULL;
-  END;
-	BEGIN
-		EXECUTE 'CREATE TRIGGER
-			post_update_event
-			AFTER UPDATE ON ' || tbl::varchar || '
-			REFERENCING OLD TABLE AS OLD
-			NEW TABLE AS NEW
-			FOR EACH STATEMENT
-			EXECUTE FUNCTION push_table_event();';
-	EXCEPTION
-		WHEN duplicate_object THEN
-			NULL;
-  END;
+	IF insert THEN
+		-- Create a trigger to push changes to the subscriptions queue
+		BEGIN
+			EXECUTE 'CREATE TRIGGER
+				post_insert_event
+				AFTER INSERT ON ' || tbl::varchar || '
+				REFERENCING NEW TABLE AS NEW
+				FOR EACH STATEMENT
+				EXECUTE FUNCTION push_table_event();';
+		EXCEPTION
+			WHEN duplicate_object THEN
+				NULL;
+	  END;
+	END IF;
+
+	IF delete THEN
+		BEGIN
+			EXECUTE 'CREATE TRIGGER
+				post_delete_event
+				AFTER DELETE ON ' || tbl::varchar || '
+				REFERENCING OLD TABLE AS OLD
+				FOR EACH STATEMENT
+				EXECUTE FUNCTION push_table_event();';
+		EXCEPTION
+			WHEN duplicate_object THEN
+				NULL;
+	  END;
+	END IF;
+
+	IF update THEN
+		BEGIN
+			EXECUTE 'CREATE TRIGGER
+				post_update_event
+				AFTER UPDATE ON ' || tbl::varchar || '
+				REFERENCING OLD TABLE AS OLD
+				NEW TABLE AS NEW
+				FOR EACH STATEMENT
+				EXECUTE FUNCTION push_table_event();';
+		EXCEPTION
+			WHEN duplicate_object THEN
+				NULL;
+	  END;
+	END IF;
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER
 	VOLATILE PARALLEL UNSAFE

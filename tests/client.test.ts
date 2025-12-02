@@ -82,7 +82,7 @@ describe('PGMB Client Tests', () => {
 		assert.equal(received.length, 0)
 
 		await c1.query('COMMIT;')
-		await c1.release()
+		c1.release()
 
 		await readPromise
 
@@ -119,7 +119,7 @@ describe('PGMB Client Tests', () => {
 
 		assert.equal(events.length, eventcount)
 
-		await c1.release()
+		c1.release()
 
 		assert.partialDeepStrictEqual(events, eventsWritten)
 	})
@@ -192,7 +192,7 @@ describe('PGMB Client Tests', () => {
 				await c.query('COMMIT;')
 			}
 
-			await c.release()
+			c.release()
 		}))
 
 		await readPromise
@@ -236,6 +236,29 @@ describe('PGMB Client Tests', () => {
 			)
 			assert(row)
 			return row
+		}
+	})
+
+	it('should concurrently update poll fn', async() => {
+		const conds = [
+			'e.topic = e.metadata->>\'topic\'',
+			"e.payload->>'data' = s.metadata->>'data'",
+			"(e.payload->>'value')::int > (s.metadata->>'min_value')::int"
+		]
+		await Promise.all([
+			client.readChanges(groupId),
+			...conds.map(cond => (
+				client.registerSubscription({ groupId, conditionsSql: cond }, true)
+			))
+		])
+
+		await client.readChanges(groupId)
+
+		const { rows: [procRow] } = await pool.query<{ prosrc: string }>(
+			'select prosrc from pg_proc where proname = \'poll_for_events\''
+		)
+		for(const cond of conds) {
+			assert.ok(procRow.prosrc.includes(cond))
 		}
 	})
 
@@ -371,7 +394,7 @@ describe('PGMB Client Tests', () => {
 				{ payload: { id: 2, data: 'world' } },
 				{
 					topic: 'public.test_table.update',
-					payload: { id: 1, data: 'hello!!!' },
+					payload: { data: 'hello!!!' },
 					metadata: { old: { id: 1, data: 'hello' } }
 				},
 				{ topic: 'public.test_table.delete', payload: { id: 2 } }
