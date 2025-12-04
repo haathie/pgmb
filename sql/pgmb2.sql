@@ -190,7 +190,7 @@ CREATE OR REPLACE FUNCTION get_current_partition(
 	SELECT inhrelid::regclass
 	FROM pg_catalog.pg_inherits
 	WHERE inhparent = table_id
-		AND inhrelid::regclass::text < pgmb2.get_time_partition_name(table_id, current_ts)
+		AND inhrelid::regclass::text <= pgmb2.get_time_partition_name(table_id, current_ts)
 	ORDER BY inhrelid DESC
 	LIMIT 1
 $$ LANGUAGE sql STABLE PARALLEL SAFE SECURITY DEFINER;
