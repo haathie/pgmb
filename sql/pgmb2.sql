@@ -17,11 +17,10 @@ SET search_path TO pgmb2, public;
 
 CREATE TYPE config_type AS ENUM(
 	'plugin_version',
-	'partition_retention_interval',
+	'partition_retention_period',
 	'future_partitions_to_create',
-	'partition_size',
-	'poll_chunk_size',
-	'lookback_interval'
+	'partition_interval',
+	'poll_chunk_size'
 );
 
 CREATE TABLE IF NOT EXISTS config(
@@ -39,11 +38,10 @@ $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb2, public;
 INSERT INTO config(id, value)
 	VALUES
 		('plugin_version', '0.1.0'),
-		('partition_retention_interval', '1 minute'),
+		('partition_retention_period', '60 minutes'),
 		('future_partitions_to_create', '12'),
-		('partition_size', 'minute'),
-		('poll_chunk_size', '10000'),
-		('lookback_interval', '1 minute');
+		('partition_interval', '30 minutes'),
+		('poll_chunk_size', '10000');
 
 -- we'll create the events table next & its functions ---------------
 
@@ -124,7 +122,7 @@ CREATE OR REPLACE FUNCTION get_time_partition_name(
 	table_id regclass,
 	ts timestamptz
 ) RETURNS TEXT AS $$
-	SELECT table_id || '_' || to_char(ts, 'YYYYMMDDHHMI24')
+	SELECT table_id || '_' || to_char(ts, 'YYYYMMDDHH24MI')
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Partition maintenance function for events table. Creates partitions for
@@ -143,17 +141,41 @@ CREATE OR REPLACE FUNCTION maintain_time_partitions_using_event_id(
 RETURNS void AS $$
 DECLARE
 	ts_trunc timestamptz := date_bin(partition_interval, current_ts, '2000-1-1');
+	oldest_partition_name text := pgmb2
+		.get_time_partition_name(table_id, ts_trunc - retention_period);
 	p_info RECORD;
+	lock_key CONSTANT BIGINT :=
+		hashtext('pgmb2.maintain_tp.' || table_id::text);
 BEGIN
+	IF NOT pg_try_advisory_xact_lock(lock_key) THEN
+		-- another process is already maintaining partitions for this table
+		RETURN;
+	END IF;
+
 	-- Ensure current and next hour partitions exist
-	FOR i IN 0..future_partitions_to_create LOOP
+	FOR i IN 0..(future_partitions_to_create-1) LOOP
 		DECLARE
 			target_ts timestamptz := ts_trunc + (i * partition_interval);
+			pt_name TEXT := pgmb2.get_time_partition_name(table_id, target_ts);
 		BEGIN
+			IF pt_name < oldest_partition_name THEN
+				RAISE EXCEPTION 'pt_name(%) < op(%); rp=%, ts=%', pt_name, oldest_partition_name, (ts_trunc - retention_period), target_ts;
+			END IF;
+			-- check if partition already exists
+			IF EXISTS (
+				SELECT 1
+				FROM pg_catalog.pg_inherits
+				WHERE inhparent = table_id
+					AND inhrelid::regclass::text = pt_name
+			) THEN
+				CONTINUE;
+			END IF;
+
+			RAISE NOTICE 'creating partition %', pt_name;
+
 			EXECUTE format(
-				'CREATE TABLE IF NOT EXISTS %I PARTITION OF %I
-					FOR VALUES FROM (%L) TO (%L)',
-				pgmb2.get_time_partition_name(table_id, target_ts),
+				'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
+				pt_name,
 				table_id,
 				pgmb2.create_event_id(target_ts, 0),
 				-- fill with max possible tx id
@@ -161,11 +183,7 @@ BEGIN
 			);
 
 			IF additional_sql IS NOT NULL THEN
-				EXECUTE REPLACE(
-					additional_sql,
-					'$1',
-					pgmb2.get_time_partition_name(table_id, target_ts)
-				);
+				EXECUTE REPLACE(additional_sql, '$1', pt_name);
 			END IF;
 		END;
 	END LOOP;
@@ -175,10 +193,9 @@ BEGIN
 		SELECT inhrelid::regclass AS child
 		FROM pg_catalog.pg_inherits
 		WHERE inhparent = table_id
-			AND inhrelid::regclass::text <
-				pgmb2.get_time_partition_name(table_id, current_ts - retention_period)
+			AND inhrelid::regclass::text < oldest_partition_name
 	) LOOP
-		EXECUTE format('DROP TABLE IF EXISTS %I', p_info.child);
+		EXECUTE format('DROP TABLE %I', p_info.child);
 	END LOOP;
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER;
@@ -279,10 +296,10 @@ DECLARE
 	inserted_rows integer;
 
 	lock_key CONSTANT BIGINT :=
-		hashtext('pgmb2.events.partition_maintenance');
+		hashtext('pgmb2.poll_for_events');
 BEGIN
 	-- acquire lock to prevent concurrent polling, maintenance
-	IF NOT pg_try_advisory_lock(lock_key) THEN
+	IF NOT pg_try_advisory_xact_lock(lock_key) THEN
 		RETURN 0;
 	END IF;
 
@@ -290,6 +307,7 @@ BEGIN
 		SELECT td.event_id
 		FROM unread_events td
 		WHERE td.event_id < create_event_id(NOW(), 0)
+		FOR UPDATE SKIP LOCKED
 		-- ORDER BY td.event_id
 		LIMIT chunk_size
 	),
@@ -306,18 +324,21 @@ BEGIN
 	FROM to_delete;
 
 	IF max_id IS NULL THEN
-		-- release the lock
-		PERFORM pg_advisory_unlock(lock_key);
 		RETURN 0;
 	END IF;
 
+	WITH read_events AS (
+		SELECT e.*
+		FROM events e
+		INNER JOIN unnest(read_ids) r(id) ON e.id = r.id
+		WHERE e.id <= max_id AND e.id >= min_id
+	)
 	INSERT INTO subscription_events(fetch_id, subscription_id, event_id)
 	SELECT
 		CASE WHEN s.group_id IS NOT NULL THEN s.group_id ELSE s.id END,
 		CASE WHEN s.group_id IS NOT NULL THEN s.id ELSE '' END,
 		e.id
-	FROM events e
-	INNER JOIN unnest(read_ids) r(id) ON e.id = r.id
+	FROM read_events e
 	INNER JOIN subscriptions s ON
 		s.id = e.subscription_id
 		OR (
@@ -327,13 +348,9 @@ BEGIN
 				-- in the prepared function.
 				TRUE -- CONDITIONS_SQL_PLACEHOLDER --
 			)
-		)
-	WHERE e.id <= max_id AND e.id >= min_id;
+		);
 
 	GET DIAGNOSTICS inserted_rows = ROW_COUNT;
-
-	-- release the lock
-	PERFORM pg_advisory_unlock(lock_key);
 
 	-- return total inserted events
 	RETURN inserted_rows;
@@ -524,20 +541,16 @@ $$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb2, public
 SECURITY INVOKER;
 
-CREATE OR REPLACE FUNCTION maintain_events_table()
+CREATE OR REPLACE FUNCTION maintain_events_table(
+	current_ts timestamptz DEFAULT NOW()
+)
 RETURNS VOID AS $$
-DECLARE
-	lock_key CONSTANT BIGINT :=
-		hashtext('pgmb2.events.partition_maintenance');
 BEGIN
-	-- acquire lock to prevent concurrent maintenance
-	PERFORM pg_advisory_lock(lock_key);
-
 	PERFORM maintain_time_partitions_using_event_id(
 		'pgmb2.events'::regclass,
-		partition_interval := ('1' || get_config_value('partition_size'))::INTERVAL,
+		partition_interval := get_config_value('partition_interval')::INTERVAL,
 		future_partitions_to_create := get_config_value('future_partitions_to_create')::INT,
-		retention_period := get_config_value('partition_retention_interval')::INTERVAL,
+		retention_period := get_config_value('partition_retention_period')::INTERVAL,
 		-- turn off autovacuum on the events table, since we're not
 		-- going to be updating/deleting rows from it.
 		-- Also set fillfactor to 100 since we're only inserting.
@@ -545,10 +558,9 @@ BEGIN
 			fillfactor = 100,
 			autovacuum_enabled = false,
 			toast.autovacuum_enabled = false
-		);'
+		);',
+		current_ts := current_ts
 	);
-
-	PERFORM pg_advisory_unlock(lock_key);
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb2, public;

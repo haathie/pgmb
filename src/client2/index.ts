@@ -59,17 +59,15 @@ export class Pgmb2Client {
 	}
 
 	async init() {
+		if(this.groupId) {
+			await removeHttpSubscriptionsInGroup
+				.run({ groupId: this.groupId }, this.client)
+			this.#cancelGroupRead = this.#startReadLoop(this.groupId)
+		}
+
 		if(this.#shouldPoll) {
 			this.#pollTask = this.#startPollLoop()
 		}
-
-		if(!this.groupId) {
-			return
-		}
-
-		await removeHttpSubscriptionsInGroup
-			.run({ groupId: this.groupId }, this.client)
-		this.#cancelGroupRead = this.#startReadLoop(this.groupId)
 	}
 
 	async end() {
@@ -117,6 +115,11 @@ export class Pgmb2Client {
 			params.groupId === this.groupId || !params.groupId,
 			'Cannot register subscription with different groupId than client'
 		)
+
+		// http subscriptions must register in a group
+		if(params.type === 'http') {
+			params.groupId = this.groupId
+		}
 
 		const [{ id: subId }] = await assertSubscription.run(params, this.client)
 		const cancelRead = params.groupId

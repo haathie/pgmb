@@ -6,7 +6,7 @@ import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
 import { Pgmb2Client } from '../src/client2/index.ts'
 import type { IReadNextEventsResult } from '../src/queries.ts'
-import { reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { pollForEvents, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 const LOGGER = pino({ level: 'trace' })
 
@@ -122,6 +122,32 @@ describe('PGMB Client Tests', () => {
 		c1.release()
 
 		assert.partialDeepStrictEqual(events, eventsWritten)
+	})
+
+	it('should handle concurrent changes', async() => {
+		await Promise.all([
+			Array.from({ length: 5 }).map(() => insertEvent(pool)),
+			pollForEvents.run(undefined, pool),
+			await pool.query(
+				`select pgmb2.maintain_events_table(
+					current_ts := NOW()
+						+ pgmb2.get_config_value('partition_interval')::interval
+				);`
+			)
+		])
+
+		// check partitions exist
+		const { rows: [{ count, expected }] } = await pool.query<{ count: string, expected: number }>(
+			`SELECT
+				count(*) as count,
+				pgmb2.get_config_value('future_partitions_to_create')::int as expected
+			FROM pg_catalog.pg_inherits
+			WHERE inhparent = 'pgmb2.events'::regclass;`
+		)
+		// we'd removed 1 old partition by executing maintainence w a future
+		// timestamp, which would've removed 1 old partition and created 1 new one
+		// since by default we retain 2 oldest partitions, we should be 1 ahead
+		assert.equal(+count, expected + 1)
 	})
 
 	it('should not read future events', async() => {
