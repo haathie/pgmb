@@ -222,10 +222,19 @@ CREATE TYPE subscription_type AS ENUM(
 
 CREATE DOMAIN subscription_id AS VARCHAR(24);
 
+CREATE OR REPLACE FUNCTION create_subscription_id()
+RETURNS subscription_id AS $$
+	SELECT 'su' || substring(
+		create_event_id(NOW(), create_random_bigint())
+		FROM 3
+	);
+$$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
+ SET search_path TO pgmb2, public;
+
 -- reader, subscription management tables and functions will go here ----------------
 CREATE TABLE IF NOT EXISTS subscriptions (
 	-- unique identifier for the subscription
-	id subscription_id PRIMARY KEY DEFAULT gen_random_uuid()::varchar,
+	id subscription_id PRIMARY KEY DEFAULT create_subscription_id(),
 	-- define how the subscription is grouped. subscriptions belonging
 	-- to the same group can be read in one batch.
 	-- Leave NULL to only allow independent fetching
@@ -242,6 +251,13 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE EXTENSION IF NOT EXISTS btree_gin;
+
+CREATE INDEX "sub_gin" ON subscriptions USING GIN(conditions_sql, metadata);
+-- slows down subscription creation, but ensures the costlier "poll_for_events"
+-- function is executed faster.
+ALTER INDEX sub_gin SET (fastupdate = off);
+
 CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 	SELECT DISTINCT conditions_sql FROM subscriptions
 	ORDER BY conditions_sql
@@ -257,15 +273,6 @@ CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
 	PRIMARY KEY (fetch_id, event_id, subscription_id)
 );
 
-CREATE OR REPLACE FUNCTION create_subscription_id(type subscription_type)
-RETURNS subscription_id AS $$
-	SELECT substring(type::text, 1, 2) || substring(
-		create_event_id(NOW(), create_random_bigint())
-		FROM 3
-	);
-$$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb2, public;
-
 -- we'll also validate the conditions_sql on insert/update
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
 RETURNS TRIGGER AS $$
@@ -275,7 +282,7 @@ BEGIN
 		ON ' || NEW.conditions_sql;
 	RETURN NEW;
 END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+$$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 	SET search_path TO pgmb2, public
 	SECURITY INVOKER;
 
@@ -348,7 +355,8 @@ BEGIN
 				-- in the prepared function.
 				TRUE -- CONDITIONS_SQL_PLACEHOLDER --
 			)
-		);
+		)
+	ON CONFLICT DO NOTHING;
 
 	GET DIAGNOSTICS inserted_rows = ROW_COUNT;
 

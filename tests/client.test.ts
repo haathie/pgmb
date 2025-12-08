@@ -237,8 +237,61 @@ describe('PGMB Client Tests', () => {
 		await task
 	})
 
+	it('should handle large numbers of events & subs', async() => {
+		// ending client to avoid simultaneous pollers
+		await client.end()
+
+		const EVENT_COUNT = 10_000
+		const SUB_PER_TYPE_COUNT = 1_000
+		const SUB_TYPES = 5
+		const TOTAL_SUB_COUNT = SUB_PER_TYPE_COUNT * SUB_TYPES
+
+		for(let i = 0; i < SUB_TYPES;i++) {
+			const k = `key${i}`
+			await pool.query<{ id: string }>(
+				`insert into pgmb2.subscriptions (group_id, conditions_sql, metadata, type)
+				select *, 'http' from unnest($1::text[], $2::text[], $3::jsonb[])
+				 as t(group_id, conditions_sql, metadata)
+				returning id`,
+				[
+					Array.from({ length: SUB_PER_TYPE_COUNT }).map(() => groupId),
+					Array.from({ length: SUB_PER_TYPE_COUNT }).map(() => (
+						`s.metadata @> jsonb_build_object(\'${k}\', e.payload->>\'key\')`
+					)),
+					Array.from({ length: SUB_PER_TYPE_COUNT }).map((_, i) => ({ [k]: i.toString() }))
+				]
+			)
+		}
+
+		await writeEvents.run(
+			{
+				topics: Array.from({ length: EVENT_COUNT })
+					.map(() => 'test-topic-1'),
+				payloads: Array.from({ length: EVENT_COUNT })
+					.map((_, i) => ({	key: (i % SUB_PER_TYPE_COUNT).toString() })),
+				metadatas: Array.from({ length: EVENT_COUNT }).map(() => ({}))
+			},
+			pool
+		)
+
+		console.log('Inserted events and subs, starting poll...')
+
+		const now = Date.now()
+		const [{ count }] = await pollForEvents.run(undefined, pool)
+
+		const tt = Date.now() - now
+		console.log(`Processed ${count} events for ${TOTAL_SUB_COUNT} subs in ${tt}ms`)
+
+		// ensure it took less than 1 second
+		assert(tt <= 1000, `Took too long: ${tt}ms`)
+
+		assert.equal(count, SUB_TYPES * EVENT_COUNT)
+
+		await client.init()
+	})
+
 	it('should update poll fn when conditions_sql uniquely changed', async() => {
-		const cond = 'e.topic = e.metadata->>\'topic\''
+		const cond = 'e.topic = s.metadata->>\'topic\''
 		const fnData0 = await getPollFnData()
 		await client
 			.registerSubscription({ groupId, conditionsSql: cond }, true)
@@ -267,7 +320,7 @@ describe('PGMB Client Tests', () => {
 
 	it('should concurrently update poll fn', async() => {
 		const conds = [
-			'e.topic = e.metadata->>\'topic\'',
+			'e.topic = s.metadata->>\'topic\'',
 			"e.payload->>'data' = s.metadata->>'data'",
 			"(e.payload->>'value')::int > (s.metadata->>'min_value')::int"
 		]

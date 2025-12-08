@@ -15,7 +15,6 @@ export type unknownArray = (unknown)[];
 export interface IAssertSubscriptionParams {
   conditionsSql?: string | null | void;
   groupId?: string | null | void;
-  id?: string | null | void;
   metadata?: unknown | null | void;
   type?: subscription_type | null | void;
 }
@@ -31,14 +30,13 @@ export interface IAssertSubscriptionQuery {
   result: IAssertSubscriptionResult;
 }
 
-const assertSubscriptionIR: any = {"usedParamSet":{"id":true,"type":true,"groupId":true,"conditionsSql":true,"metadata":true},"params":[{"name":"id","required":false,"transform":{"type":"scalar"},"locs":[{"a":98,"b":100}]},{"name":"type","required":false,"transform":{"type":"scalar"},"locs":[{"a":141,"b":145},{"a":277,"b":281}]},{"name":"groupId","required":false,"transform":{"type":"scalar"},"locs":[{"a":187,"b":194}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":207,"b":220}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":242,"b":250}]}],"statement":"INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata, type)\nVALUES (\n\tCOALESCE(:id, pgmb2.create_subscription_id(COALESCE(:type::pgmb2.subscription_type, 'custom'))),\n\t:groupId,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}'),\n\tCOALESCE(:type::pgmb2.subscription_type, 'custom')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
+const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"metadata":true,"type":true},"params":[{"name":"groupId","required":false,"transform":{"type":"scalar"},"locs":[{"a":85,"b":92}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":105,"b":118}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":140,"b":148}]},{"name":"type","required":false,"transform":{"type":"scalar"},"locs":[{"a":175,"b":179}]}],"statement":"INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)\nVALUES (\n\t:groupId,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}'),\n\tCOALESCE(:type::pgmb2.subscription_type, 'custom')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
  * ```
- * INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata, type)
+ * INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)
  * VALUES (
- * 	COALESCE(:id, pgmb2.create_subscription_id(COALESCE(:type::pgmb2.subscription_type, 'custom'))),
  * 	:groupId,
  * 	COALESCE(:conditionsSql, 'TRUE'),
  * 	COALESCE(:metadata::jsonb, '{}'),

@@ -1,7 +1,6 @@
 /* @name assertSubscription */
-INSERT INTO pgmb2.subscriptions (id, group_id, conditions_sql, metadata, type)
+INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)
 VALUES (
-	COALESCE(:id, pgmb2.create_subscription_id(COALESCE(:type::pgmb2.subscription_type, 'custom'))),
 	:groupId,
 	COALESCE(:conditionsSql, 'TRUE'),
 	COALESCE(:metadata::jsonb, '{}'),
