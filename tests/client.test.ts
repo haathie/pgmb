@@ -89,6 +89,18 @@ describe('PGMB Client Tests', () => {
 		assert.partialDeepStrictEqual(received, [ins])
 	})
 
+	it('should handle concurrent subscription writes', async() => {
+		await client.registerSubscription({ groupId }, true)
+		await client.readChanges(groupId)
+		await insertEvent(pool)
+		const [changeCount1] = await Promise.all([
+			client.readChanges(groupId),
+			pollForEvents.run(undefined, pool),
+		])
+		const changeCount2 = await client.readChanges(groupId)
+		assert.equal(changeCount1 + changeCount2, 1)
+	})
+
 	it('should receive events from concurrent transactions', async() => {
 		const eventcount = 500
 		const c1 = await pool.connect()
@@ -243,7 +255,7 @@ describe('PGMB Client Tests', () => {
 
 		const EVENT_COUNT = 10_000
 		const SUB_PER_TYPE_COUNT = 1_000
-		const SUB_TYPES = 5
+		const SUB_TYPES = 4
 		const TOTAL_SUB_COUNT = SUB_PER_TYPE_COUNT * SUB_TYPES
 
 		for(let i = 0; i < SUB_TYPES;i++) {

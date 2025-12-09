@@ -106,6 +106,7 @@ export const pollForEvents = new PreparedQuery<IPollForEventsParams,IPollForEven
 /** 'ReadNextEvents' parameters type */
 export interface IReadNextEventsParams {
   chunkSize: number;
+  cursor: string;
   fetchId: string;
 }
 
@@ -113,6 +114,7 @@ export interface IReadNextEventsParams {
 export interface IReadNextEventsResult {
   id: string;
   metadata: unknown;
+  nextCursor: string;
   payload: unknown;
   subscriptionIds: stringArray;
   topic: string;
@@ -124,7 +126,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":167,"b":175}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":178,"b":188}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids::text[] AS \"subscriptionIds!\"\nFROM pgmb2.read_next_events(:fetchId!, :chunkSize!)"};
+const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"cursor":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":198,"b":206}]},{"name":"cursor","required":true,"transform":{"type":"scalar"},"locs":[{"a":209,"b":216}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":219,"b":229}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids::text[] AS \"subscriptionIds!\",\n\tnext_cursor AS \"nextCursor!\"\nFROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -134,8 +136,9 @@ const readNextEventsIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},
  * 	topic AS "topic!",
  * 	payload AS "payload!",
  * 	metadata AS "metadata!",
- * 	subscription_ids::text[] AS "subscriptionIds!"
- * FROM pgmb2.read_next_events(:fetchId!, :chunkSize!)
+ * 	subscription_ids::text[] AS "subscriptionIds!",
+ * 	next_cursor AS "nextCursor!"
+ * FROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!)
  * ```
  */
 export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextEventsResult>(readNextEventsIR);
@@ -144,6 +147,7 @@ export const readNextEvents = new PreparedQuery<IReadNextEventsParams,IReadNextE
 /** 'ReadNextEventsText' parameters type */
 export interface IReadNextEventsTextParams {
   chunkSize: number;
+  cursor: string;
   fetchId: string;
 }
 
@@ -160,7 +164,7 @@ export interface IReadNextEventsTextQuery {
   result: IReadNextEventsTextResult;
 }
 
-const readNextEventsTextIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":106}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":109,"b":119}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:fetchId!, :chunkSize!)"};
+const readNextEventsTextIR: any = {"usedParamSet":{"fetchId":true,"cursor":true,"chunkSize":true},"params":[{"name":"fetchId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":106}]},{"name":"cursor","required":true,"transform":{"type":"scalar"},"locs":[{"a":109,"b":116}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":119,"b":129}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -169,7 +173,7 @@ const readNextEventsTextIR: any = {"usedParamSet":{"fetchId":true,"chunkSize":tr
  * 	id AS "id!",
  * 	topic AS "topic!",
  * 	payload::text AS "payload!"
- * FROM pgmb2.read_next_events(:fetchId!, :chunkSize!)
+ * FROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!)
  * ```
  */
 export const readNextEventsText = new PreparedQuery<IReadNextEventsTextParams,IReadNextEventsTextResult>(readNextEventsTextIR);

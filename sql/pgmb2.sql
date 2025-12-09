@@ -251,12 +251,33 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
-CREATE EXTENSION IF NOT EXISTS btree_gin;
-
-CREATE INDEX "sub_gin" ON subscriptions USING GIN(conditions_sql, metadata);
--- slows down subscription creation, but ensures the costlier "poll_for_events"
--- function is executed faster.
-ALTER INDEX sub_gin SET (fastupdate = off);
+DO $$
+DECLARE
+	has_btree_gin BOOLEAN;
+BEGIN
+	has_btree_gin := (
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_available_extensions
+			WHERE name = 'btree_gin'
+		)
+	);
+	-- create btree_gin extension if not exists, if the extension
+	-- is not available, we create a simpler regular GIN index instead.
+	IF has_btree_gin THEN
+		CREATE EXTENSION IF NOT EXISTS btree_gin;
+		-- fastupdate=false, slows down subscription creation, but ensures the costlier
+		-- "poll_for_events" function is executed faster.
+		CREATE INDEX "sub_gin" ON subscriptions USING GIN(conditions_sql, metadata)
+			WITH (fastupdate = false);
+	ELSE
+		RAISE NOTICE 'btree_gin extension is not available, using
+			regular GIN index for subscriptions.conditions_sql';
+		CREATE INDEX "sub_gin" ON subscriptions USING GIN(metadata)
+			WITH (fastupdate = false);
+	END IF;
+END
+$$;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 	SELECT DISTINCT conditions_sql FROM subscriptions
@@ -266,12 +287,15 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 CREATE UNIQUE INDEX IF NOT EXISTS
 	subscription_cond_sqls_idx ON subscription_cond_sqls(conditions_sql);
 
-CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events (
+CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events(
+	id event_id,
 	fetch_id VARCHAR(48),
 	event_id event_id,
-	subscription_id subscription_id,
-	PRIMARY KEY (fetch_id, event_id, subscription_id)
-);
+	subscription_id subscription_id
+) PARTITION BY RANGE (id);
+
+CREATE INDEX IF NOT EXISTS subscription_events_fetch_idx
+	ON subscription_events(fetch_id, id);
 
 -- we'll also validate the conditions_sql on insert/update
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
@@ -302,14 +326,9 @@ DECLARE
 
 	inserted_rows integer;
 
-	lock_key CONSTANT BIGINT :=
-		hashtext('pgmb2.poll_for_events');
+	start_num BIGINT := create_random_bigint();
+	write_start TIMESTAMPTZ;
 BEGIN
-	-- acquire lock to prevent concurrent polling, maintenance
-	IF NOT pg_try_advisory_xact_lock(lock_key) THEN
-		RETURN 0;
-	END IF;
-
 	WITH to_delete AS (
 		SELECT td.event_id
 		FROM unread_events td
@@ -334,14 +353,19 @@ BEGIN
 		RETURN 0;
 	END IF;
 
+	-- fully lock table to avoid race conditions when reading from subscription_events
+	LOCK TABLE subscription_events IN ACCESS EXCLUSIVE MODE;
+	write_start := clock_timestamp();
+
 	WITH read_events AS (
 		SELECT e.*
 		FROM events e
 		INNER JOIN unnest(read_ids) r(id) ON e.id = r.id
 		WHERE e.id <= max_id AND e.id >= min_id
 	)
-	INSERT INTO subscription_events(fetch_id, subscription_id, event_id)
+	INSERT INTO subscription_events(id, fetch_id, subscription_id, event_id)
 	SELECT
+		create_event_id(write_start, start_num + row_number() OVER ()),
 		CASE WHEN s.group_id IS NOT NULL THEN s.group_id ELSE s.id END,
 		CASE WHEN s.group_id IS NOT NULL THEN s.id ELSE '' END,
 		e.id
@@ -479,16 +503,19 @@ SET search_path TO pgmb2, public;
 
 CREATE OR REPLACE FUNCTION read_next_events(
 	fid VARCHAR(48),
+	cursor event_id,
 	chunk_size INT DEFAULT 100
 ) RETURNS TABLE(
 	id event_id,
 	topic VARCHAR(255),
 	payload JSONB,
 	metadata JSONB,
-	subscription_ids subscription_id[]
+	subscription_ids subscription_id[],
+	next_cursor event_id
 ) AS $$
 	WITH next_events AS (
 		SELECT
+			se.id,
 			se.event_id,
 			CASE WHEN se.subscription_id = ''
 				THEN se.fetch_id
@@ -496,19 +523,15 @@ CREATE OR REPLACE FUNCTION read_next_events(
 			AS subscription_id
 		FROM subscription_events se
 		WHERE se.fetch_id = fid
-			AND se.event_id < create_event_id(NOW(), 0)
+			AND se.id < create_event_id(NOW(), 0)
+			AND se.id > cursor
 		-- ORDER BY se.event_id
 		LIMIT chunk_size
-		FOR UPDATE SKIP LOCKED
-	),
-	dels AS (
-		DELETE FROM subscription_events se
-		USING next_events se2
-		WHERE se.fetch_id = fid
-		AND se.event_id = se2.event_id
 	),
 	next_events_grp AS (
-		SELECT ne.event_id, ARRAY_AGG(ne.subscription_id) AS subscription_ids
+		SELECT
+			ne.event_id,
+			ARRAY_AGG(ne.subscription_id) AS subscription_ids
 		FROM next_events ne
 		GROUP BY ne.event_id
 		ORDER BY ne.event_id
@@ -518,12 +541,13 @@ CREATE OR REPLACE FUNCTION read_next_events(
 		e.topic,
 		e.payload,
 		e.metadata,
-		ne.subscription_ids
+		ne.subscription_ids,
+		(SELECT MAX(id) FROM next_events)
 	FROM read_events(ARRAY(SELECT ne.event_id FROM next_events_grp ne)) e
 	INNER JOIN next_events_grp ne ON ne.event_id = e.id
-$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb2, public
-SECURITY INVOKER;
+$$ LANGUAGE sql STABLE PARALLEL SAFE
+	SET search_path TO pgmb2, public
+	SECURITY INVOKER;
 
 -- Function to re-enqueue events for a specific subscription
 CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
@@ -553,12 +577,32 @@ CREATE OR REPLACE FUNCTION maintain_events_table(
 	current_ts timestamptz DEFAULT NOW()
 )
 RETURNS VOID AS $$
+DECLARE
+	pi INTERVAL := get_config_value('partition_interval')::INTERVAL;
+	fpc INT := get_config_value('future_partitions_to_create')::INT;
+	rp INTERVAL := get_config_value('partition_retention_period')::INTERVAL;
 BEGIN
 	PERFORM maintain_time_partitions_using_event_id(
 		'pgmb2.events'::regclass,
-		partition_interval := get_config_value('partition_interval')::INTERVAL,
-		future_partitions_to_create := get_config_value('future_partitions_to_create')::INT,
-		retention_period := get_config_value('partition_retention_period')::INTERVAL,
+		partition_interval := pi,
+		future_partitions_to_create := fpc,
+		retention_period := rp,
+		-- turn off autovacuum on the events table, since we're not
+		-- going to be updating/deleting rows from it.
+		-- Also set fillfactor to 100 since we're only inserting.
+		additional_sql := 'ALTER TABLE $1 SET(
+			fillfactor = 100,
+			autovacuum_enabled = false,
+			toast.autovacuum_enabled = false
+		);',
+		current_ts := current_ts
+	);
+
+	PERFORM maintain_time_partitions_using_event_id(
+		'pgmb2.subscription_events'::regclass,
+		partition_interval := pi,
+		future_partitions_to_create := fpc,
+		retention_period := rp,
 		-- turn off autovacuum on the events table, since we're not
 		-- going to be updating/deleting rows from it.
 		-- Also set fillfactor to 100 since we're only inserting.

@@ -40,6 +40,7 @@ export class Pgmb2Client {
 	#subscribers: { [topic: string]: IActiveSubscription } = {}
 	#eventsPublished = 0
 	#cancelGroupRead?: CancelFn
+	#cursors: { [subscriptionId: string]: string } = {}
 
 	readonly #shouldPoll: boolean
 	#pollTask?: CancelFn
@@ -256,8 +257,22 @@ export class Pgmb2Client {
 
 	async readChanges(fetchId: string) {
 		const now = Date.now()
+		if(!this.#cursors[fetchId]) {
+			const { rows: [{ cursor }] } = await this.client.query(
+				'select pgmb2.create_event_id(NOW(), 0) as cursor',
+				[]
+			)
+
+			this.#cursors[fetchId] = cursor
+			this.logger.trace({ cursor, fetchId }, 'set cursor')
+		}
+
 		const rows = await readNextEvents.run(
-			{ fetchId, chunkSize: this.readChunkSize },
+			{
+				fetchId,
+				chunkSize: this.readChunkSize,
+				cursor: this.#cursors[fetchId],
+			},
 			this.client
 		)
 
@@ -299,9 +314,12 @@ export class Pgmb2Client {
 					subscriptions: subs.length,
 					durationMs: Date.now() - now,
 					totalEventsPublished: this.#eventsPublished,
+					nextCursor: rows[0].nextCursor
 				},
 				'read rows'
 			)
+
+			this.#cursors[fetchId] = rows[0].nextCursor
 		}
 
 		return rows.length

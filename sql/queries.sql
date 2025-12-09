@@ -28,15 +28,16 @@ SELECT
 	topic AS "topic!",
 	payload AS "payload!",
 	metadata AS "metadata!",
-	subscription_ids::text[] AS "subscriptionIds!"
-FROM pgmb2.read_next_events(:fetchId!, :chunkSize!);
+	subscription_ids::text[] AS "subscriptionIds!",
+	next_cursor AS "nextCursor!"
+FROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!);
 
 /* @name readNextEventsText */
 SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload::text AS "payload!"
-FROM pgmb2.read_next_events(:fetchId!, :chunkSize!);
+FROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!);
 
 /* @name writeEvents */
 INSERT INTO pgmb2.events (topic, payload, metadata)
