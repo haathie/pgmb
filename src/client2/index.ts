@@ -4,20 +4,28 @@ import type { Logger } from 'pino'
 import { PassThrough, type Writable } from 'stream'
 import { setTimeout } from 'timers/promises'
 import type { IAssertSubscriptionParams } from '../queries.ts'
-import { assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeHttpSubscriptionsInGroup } from '../queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeHttpSubscriptionsInGroup, setGroupCursor } from '../queries.ts'
 
 export type Pgmb2ClientOpts = {
 	client: IDatabaseConnection
 	logger: Logger
-	groupId?: string
+	groupId: string
 	sleepDurationMs?: number
 	readChunkSize?: number
 	poll?: boolean
 }
 
 type IReadEvent = {
+	/**
+	 * metadata of the subscription
+	 */
+	metadata?: unknown
 	items: IReadNextEventsResult[]
 }
+
+type RegisterSubscriptionParams = {
+	groupId?: string
+} & Omit<IAssertSubscriptionParams, 'groupId'>
 
 type CancelFn = () => Promise<void>
 
@@ -33,14 +41,13 @@ export class Pgmb2Client {
 
 	readonly client: IDatabaseConnection
 	readonly logger: Logger
-	readonly groupId: string | undefined
+	readonly groupId: string
 	readonly sleepDurationMs: number
 	readonly readChunkSize: number
 
 	#subscribers: { [topic: string]: IActiveSubscription } = {}
 	#eventsPublished = 0
 	#cancelGroupRead?: CancelFn
-	#cursors: { [subscriptionId: string]: string } = {}
 
 	readonly #shouldPoll: boolean
 	#pollTask?: CancelFn
@@ -61,8 +68,14 @@ export class Pgmb2Client {
 
 	async init() {
 		if(this.groupId) {
+			await assertGroup.run({ id: this.groupId }, this.client)
+			this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
 			await removeHttpSubscriptionsInGroup
 				.run({ groupId: this.groupId }, this.client)
+			this.logger.debug(
+				{ groupId: this.groupId },
+				'removed existing http subscriptions in group'
+			)
 			this.#cancelGroupRead = this.#startReadLoop(this.groupId)
 		}
 
@@ -109,24 +122,18 @@ export class Pgmb2Client {
 	}
 
 	async registerSubscription(
-		params: IAssertSubscriptionParams,
+		{ groupId, ...rest }: RegisterSubscriptionParams,
 		deleteOnClose: boolean
 	) {
+		groupId ||= this.groupId
 		assert(
-			params.groupId === this.groupId || !params.groupId,
+			groupId === this.groupId,
 			'Cannot register subscription with different groupId than client'
 		)
 
-		// http subscriptions must register in a group
-		if(params.type === 'http') {
-			params.groupId = this.groupId
-		}
-
-		const [{ id: subId }] = await assertSubscription.run(params, this.client)
-		const cancelRead = params.groupId
-			? undefined
-			: this.#startReadLoop(subId)
-		return this.#listenForEvents(subId, deleteOnClose, cancelRead)
+		const [{ id: subId }] = await assertSubscription
+			.run({ ...rest, groupId }, this.client)
+		return this.#listenForEvents(subId, deleteOnClose, undefined)
 	}
 
 	#listenForEvents(
@@ -255,39 +262,24 @@ export class Pgmb2Client {
 		}
 	}
 
-	async readChanges(fetchId: string) {
+	async readChanges(groupId: string, client: IDatabaseConnection = this.client) {
 		const now = Date.now()
-		if(!this.#cursors[fetchId]) {
-			const { rows: [{ cursor }] } = await this.client.query(
-				'select pgmb2.create_event_id(NOW(), 0) as cursor',
-				[]
-			)
-
-			this.#cursors[fetchId] = cursor
-			this.logger.trace({ cursor, fetchId }, 'set cursor')
-		}
-
-		const rows = await readNextEvents.run(
-			{
-				fetchId,
-				chunkSize: this.readChunkSize,
-				cursor: this.#cursors[fetchId],
-			},
-			this.client
-		)
+		const rows = await readNextEvents
+			.run({	groupId, chunkSize: this.readChunkSize }, client)
 
 		const subToEventMap:
-			{ [subscriptionId: string]: IReadNextEventsResult[] } = {}
+			{ [subscriptionId: string]: IReadEvent } = {}
 		for(const row of rows) {
-			for(const subId of row.subscriptionIds) {
-				subToEventMap[subId] ||= []
-				subToEventMap[subId].push(row)
+			for(const [idx, subId] of row.subscriptionIds.entries()) {
+				const metadata = row.subscriptionMetadatas?.[idx]
+				subToEventMap[subId] ||= { items: [], metadata }
+				subToEventMap[subId].items.push(row)
 				this.#eventsPublished ++
 			}
 		}
 
 		const subs = Object.entries(subToEventMap)
-		for(const [subId, items] of subs) {
+		for(const [subId, result] of subs) {
 			const sub = this.#subscribers[subId]
 			if(!sub) {
 				this.logger.trace({ subId }, 'subscription not found')
@@ -295,11 +287,11 @@ export class Pgmb2Client {
 			}
 
 			const { stream } = sub
-			const event: IReadEvent = { items }
+			const event: IReadEvent = result
 			stream.write(event, err => {
 				if(err) {
 					this.logger.warn(
-						{ fetchId, err, subscriptionId: subId },
+						{ err, subscriptionId: subId },
 						'error writing to subscription stream'
 					)
 				}
@@ -307,19 +299,20 @@ export class Pgmb2Client {
 		}
 
 		if(rows.length) {
+			const nextCursor = rows[0].nextCursor
 			this.logger.debug(
 				{
-					fetchId,
 					rowsRead: rows.length,
 					subscriptions: subs.length,
 					durationMs: Date.now() - now,
 					totalEventsPublished: this.#eventsPublished,
-					nextCursor: rows[0].nextCursor
+					nextCursor
 				},
 				'read rows'
 			)
 
-			this.#cursors[fetchId] = rows[0].nextCursor
+			await setGroupCursor
+				.run({ groupId, cursor: nextCursor }, client)
 		}
 
 		return rows.length

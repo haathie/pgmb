@@ -37,7 +37,7 @@ $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb2, public;
 
 INSERT INTO config(id, value)
 	VALUES
-		('plugin_version', '0.1.0'),
+		('plugin_version', '0.2.0'),
 		('partition_retention_period', '60 minutes'),
 		('future_partitions_to_create', '12'),
 		('partition_interval', '30 minutes'),
@@ -221,6 +221,7 @@ CREATE TYPE subscription_type AS ENUM(
 );
 
 CREATE DOMAIN subscription_id AS VARCHAR(24);
+CREATE DOMAIN group_id AS VARCHAR(48);
 
 CREATE OR REPLACE FUNCTION create_subscription_id()
 RETURNS subscription_id AS $$
@@ -232,13 +233,13 @@ $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
  SET search_path TO pgmb2, public;
 
 -- reader, subscription management tables and functions will go here ----------------
-CREATE TABLE IF NOT EXISTS subscriptions (
+CREATE TABLE subscriptions (
 	-- unique identifier for the subscription
 	id subscription_id PRIMARY KEY DEFAULT create_subscription_id(),
 	-- define how the subscription is grouped. subscriptions belonging
 	-- to the same group can be read in one batch.
 	-- Leave NULL to only allow independent fetching
-	group_id VARCHAR(48),
+	group_id group_id NOT NULL,
 	created_at TIMESTAMPTZ DEFAULT NOW(),
 	-- A SQL expression that will be used to filter events for this subscription.
 	-- The events table will be aliased as "e" in this expression. The subscription
@@ -287,15 +288,27 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 CREATE UNIQUE INDEX IF NOT EXISTS
 	subscription_cond_sqls_idx ON subscription_cond_sqls(conditions_sql);
 
+CREATE TABLE subscription_groups(
+	id group_id PRIMARY KEY,
+	created_at TIMESTAMPTZ DEFAULT NOW(),
+	last_read_event_id event_id DEFAULT create_event_id(NOW(), 0)
+);
+
+ALTER TABLE subscriptions ADD CONSTRAINT fk_subscription_group
+	FOREIGN KEY (group_id)
+	REFERENCES subscription_groups(id)
+	ON DELETE RESTRICT
+	NOT VALID;
+
 CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events(
 	id event_id,
-	fetch_id VARCHAR(48),
+	group_id group_id,
 	event_id event_id,
 	subscription_id subscription_id
 ) PARTITION BY RANGE (id);
 
-CREATE INDEX IF NOT EXISTS subscription_events_fetch_idx
-	ON subscription_events(fetch_id, id);
+CREATE INDEX IF NOT EXISTS subscription_events_group_idx
+	ON subscription_events(group_id, id);
 
 -- we'll also validate the conditions_sql on insert/update
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
@@ -363,11 +376,11 @@ BEGIN
 		INNER JOIN unnest(read_ids) r(id) ON e.id = r.id
 		WHERE e.id <= max_id AND e.id >= min_id
 	)
-	INSERT INTO subscription_events(id, fetch_id, subscription_id, event_id)
+	INSERT INTO subscription_events(id, group_id, subscription_id, event_id)
 	SELECT
 		create_event_id(write_start, start_num + row_number() OVER ()),
-		CASE WHEN s.group_id IS NOT NULL THEN s.group_id ELSE s.id END,
-		CASE WHEN s.group_id IS NOT NULL THEN s.id ELSE '' END,
+		s.group_id,
+		s.id,
 		e.id
 	FROM read_events e
 	INNER JOIN subscriptions s ON
@@ -502,36 +515,47 @@ $$ LANGUAGE plpgsql STRICT STABLE PARALLEL SAFE
 SET search_path TO pgmb2, public;
 
 CREATE OR REPLACE FUNCTION read_next_events(
-	fid VARCHAR(48),
-	cursor event_id,
-	chunk_size INT DEFAULT 100
+	gid VARCHAR(48),
+	chunk_size INT DEFAULT get_config_value('poll_chunk_size')::INT
 ) RETURNS TABLE(
 	id event_id,
 	topic VARCHAR(255),
 	payload JSONB,
 	metadata JSONB,
 	subscription_ids subscription_id[],
+	subscription_metadatas JSONB[],
 	next_cursor event_id
 ) AS $$
-	WITH next_events AS (
+DECLARE
+	cursor event_id;
+BEGIN
+	SELECT sc.last_read_event_id
+	FROM subscription_groups sc
+	WHERE sc.id = gid
+	INTO cursor;
+
+	IF cursor IS NULL THEN
+		cursor := create_event_id(NOW(), 0);
+	END IF;
+
+	RETURN QUERY WITH next_events AS (
 		SELECT
 			se.id,
 			se.event_id,
-			CASE WHEN se.subscription_id = ''
-				THEN se.fetch_id
-				ELSE se.subscription_id END
-			AS subscription_id
+			se.subscription_id,
+			s.metadata AS subscription_metadata
 		FROM subscription_events se
-		WHERE se.fetch_id = fid
+		INNER JOIN subscriptions s ON s.id = se.subscription_id
+		WHERE se.group_id = gid
 			AND se.id < create_event_id(NOW(), 0)
 			AND se.id > cursor
-		-- ORDER BY se.event_id
 		LIMIT chunk_size
 	),
 	next_events_grp AS (
 		SELECT
 			ne.event_id,
-			ARRAY_AGG(ne.subscription_id) AS subscription_ids
+			ARRAY_AGG(ne.subscription_id) AS subscription_ids,
+			ARRAY_AGG(ne.subscription_metadata) AS subscription_metadatas
 		FROM next_events ne
 		GROUP BY ne.event_id
 		ORDER BY ne.event_id
@@ -542,12 +566,24 @@ CREATE OR REPLACE FUNCTION read_next_events(
 		e.payload,
 		e.metadata,
 		ne.subscription_ids,
-		(SELECT MAX(id) FROM next_events)
+		ne.subscription_metadatas,
+		(SELECT MAX(ne2.id)::event_id FROM next_events ne2)
 	FROM read_events(ARRAY(SELECT ne.event_id FROM next_events_grp ne)) e
-	INNER JOIN next_events_grp ne ON ne.event_id = e.id
-$$ LANGUAGE sql STABLE PARALLEL SAFE
+	INNER JOIN next_events_grp ne ON ne.event_id = e.id;
+END
+$$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 	SET search_path TO pgmb2, public
 	SECURITY INVOKER;
+
+CREATE OR REPLACE FUNCTION set_group_cursor(
+	gid VARCHAR(48), new_cursor event_id
+) RETURNS VOID AS $$
+INSERT INTO subscription_groups(id, last_read_event_id)
+	VALUES (gid, new_cursor)
+	ON CONFLICT (id) DO UPDATE
+	SET last_read_event_id = EXCLUDED.last_read_event_id;
+$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
+SET search_path TO pgmb2, public;
 
 -- Function to re-enqueue events for a specific subscription
 CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
@@ -622,7 +658,7 @@ SELECT maintain_events_table();
 -- triggers to add events for specific tables ---------------------------
 
 -- Function to create a topic string for subscriptions.
--- Eg. "public" "contacts" "INSERT" -> "public.contacts.INSERT"
+-- Eg. "public" "contacts" "INSERT" -> "public.contacts.insert"
 CREATE OR REPLACE FUNCTION create_topic(
 	schema_name name,
 	table_name name,

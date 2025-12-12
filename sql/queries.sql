@@ -1,13 +1,19 @@
+/* @name assertGroup */
+INSERT INTO pgmb2.subscription_groups (id)
+VALUES (:id!)
+ON CONFLICT DO NOTHING;
+
 /* @name assertSubscription */
 INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)
 VALUES (
-	:groupId,
+	:groupId!,
 	COALESCE(:conditionsSql, 'TRUE'),
 	COALESCE(:metadata::jsonb, '{}'),
 	COALESCE(:type::pgmb2.subscription_type, 'custom')
 )
 ON CONFLICT (id) DO UPDATE
 SET
+	group_id = EXCLUDED.group_id,
 	conditions_sql = EXCLUDED.conditions_sql,
 	metadata = EXCLUDED.metadata
 RETURNING id AS "id!";
@@ -29,15 +35,19 @@ SELECT
 	payload AS "payload!",
 	metadata AS "metadata!",
 	subscription_ids::text[] AS "subscriptionIds!",
+	subscription_metadatas AS "subscriptionMetadatas!",
 	next_cursor AS "nextCursor!"
-FROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!);
+FROM pgmb2.read_next_events(:groupId!, :chunkSize!);
 
 /* @name readNextEventsText */
 SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload::text AS "payload!"
-FROM pgmb2.read_next_events(:fetchId!, :cursor!, :chunkSize!);
+FROM pgmb2.read_next_events(:groupId!, :chunkSize!);
+
+/* @name setGroupCursor */
+SELECT pgmb2.set_group_cursor(:groupId!,	:cursor!::pgmb2.event_id) AS "success!";
 
 /* @name writeEvents */
 INSERT INTO pgmb2.events (topic, payload, metadata)

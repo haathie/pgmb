@@ -15,9 +15,10 @@
     "dbName": "postgres",
     "password": ""
   },
-  "typesOverrides": { 
+  "typesOverrides": {
     "jsonb": "unknown",
     "subscription_id": "string",
+    "group_id": "string",
     "event_id": "string"
   }
 }

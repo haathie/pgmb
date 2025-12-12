@@ -42,7 +42,7 @@ describe('PGMB Client Tests', () => {
 	it('should receive events', async() => {
 		const inserted = await insertEvent(pool)
 
-		const sub = await client.registerSubscription({}, true)
+		const sub = await client.registerSubscription({ }, true)
 		const recv: unknown[] = []
 
 		for await (const { items } of sub) {
@@ -395,7 +395,8 @@ describe('PGMB Client Tests', () => {
 		const noSub = await client.registerSubscription(
 			{
 				groupId,
-				conditionsSql: "e.payload->>'non_exist' IS NOT NULL"
+				conditionsSql: "e.payload->>'non_exist' IS NOT NULL",
+				metadata: {}
 			},
 			true
 		)
@@ -431,11 +432,13 @@ describe('PGMB Client Tests', () => {
 		// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
 		const sub1Nxt = await sub1.next()
 		assert(!sub1Nxt.done)
+		assert.deepEqual(sub1Nxt.value.metadata, { min: 0.5 })
 		assert.equal(sub1Nxt.value.items.length, 1)
 
 		// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
 		const sub2Nxt = await sub2.next()
 		assert(!sub2Nxt.done)
+		assert.deepEqual(sub2Nxt.value.metadata, { min: 0 })
 		assert.equal(sub2Nxt.value.items.length, 2)
 
 		noSub.return?.()
@@ -444,7 +447,16 @@ describe('PGMB Client Tests', () => {
 
 	it('should create events from table mutations', async() => {
 		const sub = await client.registerSubscription(
-			{ conditionsSql: "e.topic LIKE 'public.test_table.%%'" },
+			{
+				metadata: {
+					topics: [
+						'public.test_table.insert',
+						'public.test_table.update',
+						'public.test_table.delete'
+					]
+				},
+				conditionsSql: `s.metadata @> ('{"topics":["' || e.topic || '"]}')::jsonb`
+			},
 			false
 		)
 		const events: unknown[] = []
