@@ -1,5 +1,9 @@
 import assert from 'assert'
+import { Chance } from 'chance'
+import { EventSource } from 'eventsource'
 import { readFile } from 'fs/promises'
+import type { Server } from 'node:http'
+import { createServer } from 'node:http'
 import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import { Pool, type PoolClient } from 'pg'
@@ -9,6 +13,7 @@ import type { IReadNextEventsResult } from '../src/queries.ts'
 import { pollForEvents, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 const LOGGER = pino({ level: 'trace' })
+const CHANCE = new Chance()
 
 describe('PGMB Client Tests', () => {
 
@@ -455,7 +460,7 @@ describe('PGMB Client Tests', () => {
 						'public.test_table.delete'
 					]
 				},
-				conditionsSql: `s.metadata @> ('{"topics":["' || e.topic || '"]}')::jsonb`
+				conditionsSql: 's.metadata @> (\'{"topics":["\' || e.topic || \'"]}\')::jsonb'
 			},
 			false
 		)
@@ -517,12 +522,60 @@ describe('PGMB Client Tests', () => {
 		await task
 		assert.equal(events.length, 4)
 	})
+
+	describe('SSE', () => {
+
+		let srv: Server
+		const port: number = CHANCE.integer({ min: 10000, max: 65000 })
+
+		before(async() => {
+			srv = createServer()
+			await new Promise<void>(resolve => (
+				srv.listen(port, resolve)
+			))
+		})
+
+		after(async() => {
+			srv.close()
+		})
+
+		it.only('should receive events over SSE', async() => {
+			srv.on('request', async(req, res) => {
+				await client.registerSseSubscription({}, req, res)
+			})
+			const es = new EventSource(`http://localhost:${port}/sse`)
+			await new Promise<void>((resolve, reject) => {
+				es.onopen = () => {
+					console.log('SSE connection opened')
+					resolve()
+				}
+
+				es.onerror = (err) => {
+					console.error('SSE connection error', err)
+					reject(err)
+				}
+			})
+
+			const task = new Promise<MessageEvent>((resolve) => {
+				es.addEventListener('test-topic', (msg) => {
+					resolve(msg)
+				})
+			})
+
+			const { id } = await insertEvent(pool)
+			const result = await task
+			assert.equal(result.lastEventId, id)
+			assert.ok(JSON.parse(result.data))
+
+			es.close()
+		})
+	})
 })
 
 async function insertEvent(client: Pool | PoolClient) {
 	const topic = 'test-topic'
 	const payload = { data: Math.random() }
-	await writeEvents.run(
+	const [{ id }] = await writeEvents.run(
 		{
 			topics: [topic],
 			payloads: [payload],
@@ -531,5 +584,5 @@ async function insertEvent(client: Pool | PoolClient) {
 		client
 	)
 
-	return { topic, payload }
+	return { id, topic, payload }
 }

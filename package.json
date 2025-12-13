@@ -27,6 +27,7 @@
     "amqplib": "^0.10.7",
     "chance": "^1.1.12",
     "eslint": "^8.19.0",
+    "eventsource": "^4.1.0",
     "typescript": "^5.0.0"
   },
   "files": [

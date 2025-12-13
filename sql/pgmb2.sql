@@ -235,6 +235,7 @@ $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
 -- reader, subscription management tables and functions will go here ----------------
 CREATE TABLE subscriptions (
 	-- unique identifier for the subscription
+	-- todo: uniquely from group, condition_sql, metadata?
 	id subscription_id PRIMARY KEY DEFAULT create_subscription_id(),
 	-- define how the subscription is grouped. subscriptions belonging
 	-- to the same group can be read in one batch.
@@ -367,6 +368,7 @@ BEGIN
 	END IF;
 
 	-- fully lock table to avoid race conditions when reading from subscription_events
+	-- todo: use advisory lock at the end instead?
 	LOCK TABLE subscription_events IN ACCESS EXCLUSIVE MODE;
 	write_start := clock_timestamp();
 
