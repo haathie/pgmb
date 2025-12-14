@@ -231,7 +231,7 @@ export interface IReplayEventsQuery {
   result: IReplayEventsResult;
 }
 
-const replayEventsIR: any = {"usedParamSet":{"groupId":true,"subscriptionId":true,"fromEventId":true,"maxEvents":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":129,"b":137}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":160,"b":175}]},{"name":"fromEventId","required":true,"transform":{"type":"scalar"},"locs":[{"a":196,"b":208}]},{"name":"maxEvents","required":true,"transform":{"type":"scalar"},"locs":[{"a":242,"b":252}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.replay_events(\n\tgroup_id := :groupId!,\n\tsubscription_id := :subscriptionId!,\n\tfrom_event_id := :fromEventId!::pgmb2.event_id,\n\tmax_events := :maxEvents!\n)"};
+const replayEventsIR: any = {"usedParamSet":{"groupId":true,"subscriptionId":true,"fromEventId":true,"maxEvents":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":117,"b":125}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":129,"b":144}]},{"name":"fromEventId","required":true,"transform":{"type":"scalar"},"locs":[{"a":148,"b":160}]},{"name":"maxEvents","required":true,"transform":{"type":"scalar"},"locs":[{"a":180,"b":190}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.replay_events(\n\t:groupId!,\n\t:subscriptionId!,\n\t:fromEventId!::pgmb2.event_id,\n\t:maxEvents!\n)"};
 
 /**
  * Query generated from SQL:
@@ -242,10 +242,10 @@ const replayEventsIR: any = {"usedParamSet":{"groupId":true,"subscriptionId":tru
  * 	payload AS "payload!",
  * 	metadata AS "metadata!"
  * FROM pgmb2.replay_events(
- * 	group_id := :groupId!,
- * 	subscription_id := :subscriptionId!,
- * 	from_event_id := :fromEventId!::pgmb2.event_id,
- * 	max_events := :maxEvents!
+ * 	:groupId!,
+ * 	:subscriptionId!,
+ * 	:fromEventId!::pgmb2.event_id,
+ * 	:maxEvents!
  * )
  * ```
  */

@@ -521,7 +521,8 @@ BEGIN
 		SELECT e.*
 		FROM events e
 		INNER JOIN unnest(event_ids) AS u(eid) ON e.id = u.eid
-		WHERE e.id <= max_id AND e.id >= min_id;
+		WHERE e.id <= max_id AND e.id >= min_id
+		ORDER BY u.eid;
 END;
 $$ LANGUAGE plpgsql STRICT STABLE PARALLEL SAFE
 SET search_path TO pgmb2, public;
@@ -589,18 +590,19 @@ $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 	SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION replay_events(
-	group_id VARCHAR(48),
-	subscription_id VARCHAR(24),
+	gid VARCHAR(48),
+	sid VARCHAR(24),
 	from_event_id event_id,
 	max_events INT
 ) RETURNS SETOF events AS $$
 DECLARE
 	event_ids event_id[];
+	now_id event_id := create_event_id(NOW(), 0);
 BEGIN
 	SELECT ARRAY_AGG(se.event_id) INTO event_ids
 	FROM subscription_events se
-	WHERE se.group_id = group_id
-		AND se.subscription_id = subscription_id
+	WHERE se.group_id = gid
+		AND se.subscription_id = sid
 		AND se.event_id > from_event_id
 		AND se.event_id <= now_id
 		-- we can filter "id" by the same range too, because

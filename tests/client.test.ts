@@ -1,8 +1,9 @@
 import assert from 'assert'
 import { Chance } from 'chance'
+import type { ErrorEvent } from 'eventsource'
 import { EventSource } from 'eventsource'
 import { readFile } from 'fs/promises'
-import type { Server } from 'node:http'
+import type { Server, ServerResponse } from 'node:http'
 import { createServer } from 'node:http'
 import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
@@ -36,7 +37,13 @@ describe('PGMB Client Tests', () => {
 	beforeEach(async() => {
 		groupId = `grp${Math.random().toString(36).substring(2, 15)}`
 
-		client = new Pgmb2Client({ client: pool, logger: LOGGER, poll: true, groupId })
+		client = new Pgmb2Client({
+			client: pool,
+			logger: LOGGER,
+			poll: true,
+			groupId,
+			sleepDurationMs: 250
+		})
 		await client.init()
 	})
 
@@ -44,13 +51,25 @@ describe('PGMB Client Tests', () => {
 		await client.end()
 	})
 
-	it('should receive events', async() => {
+	it('should receive events on multiple subs', async() => {
+		// we'll create 3 subs, 2 identical, 1 different
+		// to check if de-duping works correctly on same conditions & params
+		const sub1 = await client.registerSubscription({ })
+		const sub2 = await client.registerSubscription({ })
+		const sub3 = await client.registerSubscription({ params: { a: 1 } })
+
+		// check de-duping happened correctly
+		assert.equal(sub1.id, sub2.id)
+		assert.notEqual(sub1.id, sub3.id)
+
+		const sub2RecvTask = Array.fromAsync(sub2)
+		const sub3RecvTask = Array.fromAsync(sub3)
+
 		const inserted = await insertEvent(pool)
 
-		const sub = await client.registerSubscription({ })
 		const recv: unknown[] = []
 
-		for await (const { items } of sub) {
+		for await (const { items } of sub1) {
 			recv.push(...items)
 			if(recv.length === 1) {
 				await insertEvent(pool)
@@ -63,9 +82,21 @@ describe('PGMB Client Tests', () => {
 
 		assert.partialDeepStrictEqual(recv[0], inserted)
 
-		const sub2 = await client.registerSubscription({})
-		const rslt = await Promise.race([sub2.next(), setTimeout(250)])
+		sub2?.return?.()
+		sub3?.return?.()
+
+		const sub2Recv = await sub2RecvTask
+		const sub3Recv = await sub3RecvTask
+
+		// other subs shouldve received both events
+		assert.equal(sub2Recv.flatMap(s => s.items).length, 2)
+		assert.equal(sub3Recv.flatMap(s => s.items).length, 2)
+
+		// check old events aren't replayed, on a new subscription
+		const sub4 = await client.registerSubscription({ params: { a: 4 } })
+		const rslt = await Promise.race([sub4.next(), setTimeout(250)])
 		assert.equal(rslt, undefined)
+		sub4.return!()
 	})
 
 	it('should not read uncommitted events', async() => {
@@ -257,6 +288,9 @@ describe('PGMB Client Tests', () => {
 	it('should handle large numbers of events & subs', async() => {
 		// ending client to avoid simultaneous pollers
 		await client.end()
+
+		// remove existing subs
+		await pool.query('truncate pgmb2.subscriptions;')
 
 		const EVENT_COUNT = 10_000
 		const SUB_PER_TYPE_COUNT = 1_000
@@ -518,6 +552,7 @@ describe('PGMB Client Tests', () => {
 	describe('SSE', () => {
 
 		let srv: Server
+		let latestSrvRes: ServerResponse
 		const port: number = CHANCE.integer({ min: 10000, max: 65000 })
 
 		before(async() => {
@@ -525,6 +560,10 @@ describe('PGMB Client Tests', () => {
 			await new Promise<void>(resolve => (
 				srv.listen(port, resolve)
 			))
+			srv.on('request', async(req, res) => {
+				latestSrvRes = res
+				await client.registerSseSubscription({}, req, res)
+			})
 		})
 
 		after(async() => {
@@ -532,37 +571,94 @@ describe('PGMB Client Tests', () => {
 		})
 
 		it('should receive events over SSE', async() => {
-			srv.on('request', async(req, res) => {
-				await client.registerSseSubscription({}, req, res)
-			})
-			const es = new EventSource(`http://localhost:${port}/sse`)
-			await new Promise<void>((resolve, reject) => {
-				es.onopen = () => {
-					console.log('SSE connection opened')
-					resolve()
-				}
+			const { es } = await openEs()
 
-				es.onerror = (err) => {
-					console.error('SSE connection error', err)
-					reject(err)
-				}
-			})
-
-			const task = new Promise<MessageEvent>((resolve) => {
-				es.addEventListener('test-topic', (msg) => {
-					resolve(msg)
-				})
-			})
-
+			const task = waitForESEvent(es)
 			const { id } = await insertEvent(pool)
 			const result = await task
 			assert.equal(result.lastEventId, id)
 			assert.ok(JSON.parse(result.data))
 
+			// ensure a graceful close, server closes listeners
+			es.close()
+			await setTimeout(100)
+			assert.deepEqual(client.subscribers, {})
+		})
+
+		it('should handle receiving missing events over SSE', async() => {
+			const { es, res } = await openEs()
+			const firstEventRecv = waitForESEvent(es)
+			await insertEvent(pool)
+			await firstEventRecv
+
+			// simulate an error, ask to connect after 1s.
+			// By that time, we'll insert a new event
+			res.write('error: oops\nretry: 250\n\n')
+			res.end()
+
+			await insertEvent(pool)
+
+			const missingEvTask = waitForESEvent(es)
+			await waitForESOpen(es)
+
+			const ev2 = await missingEvTask
+			assert.ok(ev2)
 			es.close()
 		})
+
+		it('should error if last-event-id is unavailable', async() => {
+			const { es } = await openEs()
+			const firstEventRecv = waitForESEvent(es)
+			await insertEvent(pool)
+			await firstEventRecv
+
+			// remove the subscription & consequently end the current SSE connection
+			await client.removeSubscription(Object.keys(client.subscribers)[0])
+			// removal error
+			await assert.rejects(waitForESOpen(es))
+			// reconnection error
+			await assert.rejects(
+				waitForESOpen(es),
+				(err: ErrorEvent | undefined) => {
+					assert.equal(err?.code, 204)
+					return true
+				}
+			)
+		})
+
+		async function openEs() {
+			const es = new EventSource(`http://localhost:${port}/sse`)
+			await waitForESOpen(es)
+
+			assert(latestSrvRes)
+			return { es, res: latestSrvRes }
+		}
 	})
 })
+
+function waitForESOpen(es: EventSource) {
+	return new Promise<void>((resolve, reject) => {
+		es.onopen = () => {
+			console.log('SSE connection opened')
+			resolve()
+		}
+
+		es.onerror = (err) => {
+			console.error('SSE connection error', err)
+			reject(err)
+		}
+	})
+}
+
+function waitForESEvent(es: EventSource, topic = 'test-topic') {
+	return new Promise<MessageEvent>((resolve) => {
+		es.addEventListener(topic, onMsg)
+		function onMsg(event: MessageEvent) {
+			resolve(event)
+			es.removeEventListener('message', onMsg)
+		}
+	})
+}
 
 async function insertEvent(client: Pool | PoolClient) {
 	const topic = 'test-topic'

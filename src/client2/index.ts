@@ -1,12 +1,12 @@
 import type { IDatabaseConnection } from '@pgtyped/runtime'
-import assert from 'assert'
+import assert, { AssertionError } from 'assert'
 import type { IncomingMessage, ServerResponse } from 'http'
 import type { Logger } from 'pino'
 import { PassThrough, type Writable } from 'stream'
 import { setTimeout } from 'timers/promises'
 import type { HeaderRecord } from 'undici-types/header.js'
 import type { IAssertSubscriptionParams, IReplayEventsResult } from '../queries.ts'
-import { assertGroup, assertSubscription, type IReadNextEventsResult, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor, writeEvents } from '../queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor, writeEvents } from '../queries.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
 
 type SerialisedEvent = {
@@ -67,7 +67,6 @@ type CancelFn = () => Promise<void>
 
 type IActiveSubscription = {
 	stream: Writable
-	cancelRead?: CancelFn
 }
 
 export type IRegisteredSubscription = AsyncIterableIterator<IReadEvent, void> & {
@@ -87,7 +86,7 @@ export class Pgmb2Client {
 	readonly maxReplayEvents: number = 1_000
 	readonly webhooks: Pgmb2WebhookOpts | null
 
-	#subscribers: { [subId: string]: IActiveSubscription[] } = {}
+	readonly subscribers: { [subId: string]: IActiveSubscription[] } = {}
 	#eventsPublished = 0
 	#cancelGroupRead?: CancelFn
 
@@ -139,16 +138,12 @@ export class Pgmb2Client {
 		await this.#pollTask?.()
 
 		const tasks: Promise<unknown>[] = []
-		for(const [id, subs] of Object.entries(this.#subscribers)) {
+		for(const [id, subs] of Object.entries(this.subscribers)) {
 			for(const sub of subs) {
-				if(sub.cancelRead) {
-					tasks.push(sub.cancelRead())
-					sub.cancelRead = undefined
-				}
-
-				delete this.#subscribers[id]
 				sub.stream.end()
 			}
+
+			delete this.subscribers[id]
 		}
 
 		if(this.#cancelGroupRead) {
@@ -157,7 +152,6 @@ export class Pgmb2Client {
 
 		await Promise.all(tasks)
 
-		this.#subscribers = {}
 		this.#cancelGroupRead = undefined
 		this.#pollTask = undefined
 	}
@@ -170,22 +164,15 @@ export class Pgmb2Client {
 		let sub: IRegisteredSubscription | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
 
-		res.once('close', () => {
-			sub?.return!()
-		})
-		res.once('error', err => {
-			sub?.throw!(err)
-		})
-
-		const fromEventId = req.headers['last-event-id']
-
 		try {
 			assert(
 				req.method?.toLowerCase() === 'get',
 				'SSE only supports GET requests'
 			)
 			// validate last-event-id header
+			const fromEventId = req.headers['last-event-id']
 			if(fromEventId) {
+				assert(this.maxReplayEvents > 0, 'replay disabled on server')
 				assert(typeof fromEventId === 'string', 'invalid last-event-id header')
 				const fromDt = getDateFromMessageId(fromEventId)
 				assert(fromDt, 'invalid last-event-id header value')
@@ -214,26 +201,39 @@ export class Pgmb2Client {
 					},
 					this.client
 				)
+
+				this.logger.trace(
+					{ subId: sub.id, count: eventsToReplay.length },
+					'got events to replay'
+				)
 			}
 
 			if(res.writableEnded) {
 				throw new Error('response already ended')
 			}
 		} catch(err) {
+			sub?.return!()
 			this.logger.error({ err }, 'error in sse subscription setup')
 			if(res.writableEnded) {
 				return
 			}
 
+			const message = err instanceof Error ? err.message : String(err)
+			// if an assertion failed, we cannot connect with these parameters
+			// so use 204 No Content
+			const code = err instanceof AssertionError ? 204 : 500
 			res
-				.writeHead(400, { 'Content-Type': 'application/json' })
-				.end(
-					JSON.stringify({
-						error: err instanceof Error ? err.message : String(err)
-					})
-				)
+				.writeHead(code, message)
+				.end()
 			return
 		}
+
+		res.once('close', () => {
+			sub?.return!()
+		})
+		res.once('error', err => {
+			sub?.throw!(err)
+		})
 
 		res.writeHead(200, {
 			'Content-Type': 'text/event-stream',
@@ -243,16 +243,11 @@ export class Pgmb2Client {
 		res.flushHeaders()
 
 		try {
-			for(const { id, topic, payload } of eventsToReplay) {
-				const data = JSON.stringify(payload)
-				res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
-			}
+			// send replayed events first
+			this.#writeSseEvents(res, eventsToReplay)
 
 			for await (const { items } of sub) {
-				for(const { id, topic, payload } of items) {
-					const data = JSON.stringify(payload)
-					res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
-				}
+				this.#writeSseEvents(res, items)
 			}
 		} catch(err) {
 			this.logger.error({ err }, 'error in sse subscription')
@@ -262,7 +257,23 @@ export class Pgmb2Client {
 
 			// send error event
 			const message = err instanceof Error ? err.message : String(err)
-			res.write(`event: error\ndata: ${JSON.stringify({ message })}\n\n`)
+			res.write(`event: error\ndata: ${JSON.stringify({ message })}\nretry: 250\n\n`)
+			res.end()
+		}
+	}
+
+	#writeSseEvents(
+		res: ServerResponse,
+		items: IReadNextEventsResult[] | IReplayEventsResult[]
+	) {
+		for(const { id, payload, topic } of items) {
+			const data = JSON.stringify(payload)
+			if(this.maxReplayEvents) {
+				res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
+			} else {
+				// if replay is disabled, do not send an id field
+				res.write(`event: ${topic}\ndata: ${data}\n\n`)
+			}
 		}
 	}
 
@@ -273,17 +284,33 @@ export class Pgmb2Client {
 		this.logger
 			.debug({ subId, expiresAt, ...opts }, 'asserted subscription exists')
 
-		return this.#listenForEvents(subId, undefined)
+		return this.#listenForEvents(subId)
 	}
 
-	#listenForEvents(
-		subId: string, cancelRead?: CancelFn
-	): IRegisteredSubscription {
-		const stream = new PassThrough({ objectMode: true, highWaterMark: 1 })
-		this.#subscribers[subId] ||= []
-		this.#subscribers[subId].push({ stream, cancelRead })
+	async removeSubscription(subId: string) {
+		await deleteSubscriptions.run({ ids: [subId] }, this.client)
+		this.logger.debug({ subId }, 'deleted subscription')
 
-		stream.on('close', this.#onSubscriptionEnd.bind(this, subId, stream))
+		for(const sub of this.subscribers[subId] ?? []) {
+			sub.stream.destroy(new Error('subscription removed'))
+		}
+
+		delete this.subscribers[subId]
+	}
+
+	#listenForEvents(subId: string): IRegisteredSubscription {
+		const stream = new PassThrough({ objectMode: true, highWaterMark: 1 })
+		this.subscribers[subId] ||= []
+		this.subscribers[subId].push({ stream })
+
+		stream.on('close', () => {
+			this.subscribers[subId] = this.subscribers[subId]
+				?.filter(s => s.stream !== stream)
+			if(!this.subscribers[subId]?.length) {
+				delete this.subscribers[subId]
+				this.logger.debug({ subId }, 'removed all listeners for subscription')
+			}
+		})
 
 		const asyncIterator = stream[Symbol.asyncIterator](
 		) as unknown as IRegisteredSubscription
@@ -301,23 +328,6 @@ export class Pgmb2Client {
 		}
 
 		return asyncIterator
-	}
-
-	async #onSubscriptionEnd(subId: string, stream: PassThrough) {
-		const sub = this.#subscribers[subId]
-		const idx = sub?.findIndex(s => s.stream === stream)
-		if(idx < 0 || typeof idx === 'undefined') {
-			return
-		}
-
-		const [removed] = sub.splice(idx, 1)
-		if(removed.cancelRead) {
-			try {
-				await removed.cancelRead()
-			} catch(err) {
-				this.logger.error({ subId, err }, 'error cancelling read loop')
-			}
-		}
 	}
 
 	#startReadLoop(fetchId: string) {
@@ -420,7 +430,7 @@ export class Pgmb2Client {
 				webhookTasks.push(this.#sendWebhook(subId, result))
 			}
 
-			const sub = this.#subscribers[subId]
+			const sub = this.subscribers[subId]
 			if(!sub?.length) {
 				this.logger.trace({ subId }, 'subscription not found')
 				continue

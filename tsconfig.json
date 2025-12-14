@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "ESNext.Array"],
     "moduleResolution": "nodenext",
     "module": "nodenext",
     "outDir": "lib",
@@ -15,7 +15,7 @@
     "resolveJsonModule": true
   },
   "include": [
-    "src/*.ts", 
+    "src/*.ts",
     "src/**/*.ts"
   ],
   "exclude": [

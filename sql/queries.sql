@@ -56,10 +56,10 @@ SELECT
 	payload AS "payload!",
 	metadata AS "metadata!"
 FROM pgmb2.replay_events(
-	group_id := :groupId!,
-	subscription_id := :subscriptionId!,
-	from_event_id := :fromEventId!::pgmb2.event_id,
-	max_events := :maxEvents!
+	:groupId!,
+	:subscriptionId!,
+	:fromEventId!::pgmb2.event_id,
+	:maxEvents!
 );
 
 /* @name setGroupCursor */
