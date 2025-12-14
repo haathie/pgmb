@@ -46,7 +46,6 @@ export interface IAssertSubscriptionParams {
 
 /** 'AssertSubscription' return type */
 export interface IAssertSubscriptionResult {
-  expiresAt: Date;
   id: string;
 }
 
@@ -56,7 +55,7 @@ export interface IAssertSubscriptionQuery {
   result: IAssertSubscriptionResult;
 }
 
-const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"params":true,"expiryInterval":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":99,"b":107}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":120,"b":133}]},{"name":"params","required":false,"transform":{"type":"scalar"},"locs":[{"a":155,"b":161}]},{"name":"expiryInterval","required":false,"transform":{"type":"scalar"},"locs":[{"a":179,"b":193}]}],"statement":"INSERT INTO pgmb2.subscriptions\n\tAS s(group_id, conditions_sql, params, expiry_interval)\nVALUES (\n\t:groupId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:params::jsonb, '{}'),\n\t:expiryInterval::interval\n)\nON CONFLICT (identity) DO UPDATE\nSET\n\t-- set expires_at to the new value only if it's greater than the existing one\n\t-- or if the new value is NULL (indicating no expiration)\n\texpiry_interval = CASE\n\t\tWHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL\n\t\t\tTHEN NULL\n\t\tELSE\n\t\t\tGREATEST(s.expiry_interval, EXCLUDED.expiry_interval)\n\tEND,\n\tlast_active_at = NOW()\nRETURNING id AS \"id!\", expires_at AS \"expiresAt!\""};
+const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"params":true,"expiryInterval":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":99,"b":107}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":120,"b":133}]},{"name":"params","required":false,"transform":{"type":"scalar"},"locs":[{"a":155,"b":161}]},{"name":"expiryInterval","required":false,"transform":{"type":"scalar"},"locs":[{"a":179,"b":193}]}],"statement":"INSERT INTO pgmb2.subscriptions\n\tAS s(group_id, conditions_sql, params, expiry_interval)\nVALUES (\n\t:groupId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:params::jsonb, '{}'),\n\t:expiryInterval::interval\n)\nON CONFLICT (identity) DO UPDATE\nSET\n\t-- set expiry_interval to the new value only if it's greater than the existing one\n\t-- or if the new value is NULL (indicating no expiration)\n\texpiry_interval = CASE\n\t\tWHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL\n\t\t\tTHEN NULL\n\t\tELSE\n\t\t\tGREATEST(s.expiry_interval, EXCLUDED.expiry_interval)\n\tEND,\n\tlast_active_at = NOW()\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
@@ -71,7 +70,7 @@ const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql
  * )
  * ON CONFLICT (identity) DO UPDATE
  * SET
- * 	-- set expires_at to the new value only if it's greater than the existing one
+ * 	-- set expiry_interval to the new value only if it's greater than the existing one
  * 	-- or if the new value is NULL (indicating no expiration)
  * 	expiry_interval = CASE
  * 		WHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL
@@ -80,7 +79,7 @@ const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql
  * 			GREATEST(s.expiry_interval, EXCLUDED.expiry_interval)
  * 	END,
  * 	last_active_at = NOW()
- * RETURNING id AS "id!", expires_at AS "expiresAt!"
+ * RETURNING id AS "id!"
  * ```
  */
 export const assertSubscription = new PreparedQuery<IAssertSubscriptionParams,IAssertSubscriptionResult>(assertSubscriptionIR);
@@ -410,7 +409,7 @@ export interface IRemoveExpiredSubscriptionsQuery {
   result: IRemoveExpiredSubscriptionsResult;
 }
 
-const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activeIds":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":69,"b":77}]},{"name":"activeIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":171,"b":181}]}],"statement":"WITH deleted AS (\n\tDELETE FROM pgmb2.subscriptions\n\tWHERE group_id = :groupId!\n\t\tAND expires_at IS NOT NULL\n\t\tAND expires_at < NOW()\n\t\tAND id NOT IN (select * from unnest(:activeIds!::pgmb2.subscription_id[]))\n\tRETURNING id\n)\nSELECT COUNT(*) AS \"deleted!\" FROM deleted"};
+const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activeIds":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":69,"b":77}]},{"name":"activeIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":221,"b":231}]}],"statement":"WITH deleted AS (\n\tDELETE FROM pgmb2.subscriptions\n\tWHERE group_id = :groupId!\n\t\tAND expiry_interval IS NOT NULL\n\t\tAND pgmb2.add_interval_imm(last_active_at, expiry_interval) < NOW()\n\t\tAND id NOT IN (select * from unnest(:activeIds!::pgmb2.subscription_id[]))\n\tRETURNING id\n)\nSELECT COUNT(*) AS \"deleted!\" FROM deleted"};
 
 /**
  * Query generated from SQL:
@@ -418,8 +417,8 @@ const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activ
  * WITH deleted AS (
  * 	DELETE FROM pgmb2.subscriptions
  * 	WHERE group_id = :groupId!
- * 		AND expires_at IS NOT NULL
- * 		AND expires_at < NOW()
+ * 		AND expiry_interval IS NOT NULL
+ * 		AND pgmb2.add_interval_imm(last_active_at, expiry_interval) < NOW()
  * 		AND id NOT IN (select * from unnest(:activeIds!::pgmb2.subscription_id[]))
  * 	RETURNING id
  * )

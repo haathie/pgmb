@@ -11,7 +11,7 @@ import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
 import { Pgmb2Client } from '../src/client2/index.ts'
 import type { IReadNextEventsResult } from '../src/queries.ts'
-import { pollForEvents, reenqueueEventsForSubscription, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import { pollForEvents, reenqueueEventsForSubscription, removeExpiredSubscriptions, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 const LOGGER = pino({ level: 'trace' })
 const CHANCE = new Chance()
@@ -187,9 +187,13 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should handle concurrent changes', async() => {
+		await client.end()
+
 		await Promise.all([
 			Array.from({ length: 5 }).map(() => insertEvent(pool)),
 			pollForEvents.run(undefined, pool),
+			removeExpiredSubscriptions
+				.run({ groupId: client.groupId, activeIds: [] }, pool),
 			await pool.query(
 				`select pgmb2.maintain_events_table(
 					current_ts := NOW()
@@ -210,6 +214,8 @@ describe('PGMB Client Tests', () => {
 		// timestamp, which would've removed 1 old partition and created 1 new one
 		// since by default we retain 2 oldest partitions, we should be 1 ahead
 		assert.equal(+count, expected + 1)
+
+		await client.init()
 	})
 
 	it('should not read future events', async() => {

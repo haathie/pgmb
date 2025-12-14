@@ -310,11 +310,11 @@ export class Pgmb2Client {
 	}
 
 	async registerSubscription(opts: RegisterSubscriptionParams) {
-		const [{ id: subId, expiresAt }] = await assertSubscription
+		const [{ id: subId }] = await assertSubscription
 			.run({ ...opts, groupId: this.groupId }, this.client)
 
 		this.logger
-			.debug({ subId, expiresAt, ...opts }, 'asserted subscription exists')
+			.debug({ subId, ...opts }, 'asserted subscription exists')
 
 		return this.#listenForEvents(subId)
 	}

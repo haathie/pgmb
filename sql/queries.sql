@@ -14,7 +14,7 @@ VALUES (
 )
 ON CONFLICT (identity) DO UPDATE
 SET
-	-- set expires_at to the new value only if it's greater than the existing one
+	-- set expiry_interval to the new value only if it's greater than the existing one
 	-- or if the new value is NULL (indicating no expiration)
 	expiry_interval = CASE
 		WHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL
@@ -23,7 +23,7 @@ SET
 			GREATEST(s.expiry_interval, EXCLUDED.expiry_interval)
 	END,
 	last_active_at = NOW()
-RETURNING id AS "id!", expires_at AS "expiresAt!";
+RETURNING id AS "id!";
 
 /*
  @name deleteSubscriptions
@@ -109,8 +109,8 @@ RETURNING id AS "id!";
 WITH deleted AS (
 	DELETE FROM pgmb2.subscriptions
 	WHERE group_id = :groupId!
-		AND expires_at IS NOT NULL
-		AND expires_at < NOW()
+		AND expiry_interval IS NOT NULL
+		AND pgmb2.add_interval_imm(last_active_at, expiry_interval) < NOW()
 		AND id NOT IN (select * from unnest(:activeIds!::pgmb2.subscription_id[]))
 	RETURNING id
 )

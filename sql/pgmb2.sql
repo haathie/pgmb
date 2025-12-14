@@ -260,11 +260,22 @@ CREATE TABLE subscriptions (
 	) STORED UNIQUE,
 	-- when was this subscription last active
 	last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	expiry_interval INTERVAL,
-	-- when will this subscription expire
-	-- NULL means never expires
-	expires_at TIMESTAMPTZ
+	expiry_interval INTERVAL
 );
+
+CREATE FUNCTION add_interval_imm(tstz TIMESTAMPTZ, itvl INTERVAL)
+RETURNS TIMESTAMPTZ AS $$
+	SELECT tstz + itvl;
+$$ LANGUAGE sql IMMUTABLE PARALLEL SAFE
+	SET search_path TO pgmb2, public;
+
+-- note: index to quickly find expired subscriptions, not creating
+-- a column separately because there's some weird deadlock issue
+-- when creating a separate generated "expires_at" column.
+CREATE INDEX ON subscriptions(
+	group_id,
+	add_interval_imm(last_active_at, expiry_interval)
+) WHERE expiry_interval IS NOT NULL;
 
 DO $$
 DECLARE
@@ -301,21 +312,6 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 
 CREATE UNIQUE INDEX IF NOT EXISTS
 	subscription_cond_sqls_idx ON subscription_cond_sqls(conditions_sql);
-
-CREATE OR REPLACE FUNCTION set_subscription_expiry()
-RETURNS TRIGGER AS $$
-BEGIN
-	NEW.expires_at := NEW.last_active_at
-		+ NEW.expiry_interval;
-	RETURN NEW;
-END
-$$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
-	SET search_path TO pgmb2, public;
-
-CREATE TRIGGER set_subscription_expiry_trigger
-BEFORE INSERT OR UPDATE OF last_active_at, expiry_interval ON subscriptions
-FOR EACH ROW
-EXECUTE FUNCTION set_subscription_expiry();
 
 CREATE TABLE subscription_groups(
 	id group_id PRIMARY KEY,
