@@ -4,21 +4,25 @@ VALUES (:id!)
 ON CONFLICT DO NOTHING;
 
 /* @name assertSubscription */
-INSERT INTO pgmb2.subscriptions AS s(group_id, conditions_sql, params, expires_at)
+INSERT INTO pgmb2.subscriptions
+	AS s(group_id, conditions_sql, params, expiry_interval)
 VALUES (
 	:groupId!,
 	COALESCE(:conditionsSql, 'TRUE'),
 	COALESCE(:params::jsonb, '{}'),
-	:expiresAt
+	:expiryInterval::interval
 )
 ON CONFLICT (identity) DO UPDATE
 SET
 	-- set expires_at to the new value only if it's greater than the existing one
 	-- or if the new value is NULL (indicating no expiration)
-	expires_at = CASE
-		WHEN EXCLUDED.expires_at IS NULL OR s.expires_at IS NULL THEN NULL
-		ELSE GREATEST(s.expires_at, EXCLUDED.expires_at)
-	END
+	expiry_interval = CASE
+		WHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL
+			THEN NULL
+		ELSE
+			GREATEST(s.expiry_interval, EXCLUDED.expiry_interval)
+	END,
+	last_active_at = NOW()
 RETURNING id AS "id!", expires_at AS "expiresAt!";
 
 /*
@@ -27,6 +31,14 @@ RETURNING id AS "id!", expires_at AS "expiresAt!";
  */
 DELETE FROM pgmb2.subscriptions
 WHERE id IN :ids!;
+
+/*
+ @name markSubscriptionsActive
+*/
+UPDATE pgmb2.subscriptions
+SET
+	last_active_at = NOW()
+WHERE id IN (SELECT * FROM unnest(:ids!::pgmb2.subscription_id[]));
 
 /* @name pollForEvents */
 SELECT count AS "count!" FROM pgmb2.poll_for_events() AS count;
@@ -94,8 +106,15 @@ FROM unnest(
 RETURNING id AS "id!";
 
 /* @name removeExpiredSubscriptions */
-DELETE FROM pgmb2.subscriptions
-WHERE group_id = :groupId! AND expires_at IS NOT NULL AND expires_at < NOW();
+WITH deleted AS (
+	DELETE FROM pgmb2.subscriptions
+	WHERE group_id = :groupId!
+		AND expires_at IS NOT NULL
+		AND expires_at < NOW()
+		AND id NOT IN (select * from unnest(:activeIds!::pgmb2.subscription_id[]))
+	RETURNING id
+)
+SELECT COUNT(*) AS "deleted!" FROM deleted;
 
 /* @name reenqueueEventsForSubscription */
 SELECT pgmb2.reenqueue_events_for_subscription(

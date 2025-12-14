@@ -258,6 +258,9 @@ CREATE TABLE subscriptions (
 			|| '/' || jsonb_hash(params)::text
 		)
 	) STORED UNIQUE,
+	-- when was this subscription last active
+	last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	expiry_interval INTERVAL,
 	-- when will this subscription expire
 	-- NULL means never expires
 	expires_at TIMESTAMPTZ
@@ -298,6 +301,21 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 
 CREATE UNIQUE INDEX IF NOT EXISTS
 	subscription_cond_sqls_idx ON subscription_cond_sqls(conditions_sql);
+
+CREATE OR REPLACE FUNCTION set_subscription_expiry()
+RETURNS TRIGGER AS $$
+BEGIN
+	NEW.expires_at := NEW.last_active_at
+		+ NEW.expiry_interval;
+	RETURN NEW;
+END
+$$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
+	SET search_path TO pgmb2, public;
+
+CREATE TRIGGER set_subscription_expiry_trigger
+BEFORE INSERT OR UPDATE OF last_active_at, expiry_interval ON subscriptions
+FOR EACH ROW
+EXECUTE FUNCTION set_subscription_expiry();
 
 CREATE TABLE subscription_groups(
 	id group_id PRIMARY KEY,

@@ -42,7 +42,8 @@ describe('PGMB Client Tests', () => {
 			logger: LOGGER,
 			poll: true,
 			groupId,
-			sleepDurationMs: 250
+			sleepDurationMs: 250,
+			subscriptionMaintenanceMs: 1000
 		})
 		await client.init()
 	})
@@ -82,8 +83,8 @@ describe('PGMB Client Tests', () => {
 
 		assert.partialDeepStrictEqual(recv[0], inserted)
 
-		sub2?.return?.()
-		sub3?.return?.()
+		await sub2?.return()
+		await sub3?.return()
 
 		const sub2Recv = await sub2RecvTask
 		const sub3Recv = await sub3RecvTask
@@ -96,7 +97,20 @@ describe('PGMB Client Tests', () => {
 		const sub4 = await client.registerSubscription({ params: { a: 4 } })
 		const rslt = await Promise.race([sub4.next(), setTimeout(250)])
 		assert.equal(rslt, undefined)
-		sub4.return!()
+		sub4.return()
+	})
+
+	it('should remove expired subs', async() => {
+		const sub = await client.registerSubscription({ expiryInterval: '1 second' })
+		sub.return()
+
+		await setTimeout(1500)
+
+		const { rows: [{ count }] } = await pool.query<{ count: string }>(
+			'select count(*) as count from pgmb2.subscriptions where id = $1',
+			[sub.id]
+		)
+		assert.equal(count, '0')
 	})
 
 	it('should not read uncommitted events', async() => {
@@ -201,12 +215,16 @@ describe('PGMB Client Tests', () => {
 	it('should not read future events', async() => {
 		const DELAY_MS = 1000
 
-		const sub = await client.registerSubscription({})
+		const topic = 'scheduled-event'
+		const sub = await client.registerSubscription({
+			conditionsSql: "s.params @> jsonb_build_object('topic', e.topic)",
+			params: { topic: topic }
+		})
 
 		const [prow, frow] = await writeScheduledEvents.run(
 			{
 				ts: [new Date(), new Date(Date.now() + DELAY_MS)],
-				topics: ['test-topic', 'test-topic'],
+				topics: [topic, topic],
 				payloads: [{ a: 1 }, { a: 2 }],
 				metadatas: [{}, {}]
 			},

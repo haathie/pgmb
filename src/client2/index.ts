@@ -2,11 +2,12 @@ import type { IDatabaseConnection } from '@pgtyped/runtime'
 import assert, { AssertionError } from 'assert'
 import type { IncomingMessage, ServerResponse } from 'http'
 import type { Logger } from 'pino'
-import { PassThrough, type Writable } from 'stream'
 import { setTimeout } from 'timers/promises'
 import type { HeaderRecord } from 'undici-types/header.js'
+import { AbortableAsyncIterator } from '../abortable-async-iterator.ts'
 import type { IAssertSubscriptionParams, IReplayEventsResult } from '../queries.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor, writeEvents } from '../queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor, writeEvents } from '../queries.ts'
+import type { JSONifier } from '../types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
 
 type SerialisedEvent = {
@@ -36,7 +37,15 @@ export type Pgmb2ClientOpts = {
 	client: IDatabaseConnection
 	logger: Logger
 	groupId: string
+	/** How long to sleep between polls & read fn calls */
 	sleepDurationMs?: number
+	/**
+	 * How often to mark subscriptions as active,
+	 * and remove expired ones.
+	 * @default 1 minute
+	 */
+	subscriptionMaintenanceMs?: number
+
 	readChunkSize?: number
 	poll?: boolean
 	/**
@@ -50,6 +59,11 @@ export type Pgmb2ClientOpts = {
 	 * @default {}
 	 */
 	webhooks?: Partial<Pgmb2WebhookOpts> | null
+	/**
+	 * Custom JSONifier to use
+	 * @default JSON
+	 */
+	jsonifier?: JSONifier
 }
 
 type IReadEvent = {
@@ -63,13 +77,11 @@ type IReadEvent = {
 type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
-type CancelFn = () => Promise<void>
-
 type IActiveSubscription = {
-	stream: Writable
+	stream: AbortableAsyncIterator<IReadEvent>
 }
 
-export type IRegisteredSubscription = AsyncIterableIterator<IReadEvent, void> & {
+export type ISubscriptionListener = AbortableAsyncIterator<IReadEvent> & {
 	id: string
 }
 
@@ -84,14 +96,19 @@ export class Pgmb2Client {
 	readonly readChunkSize: number
 	readonly maxReplayIntervalMs: number
 	readonly maxReplayEvents: number = 1_000
+	readonly subscriptionMaintenanceMs: number
 	readonly webhooks: Pgmb2WebhookOpts | null
+	readonly jsonifier: JSONifier
 
 	readonly subscribers: { [subId: string]: IActiveSubscription[] } = {}
+
+	#endAc = new AbortController()
 	#eventsPublished = 0
-	#cancelGroupRead?: CancelFn
 
 	readonly #shouldPoll: boolean
-	#pollTask?: CancelFn
+	#readTask?: Promise<void>
+	#pollTask?: Promise<void>
+	#subMaintainTask?: Promise<void>
 
 	constructor({
 		client, logger, groupId,
@@ -99,7 +116,9 @@ export class Pgmb2Client {
 		sleepDurationMs = 500,
 		readChunkSize = 1000,
 		maxReplayIntervalMs = 5 * 60 * 1000,
-		poll
+		poll,
+		jsonifier = JSON,
+		subscriptionMaintenanceMs = 60 * 1000
 	}: Pgmb2ClientOpts) {
 		this.client = client
 		this.logger = logger
@@ -111,49 +130,55 @@ export class Pgmb2Client {
 		this.webhooks = {
 			chunkSize: null,
 			timeoutMs: 30_000,
-			serialiseEvent: serialiseJsonEvent,
+			serialiseEvent: this.#serialiseJsonEvent,
 			...webhooks
 		}
+		this.jsonifier = jsonifier
+		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 	}
 
 	async init() {
-		if(this.groupId) {
-			await assertGroup.run({ id: this.groupId }, this.client)
-			this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
-			await removeExpiredSubscriptions
-				.run({ groupId: this.groupId }, this.client)
-			this.logger.debug(
-				{ groupId: this.groupId },
-				'removed expired subscriptions in group'
-			)
-			this.#cancelGroupRead = this.#startReadLoop(this.groupId)
-		}
+		this.#endAc = new AbortController()
+
+		await assertGroup.run({ id: this.groupId }, this.client)
+		this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
+		// clean up expired subscriptions on start
+		const [{ deleted }] = await removeExpiredSubscriptions
+			.run({ groupId: this.groupId, activeIds: [] }, this.client)
+		this.logger.debug({ deleted }, 'removed expired subscriptions')
+
+		this.#readTask = this.#startLoop(
+			this.readChanges.bind(this, this.groupId),
+			this.sleepDurationMs
+		)
 
 		if(this.#shouldPoll) {
-			this.#pollTask = this.#startPollLoop()
+			this.#pollTask = this.#startLoop(
+				pollForEvents.run.bind(pollForEvents, undefined, this.client),
+				this.sleepDurationMs
+			)
+		}
+
+		if(this.subscriptionMaintenanceMs) {
+			this.#subMaintainTask = this.#startLoop(
+				this.#maintainSubscriptions,
+				this.subscriptionMaintenanceMs
+			)
 		}
 	}
 
 	async end() {
-		await this.#pollTask?.()
+		this.#endAc.abort()
 
-		const tasks: Promise<unknown>[] = []
-		for(const [id, subs] of Object.entries(this.subscribers)) {
-			for(const sub of subs) {
-				sub.stream.end()
-			}
-
+		for(const id in this.subscribers) {
 			delete this.subscribers[id]
 		}
 
-		if(this.#cancelGroupRead) {
-			tasks.push(this.#cancelGroupRead())
-		}
+		await Promise.all([this.#readTask, this.#pollTask, this.#subMaintainTask])
 
-		await Promise.all(tasks)
-
-		this.#cancelGroupRead = undefined
+		this.#readTask = undefined
 		this.#pollTask = undefined
+		this.#subMaintainTask = undefined
 	}
 
 	async registerSseSubscription(
@@ -161,8 +186,11 @@ export class Pgmb2Client {
 		req: IncomingMessage,
 		res: ServerResponse
 	) {
-		let sub: IRegisteredSubscription | undefined
+		let sub: ISubscriptionListener | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
+		if(typeof opts.expiryInterval === 'undefined') {
+			opts.expiryInterval = `${this.maxReplayIntervalMs * 2} milliseconds`
+		}
 
 		try {
 			assert(
@@ -212,8 +240,10 @@ export class Pgmb2Client {
 				throw new Error('response already ended')
 			}
 		} catch(err) {
-			sub?.return!()
 			this.logger.error({ err }, 'error in sse subscription setup')
+
+			await sub?.throw(err).catch(() => { })
+
 			if(res.writableEnded) {
 				return
 			}
@@ -229,16 +259,17 @@ export class Pgmb2Client {
 		}
 
 		res.once('close', () => {
-			sub?.return!()
+			sub?.return()
 		})
 		res.once('error', err => {
-			sub?.throw!(err)
+			sub?.throw(err).catch(() => {})
 		})
 
 		res.writeHead(200, {
-			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-cache',
-			'Connection': 'keep-alive'
+			'content-type': 'text/event-stream',
+			'cache-control': 'no-cache',
+			'connection': 'keep-alive',
+			'transfer-encoding': 'chunked',
 		})
 		res.flushHeaders()
 
@@ -257,7 +288,8 @@ export class Pgmb2Client {
 
 			// send error event
 			const message = err instanceof Error ? err.message : String(err)
-			res.write(`event: error\ndata: ${JSON.stringify({ message })}\nretry: 250\n\n`)
+			const errData	= this.jsonifier.stringify({ message })
+			res.write(`event: error\ndata: ${errData}\nretry: 250\n\n`)
 			res.end()
 		}
 	}
@@ -267,7 +299,7 @@ export class Pgmb2Client {
 		items: IReadNextEventsResult[] | IReplayEventsResult[]
 	) {
 		for(const { id, payload, topic } of items) {
-			const data = JSON.stringify(payload)
+			const data = this.jsonifier.stringify(payload)
 			if(this.maxReplayEvents) {
 				res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
 			} else {
@@ -291,119 +323,51 @@ export class Pgmb2Client {
 		await deleteSubscriptions.run({ ids: [subId] }, this.client)
 		this.logger.debug({ subId }, 'deleted subscription')
 
-		for(const sub of this.subscribers[subId] ?? []) {
-			sub.stream.destroy(new Error('subscription removed'))
+		const existingSubs = this.subscribers[subId]
+		delete this.subscribers[subId]
+		if(!existingSubs?.length) {
+			return
 		}
 
-		delete this.subscribers[subId]
+		await Promise.allSettled(existingSubs.map(e => (
+			e.stream.throw(new Error('subscription removed'))
+		)))
 	}
 
-	#listenForEvents(subId: string): IRegisteredSubscription {
-		const stream = new PassThrough({ objectMode: true, highWaterMark: 1 })
+	#listenForEvents(subId: string): ISubscriptionListener {
+		const stream = new AbortableAsyncIterator<IReadEvent>(
+			this.#endAc.signal,
+			() => {
+				this.subscribers[subId] = this.subscribers[subId]
+					?.filter(s => s.stream !== stream)
+				if(!this.subscribers[subId]?.length) {
+					delete this.subscribers[subId]
+					this.logger.debug({ subId }, 'removed last subscriber for subscription')
+				}
+			}
+		)
+
 		this.subscribers[subId] ||= []
 		this.subscribers[subId].push({ stream })
 
-		stream.on('close', () => {
-			this.subscribers[subId] = this.subscribers[subId]
-				?.filter(s => s.stream !== stream)
-			if(!this.subscribers[subId]?.length) {
-				delete this.subscribers[subId]
-				this.logger.debug({ subId }, 'removed all listeners for subscription')
-			}
-		})
+		const lt = stream as unknown as ISubscriptionListener
+		lt.id = subId
 
-		const asyncIterator = stream[Symbol.asyncIterator](
-		) as unknown as IRegisteredSubscription
-		asyncIterator.id = subId
-		const ogReturn = asyncIterator.return!.bind(asyncIterator)
-		const ogThrow = asyncIterator.throw!.bind(asyncIterator)
-		asyncIterator.return = async(value) => {
-			stream.end()
-			return ogReturn(value)
-		}
-
-		asyncIterator.throw = async(err) => {
-			stream.destroy(err)
-			return ogThrow(err)
-		}
-
-		return asyncIterator
+		return lt
 	}
 
-	#startReadLoop(fetchId: string) {
-		const controller = new AbortController()
-		const task = this.#executeReadLoop(fetchId, controller.signal)
-			.catch(err => {
-				if(err instanceof Error && err.name === 'AbortError') {
-					return
-				}
+	async #maintainSubscriptions() {
+		const activeIds = Object.keys(this.subscribers)
+		await markSubscriptionsActive.run({ ids: activeIds }, this.client)
 
-				if(controller.signal.aborted) {
-					this.logger.error({ fetchId, err }, 'read loop error after abort')
-					return
-				}
+		this.logger.debug(
+			{ activeSubscriptions: activeIds.length },
+			'marked subscriptions as active'
+		)
 
-				controller.abort(err)
-			})
-		return () => {
-			controller.abort()
-			return task
-		}
-	}
-
-	async #executeReadLoop(fetchId: string, signal: AbortSignal) {
-		this.logger.trace({ fetchId }, 'starting read loop')
-
-		while(!signal.aborted && !this.#isClientEnded()) {
-			let rowsRead = 0
-			try {
-				rowsRead = await this.readChanges(fetchId)
-			} catch(err) {
-				this.logger.error({ fetchId, err }, 'error reading changes')
-			}
-
-			// nothing to read, wait before next iteration
-			if(!rowsRead) {
-				await setTimeout(this.sleepDurationMs, undefined, { signal })
-				continue
-			}
-		}
-
-		this.logger.trace({ fetchId }, 'exited read loop')
-	}
-
-	#startPollLoop() {
-		const controller = new AbortController()
-		const task = this.#executePollLoop(controller.signal)
-			.catch(err => {
-				if(err instanceof Error && err.name === 'AbortError') {
-					return
-				}
-
-				if(controller.signal.aborted) {
-					this.logger.error({ err }, 'poll loop error after abort')
-					return
-				}
-
-				controller.abort(err)
-			})
-
-		return () => {
-			controller.abort()
-			return task
-		}
-	}
-
-	async #executePollLoop(signal: AbortSignal) {
-		while(!signal.aborted && !this.#isClientEnded()) {
-			try {
-				await pollForEvents.run(undefined, this.client)
-			} catch(err) {
-				this.logger.error({ err }, 'error polling for events')
-			}
-
-			await setTimeout(this.sleepDurationMs, undefined, { signal })
-		}
+		const [{ deleted }] = await removeExpiredSubscriptions
+			.run({ groupId: this.groupId, activeIds }, this.client)
+		this.logger.debug({ deleted }, 'removed expired subscriptions')
 	}
 
 	async readChanges(groupId: string, client: IDatabaseConnection = this.client) {
@@ -423,11 +387,11 @@ export class Pgmb2Client {
 		}
 
 		const subs = Object.entries(subToEventMap)
-		const webhookTasks: Promise<void>[] = []
+		const tasks: Promise<void>[] = []
 		for(const [subId, result] of subs) {
 			// @ts-expect-error
 			if(result.metadata?.['url'] && this.webhooks) {
-				webhookTasks.push(this.#sendWebhook(subId, result))
+				tasks.push(this.#sendWebhook(subId, result))
 			}
 
 			const sub = this.subscribers[subId]
@@ -437,19 +401,11 @@ export class Pgmb2Client {
 			}
 
 			for(const { stream } of sub) {
-				const event: IReadEvent = result
-				stream.write(event, err => {
-					if(err) {
-						this.logger.warn(
-							{ err, subscriptionId: subId },
-							'error writing to subscription stream'
-						)
-					}
-				})
+				stream.enqueue(result)
 			}
 		}
 
-		await Promise.all(webhookTasks)
+		await Promise.all(tasks)
 
 		if(rows.length) {
 			const nextCursor = rows[0].nextCursor
@@ -581,6 +537,29 @@ export class Pgmb2Client {
 
 		return false
 	}
+
+	#serialiseJsonEvent = (ev: IReadEvent): SerialisedEvent => {
+		return {
+			body: this.jsonifier.stringify(ev),
+			contentType: 'application/json'
+		}
+	}
+
+	async #startLoop(fn: Function, sleepDurationMs: number) {
+		const signal = this.#endAc.signal
+		while(!signal.aborted) {
+			try {
+				await setTimeout(sleepDurationMs, undefined, { signal })
+				await fn.call(this)
+			} catch(err) {
+				if(err instanceof Error && err.name === 'AbortError') {
+					return
+				}
+
+				this.logger.error({ err, fn: fn.name }, 'error in task')
+			}
+		}
+	}
 }
 
 function isWebhookMetadata(metadata: unknown): metadata is WebhookMetadata {
@@ -597,11 +576,4 @@ function isWebhookMetadata(metadata: unknown): metadata is WebhookMetadata {
 	}
 
 	return true
-}
-
-function serialiseJsonEvent(ev: IReadEvent): SerialisedEvent {
-	return {
-		body: JSON.stringify(ev),
-		contentType: 'application/json'
-	}
 }
