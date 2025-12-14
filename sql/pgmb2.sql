@@ -232,25 +232,35 @@ RETURNS subscription_id AS $$
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
  SET search_path TO pgmb2, public;
 
--- reader, subscription management tables and functions will go here ----------------
+-- subscription, groups tables and functions will go here ----------------
+
 CREATE TABLE subscriptions (
 	-- unique identifier for the subscription
-	-- todo: uniquely from group, condition_sql, metadata?
 	id subscription_id PRIMARY KEY DEFAULT create_subscription_id(),
 	-- define how the subscription is grouped. subscriptions belonging
 	-- to the same group can be read in one batch.
-	-- Leave NULL to only allow independent fetching
 	group_id group_id NOT NULL,
-	created_at TIMESTAMPTZ DEFAULT NOW(),
 	-- A SQL expression that will be used to filter events for this subscription.
 	-- The events table will be aliased as "e" in this expression. The subscription
 	-- table is available as "s".
 	-- Example: "e.topic = s.metadata->>'topic'",
 	conditions_sql TEXT NOT NULL DEFAULT 'TRUE',
-	-- if temporary, then the subscription will be removed on reboot of
-	-- the reader its attached to.
-	type subscription_type NOT NULL DEFAULT 'custom',
-	metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+	-- params will be indexed, and can be used to store
+	-- additional parameters for the subscription's conditions_sql.
+	-- It's more efficient to have the same conditions_sql for multiple
+	-- subscriptions, and differentiate them using params.
+	params JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+	identity bigint GENERATED ALWAYS AS (
+		hashtext(
+			group_id
+			|| '/' || conditions_sql
+			|| '/' || jsonb_hash(params)::text
+		)
+	) STORED UNIQUE,
+	-- when will this subscription expire
+	-- NULL means never expires
+	expires_at TIMESTAMPTZ
 );
 
 DO $$
@@ -270,12 +280,12 @@ BEGIN
 		CREATE EXTENSION IF NOT EXISTS btree_gin;
 		-- fastupdate=false, slows down subscription creation, but ensures the costlier
 		-- "poll_for_events" function is executed faster.
-		CREATE INDEX "sub_gin" ON subscriptions USING GIN(conditions_sql, metadata)
+		CREATE INDEX "sub_gin" ON subscriptions USING GIN(conditions_sql, params)
 			WITH (fastupdate = false);
 	ELSE
 		RAISE NOTICE 'btree_gin extension is not available, using
-			regular GIN index for subscriptions.conditions_sql';
-		CREATE INDEX "sub_gin" ON subscriptions USING GIN(metadata)
+			regular GIN index for subscriptions.params';
+		CREATE INDEX "sub_gin" ON subscriptions USING GIN(params)
 			WITH (fastupdate = false);
 	END IF;
 END
@@ -545,7 +555,8 @@ BEGIN
 			se.id,
 			se.event_id,
 			se.subscription_id,
-			s.metadata AS subscription_metadata
+			-- TODO: fix
+			s.params AS subscription_metadata
 		FROM subscription_events se
 		INNER JOIN subscriptions s ON s.id = se.subscription_id
 		WHERE se.group_id = gid
@@ -574,6 +585,38 @@ BEGIN
 	INNER JOIN next_events_grp ne ON ne.event_id = e.id;
 END
 $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
+	SET search_path TO pgmb2, public
+	SECURITY INVOKER;
+
+CREATE OR REPLACE FUNCTION replay_events(
+	group_id VARCHAR(48),
+	subscription_id VARCHAR(24),
+	from_event_id event_id,
+	max_events INT
+) RETURNS SETOF events AS $$
+DECLARE
+	event_ids event_id[];
+BEGIN
+	SELECT ARRAY_AGG(se.event_id) INTO event_ids
+	FROM subscription_events se
+	WHERE se.group_id = group_id
+		AND se.subscription_id = subscription_id
+		AND se.event_id > from_event_id
+		AND se.event_id <= now_id
+		-- we can filter "id" by the same range too, because
+		-- the format of se.id and e.id are the same. And rows are
+		-- inserted into the se table after the corresponding e row is created,
+		-- so if we find rows > from_event_id in se.event_id, the corresponding
+		-- e.id will also be > from_event_id
+		AND se.id <= now_id
+		AND se.id > from_event_id
+	LIMIT (max_events + 1);
+	IF array_length(event_ids, 1) > max_events THEN
+		RAISE EXCEPTION 'Too many events to replay. Please replay in smaller batches.';
+	END IF;
+
+	RETURN QUERY SELECT * FROM read_events(event_ids);
+END $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 	SET search_path TO pgmb2, public
 	SECURITY INVOKER;
 

@@ -1,13 +1,13 @@
 import type { IDatabaseConnection } from '@pgtyped/runtime'
-import type { HeaderRecord } from 'undici-types/header.js'
 import assert from 'assert'
+import type { IncomingMessage, ServerResponse } from 'http'
 import type { Logger } from 'pino'
 import { PassThrough, type Writable } from 'stream'
 import { setTimeout } from 'timers/promises'
-import type { IAssertSubscriptionParams } from '../queries.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, pollForEvents, readNextEvents, removeHttpSubscriptionsInGroup, setGroupCursor, writeEvents } from '../queries.ts'
-import { IncomingMessage, ServerResponse } from 'http'
-import { getDateFromMessageId } from '../utils.ts'
+import type { HeaderRecord } from 'undici-types/header.js'
+import type { IAssertSubscriptionParams, IReplayEventsResult } from '../queries.ts'
+import { assertGroup, assertSubscription, type IReadNextEventsResult, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor, writeEvents } from '../queries.ts'
+import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
 
 type SerialisedEvent = {
 	body: Buffer | string
@@ -60,19 +60,19 @@ type IReadEvent = {
 	items: IReadNextEventsResult[]
 }
 
-type RegisterSubscriptionParams = {
-	groupId?: string
-} & Omit<IAssertSubscriptionParams, 'groupId'>
+type RegisterSubscriptionParams
+	= Omit<IAssertSubscriptionParams, 'groupId'>
 
 type CancelFn = () => Promise<void>
 
 type IActiveSubscription = {
 	stream: Writable
-	deleteOnClose: boolean
 	cancelRead?: CancelFn
 }
 
-export type IRegisteredSubscription = AsyncIterableIterator<IReadEvent, void>
+export type IRegisteredSubscription = AsyncIterableIterator<IReadEvent, void> & {
+	id: string
+}
 
 const WEBHOOK_RETRY_EVENT = 'pgmb2-webhook-retry'
 
@@ -84,9 +84,10 @@ export class Pgmb2Client {
 	readonly sleepDurationMs: number
 	readonly readChunkSize: number
 	readonly maxReplayIntervalMs: number
+	readonly maxReplayEvents: number = 1_000
 	readonly webhooks: Pgmb2WebhookOpts | null
 
-	#subscribers: { [topic: string]: IActiveSubscription } = {}
+	#subscribers: { [subId: string]: IActiveSubscription[] } = {}
 	#eventsPublished = 0
 	#cancelGroupRead?: CancelFn
 
@@ -120,11 +121,11 @@ export class Pgmb2Client {
 		if(this.groupId) {
 			await assertGroup.run({ id: this.groupId }, this.client)
 			this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
-			await removeHttpSubscriptionsInGroup
+			await removeExpiredSubscriptions
 				.run({ groupId: this.groupId }, this.client)
 			this.logger.debug(
 				{ groupId: this.groupId },
-				'removed existing http subscriptions in group'
+				'removed expired subscriptions in group'
 			)
 			this.#cancelGroupRead = this.#startReadLoop(this.groupId)
 		}
@@ -138,30 +139,20 @@ export class Pgmb2Client {
 		await this.#pollTask?.()
 
 		const tasks: Promise<unknown>[] = []
-		const subsToDel: string[] = []
-		for(const [id, sub] of Object.entries(this.#subscribers)) {
-			if(sub.cancelRead) {
-				tasks.push(sub.cancelRead())
-				sub.cancelRead = undefined
-			}
+		for(const [id, subs] of Object.entries(this.#subscribers)) {
+			for(const sub of subs) {
+				if(sub.cancelRead) {
+					tasks.push(sub.cancelRead())
+					sub.cancelRead = undefined
+				}
 
-			if(sub.deleteOnClose) {
-				subsToDel.push(id)
-				sub.deleteOnClose = false
+				delete this.#subscribers[id]
+				sub.stream.end()
 			}
-
-			delete this.#subscribers[id]
-			sub.stream.end()
 		}
 
 		if(this.#cancelGroupRead) {
 			tasks.push(this.#cancelGroupRead())
-		}
-
-		if(subsToDel.length) {
-			tasks.push(
-				deleteSubscriptions.run({ ids: subsToDel }, this.client)
-			)
 		}
 
 		await Promise.all(tasks)
@@ -177,6 +168,7 @@ export class Pgmb2Client {
 		res: ServerResponse
 	) {
 		let sub: IRegisteredSubscription | undefined
+		let eventsToReplay: IReplayEventsResult[] = []
 
 		res.once('close', () => {
 			sub?.return!()
@@ -202,6 +194,31 @@ export class Pgmb2Client {
 					'last-event-id is too old to replay'
 				)
 			}
+
+			sub = await this.registerSubscription(opts)
+			if(fromEventId) {
+				const fromDt = getDateFromMessageId(fromEventId)!
+				const subDt = getCreateDateFromSubscriptionId(sub.id)
+				assert(subDt, 'internal: invalid subscription id format')
+				assert(
+					fromDt >= subDt,
+					'last-event-id is before subscription creation, cannot replay'
+				)
+
+				eventsToReplay = await replayEvents.run(
+					{
+						groupId: this.groupId,
+						subscriptionId: sub.id,
+						fromEventId: fromEventId,
+						maxEvents: this.maxReplayEvents
+					},
+					this.client
+				)
+			}
+
+			if(res.writableEnded) {
+				throw new Error('response already ended')
+			}
 		} catch(err) {
 			this.logger.error({ err }, 'error in sse subscription setup')
 			if(res.writableEnded) {
@@ -226,14 +243,9 @@ export class Pgmb2Client {
 		res.flushHeaders()
 
 		try {
-			sub = await this.registerSubscription({ ...opts, type: 'http' }, true)
-			if(res.writableEnded) {
-				sub.return!()
-				return
-			}
-
-			if(fromEventId) {
-				// todo: fetch and send missed events
+			for(const { id, topic, payload } of eventsToReplay) {
+				const data = JSON.stringify(payload)
+				res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
 			}
 
 			for await (const { items } of sub) {
@@ -254,33 +266,28 @@ export class Pgmb2Client {
 		}
 	}
 
-	async registerSubscription(
-		{ groupId, ...rest }: RegisterSubscriptionParams,
-		deleteOnClose: boolean
-	) {
-		groupId ||= this.groupId
-		assert(
-			groupId === this.groupId,
-			'Cannot register subscription with different groupId than client'
-		)
+	async registerSubscription(opts: RegisterSubscriptionParams) {
+		const [{ id: subId, expiresAt }] = await assertSubscription
+			.run({ ...opts, groupId: this.groupId }, this.client)
 
-		const [{ id: subId }] = await assertSubscription
-			.run({ ...rest, groupId }, this.client)
+		this.logger
+			.debug({ subId, expiresAt, ...opts }, 'asserted subscription exists')
 
-		this.logger.debug({ subId, ...rest }, 'asserted subscription exists')
-
-		return this.#listenForEvents(subId, deleteOnClose, undefined)
+		return this.#listenForEvents(subId, undefined)
 	}
 
 	#listenForEvents(
-		subId: string, deleteOnClose: boolean, cancelRead?: CancelFn,
+		subId: string, cancelRead?: CancelFn
 	): IRegisteredSubscription {
 		const stream = new PassThrough({ objectMode: true, highWaterMark: 1 })
-		this.#subscribers[subId] = { stream, deleteOnClose, cancelRead }
+		this.#subscribers[subId] ||= []
+		this.#subscribers[subId].push({ stream, cancelRead })
 
-		stream.on('close', this.#onSubscriptionEnd.bind(this, subId))
+		stream.on('close', this.#onSubscriptionEnd.bind(this, subId, stream))
 
-		const asyncIterator = stream[Symbol.asyncIterator]()
+		const asyncIterator = stream[Symbol.asyncIterator](
+		) as unknown as IRegisteredSubscription
+		asyncIterator.id = subId
 		const ogReturn = asyncIterator.return!.bind(asyncIterator)
 		const ogThrow = asyncIterator.throw!.bind(asyncIterator)
 		asyncIterator.return = async(value) => {
@@ -296,26 +303,17 @@ export class Pgmb2Client {
 		return asyncIterator
 	}
 
-	async #onSubscriptionEnd(subId: string) {
+	async #onSubscriptionEnd(subId: string, stream: PassThrough) {
 		const sub = this.#subscribers[subId]
-		if(!sub) {
+		const idx = sub?.findIndex(s => s.stream === stream)
+		if(idx < 0 || typeof idx === 'undefined') {
 			return
 		}
 
-		this.logger.debug({ subId }, 'subscription stream closed, cleaning up')
-		delete this.#subscribers[subId]
-
-		if(sub.deleteOnClose) {
+		const [removed] = sub.splice(idx, 1)
+		if(removed.cancelRead) {
 			try {
-				await deleteSubscriptions.run({ ids: [subId] }, this.client)
-			} catch(err) {
-				this.logger.error({ subId, err }, 'error deleting subscription')
-			}
-		}
-
-		if(sub.cancelRead) {
-			try {
-				await sub.cancelRead()
+				await removed.cancelRead()
 			} catch(err) {
 				this.logger.error({ subId, err }, 'error cancelling read loop')
 			}
@@ -417,27 +415,28 @@ export class Pgmb2Client {
 		const subs = Object.entries(subToEventMap)
 		const webhookTasks: Promise<void>[] = []
 		for(const [subId, result] of subs) {
-			const sub = this.#subscribers[subId]
-			if(!sub) {
-				if(result.metadata?.['url'] && this.webhooks) {
-					webhookTasks.push(this.#sendWebhook(subId, result))
-					continue
-				}
+			// @ts-expect-error
+			if(result.metadata?.['url'] && this.webhooks) {
+				webhookTasks.push(this.#sendWebhook(subId, result))
+			}
 
+			const sub = this.#subscribers[subId]
+			if(!sub?.length) {
 				this.logger.trace({ subId }, 'subscription not found')
 				continue
 			}
 
-			const { stream } = sub
-			const event: IReadEvent = result
-			stream.write(event, err => {
-				if(err) {
-					this.logger.warn(
-						{ err, subscriptionId: subId },
-						'error writing to subscription stream'
-					)
-				}
-			})
+			for(const { stream } of sub) {
+				const event: IReadEvent = result
+				stream.write(event, err => {
+					if(err) {
+						this.logger.warn(
+							{ err, subscriptionId: subId },
+							'error writing to subscription stream'
+						)
+					}
+				})
+			}
 		}
 
 		await Promise.all(webhookTasks)
@@ -477,7 +476,7 @@ export class Pgmb2Client {
 
 		// find previous failed events to retry
 		const items = [...event.items]
-		for (let i = 0; i < items.length;) {
+		for(let i = 0; i < items.length;) {
 			const { id, topic, metadata, payload } = items[i]
 			if(topic !== WEBHOOK_RETRY_EVENT) {
 				i++

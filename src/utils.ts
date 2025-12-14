@@ -34,6 +34,17 @@ export function getDateFromMessageId(messageId: string) {
 }
 
 /**
+ * Extract the date from a subscription ID
+ */
+export function getCreateDateFromSubscriptionId(id: string) {
+	if(!id.startsWith('su')) {
+		return undefined
+	}
+
+	return getDateFromMessageId('pm' + id.slice(2))
+}
+
+/**
  * Serialise the messages into a SQL array of pgmb.msg_constructor
  */
 export function serialisePgMsgConstructorsIntoSql(

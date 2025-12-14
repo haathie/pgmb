@@ -1,8 +1,6 @@
 /** Types generated for queries found in "sql/queries.sql" */
 import { PreparedQuery } from '@pgtyped/runtime';
 
-export type subscription_type = 'custom' | 'http' | 'webhook';
-
 export type DateOrString = Date | string;
 
 export type DateOrStringArray = (DateOrString)[];
@@ -41,13 +39,14 @@ export const assertGroup = new PreparedQuery<IAssertGroupParams,IAssertGroupResu
 /** 'AssertSubscription' parameters type */
 export interface IAssertSubscriptionParams {
   conditionsSql?: string | null | void;
+  expiresAt?: DateOrString | null | void;
   groupId: string;
-  metadata?: unknown | null | void;
-  type?: subscription_type | null | void;
+  params?: unknown | null | void;
 }
 
 /** 'AssertSubscription' return type */
 export interface IAssertSubscriptionResult {
+  expiresAt: Date;
   id: string;
 }
 
@@ -57,24 +56,27 @@ export interface IAssertSubscriptionQuery {
   result: IAssertSubscriptionResult;
 }
 
-const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"metadata":true,"type":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":85,"b":93}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":106,"b":119}]},{"name":"metadata","required":false,"transform":{"type":"scalar"},"locs":[{"a":141,"b":149}]},{"name":"type","required":false,"transform":{"type":"scalar"},"locs":[{"a":176,"b":180}]}],"statement":"INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)\nVALUES (\n\t:groupId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:metadata::jsonb, '{}'),\n\tCOALESCE(:type::pgmb2.subscription_type, 'custom')\n)\nON CONFLICT (id) DO UPDATE\nSET\n\tgroup_id = EXCLUDED.group_id,\n\tconditions_sql = EXCLUDED.conditions_sql,\n\tmetadata = EXCLUDED.metadata\nRETURNING id AS \"id!\""};
+const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"params":true,"expiresAt":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":93,"b":101}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":114,"b":127}]},{"name":"params","required":false,"transform":{"type":"scalar"},"locs":[{"a":149,"b":155}]},{"name":"expiresAt","required":false,"transform":{"type":"scalar"},"locs":[{"a":173,"b":182}]}],"statement":"INSERT INTO pgmb2.subscriptions AS s(group_id, conditions_sql, params, expires_at)\nVALUES (\n\t:groupId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:params::jsonb, '{}'),\n\t:expiresAt\n)\nON CONFLICT (identity) DO UPDATE\nSET\n\t-- set expires_at to the new value only if it's greater than the existing one\n\t-- or if the new value is NULL (indicating no expiration)\n\texpires_at = CASE\n\t\tWHEN EXCLUDED.expires_at IS NULL OR s.expires_at IS NULL THEN NULL\n\t\tELSE GREATEST(s.expires_at, EXCLUDED.expires_at)\n\tEND\nRETURNING id AS \"id!\", expires_at AS \"expiresAt!\""};
 
 /**
  * Query generated from SQL:
  * ```
- * INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)
+ * INSERT INTO pgmb2.subscriptions AS s(group_id, conditions_sql, params, expires_at)
  * VALUES (
  * 	:groupId!,
  * 	COALESCE(:conditionsSql, 'TRUE'),
- * 	COALESCE(:metadata::jsonb, '{}'),
- * 	COALESCE(:type::pgmb2.subscription_type, 'custom')
+ * 	COALESCE(:params::jsonb, '{}'),
+ * 	:expiresAt
  * )
- * ON CONFLICT (id) DO UPDATE
+ * ON CONFLICT (identity) DO UPDATE
  * SET
- * 	group_id = EXCLUDED.group_id,
- * 	conditions_sql = EXCLUDED.conditions_sql,
- * 	metadata = EXCLUDED.metadata
- * RETURNING id AS "id!"
+ * 	-- set expires_at to the new value only if it's greater than the existing one
+ * 	-- or if the new value is NULL (indicating no expiration)
+ * 	expires_at = CASE
+ * 		WHEN EXCLUDED.expires_at IS NULL OR s.expires_at IS NULL THEN NULL
+ * 		ELSE GREATEST(s.expires_at, EXCLUDED.expires_at)
+ * 	END
+ * RETURNING id AS "id!", expires_at AS "expiresAt!"
  * ```
  */
 export const assertSubscription = new PreparedQuery<IAssertSubscriptionParams,IAssertSubscriptionResult>(assertSubscriptionIR);
@@ -207,6 +209,49 @@ const readNextEventsTextIR: any = {"usedParamSet":{"groupId":true,"chunkSize":tr
 export const readNextEventsText = new PreparedQuery<IReadNextEventsTextParams,IReadNextEventsTextResult>(readNextEventsTextIR);
 
 
+/** 'ReplayEvents' parameters type */
+export interface IReplayEventsParams {
+  fromEventId: string;
+  groupId: string;
+  maxEvents: number;
+  subscriptionId: string;
+}
+
+/** 'ReplayEvents' return type */
+export interface IReplayEventsResult {
+  id: string;
+  metadata: unknown;
+  payload: unknown;
+  topic: string;
+}
+
+/** 'ReplayEvents' query type */
+export interface IReplayEventsQuery {
+  params: IReplayEventsParams;
+  result: IReplayEventsResult;
+}
+
+const replayEventsIR: any = {"usedParamSet":{"groupId":true,"subscriptionId":true,"fromEventId":true,"maxEvents":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":129,"b":137}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":160,"b":175}]},{"name":"fromEventId","required":true,"transform":{"type":"scalar"},"locs":[{"a":196,"b":208}]},{"name":"maxEvents","required":true,"transform":{"type":"scalar"},"locs":[{"a":242,"b":252}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.replay_events(\n\tgroup_id := :groupId!,\n\tsubscription_id := :subscriptionId!,\n\tfrom_event_id := :fromEventId!::pgmb2.event_id,\n\tmax_events := :maxEvents!\n)"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT
+ * 	id AS "id!",
+ * 	topic AS "topic!",
+ * 	payload AS "payload!",
+ * 	metadata AS "metadata!"
+ * FROM pgmb2.replay_events(
+ * 	group_id := :groupId!,
+ * 	subscription_id := :subscriptionId!,
+ * 	from_event_id := :fromEventId!::pgmb2.event_id,
+ * 	max_events := :maxEvents!
+ * )
+ * ```
+ */
+export const replayEvents = new PreparedQuery<IReplayEventsParams,IReplayEventsResult>(replayEventsIR);
+
+
 /** 'SetGroupCursor' parameters type */
 export interface ISetGroupCursorParams {
   cursor: string;
@@ -316,30 +361,30 @@ const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"pa
 export const writeScheduledEvents = new PreparedQuery<IWriteScheduledEventsParams,IWriteScheduledEventsResult>(writeScheduledEventsIR);
 
 
-/** 'RemoveHttpSubscriptionsInGroup' parameters type */
-export interface IRemoveHttpSubscriptionsInGroupParams {
+/** 'RemoveExpiredSubscriptions' parameters type */
+export interface IRemoveExpiredSubscriptionsParams {
   groupId: string;
 }
 
-/** 'RemoveHttpSubscriptionsInGroup' return type */
-export type IRemoveHttpSubscriptionsInGroupResult = void;
+/** 'RemoveExpiredSubscriptions' return type */
+export type IRemoveExpiredSubscriptionsResult = void;
 
-/** 'RemoveHttpSubscriptionsInGroup' query type */
-export interface IRemoveHttpSubscriptionsInGroupQuery {
-  params: IRemoveHttpSubscriptionsInGroupParams;
-  result: IRemoveHttpSubscriptionsInGroupResult;
+/** 'RemoveExpiredSubscriptions' query type */
+export interface IRemoveExpiredSubscriptionsQuery {
+  params: IRemoveExpiredSubscriptionsParams;
+  result: IRemoveExpiredSubscriptionsResult;
 }
 
-const removeHttpSubscriptionsInGroupIR: any = {"usedParamSet":{"groupId":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":57}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE group_id = :groupId! AND type = 'http'"};
+const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":57}]}],"statement":"DELETE FROM pgmb2.subscriptions\nWHERE group_id = :groupId! AND expires_at IS NOT NULL AND expires_at < NOW()"};
 
 /**
  * Query generated from SQL:
  * ```
  * DELETE FROM pgmb2.subscriptions
- * WHERE group_id = :groupId! AND type = 'http'
+ * WHERE group_id = :groupId! AND expires_at IS NOT NULL AND expires_at < NOW()
  * ```
  */
-export const removeHttpSubscriptionsInGroup = new PreparedQuery<IRemoveHttpSubscriptionsInGroupParams,IRemoveHttpSubscriptionsInGroupResult>(removeHttpSubscriptionsInGroupIR);
+export const removeExpiredSubscriptions = new PreparedQuery<IRemoveExpiredSubscriptionsParams,IRemoveExpiredSubscriptionsResult>(removeExpiredSubscriptionsIR);
 
 
 /** 'ReenqueueEventsForSubscription' parameters type */

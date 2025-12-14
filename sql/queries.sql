@@ -4,19 +4,22 @@ VALUES (:id!)
 ON CONFLICT DO NOTHING;
 
 /* @name assertSubscription */
-INSERT INTO pgmb2.subscriptions (group_id, conditions_sql, metadata, type)
+INSERT INTO pgmb2.subscriptions AS s(group_id, conditions_sql, params, expires_at)
 VALUES (
 	:groupId!,
 	COALESCE(:conditionsSql, 'TRUE'),
-	COALESCE(:metadata::jsonb, '{}'),
-	COALESCE(:type::pgmb2.subscription_type, 'custom')
+	COALESCE(:params::jsonb, '{}'),
+	:expiresAt
 )
-ON CONFLICT (id) DO UPDATE
+ON CONFLICT (identity) DO UPDATE
 SET
-	group_id = EXCLUDED.group_id,
-	conditions_sql = EXCLUDED.conditions_sql,
-	metadata = EXCLUDED.metadata
-RETURNING id AS "id!";
+	-- set expires_at to the new value only if it's greater than the existing one
+	-- or if the new value is NULL (indicating no expiration)
+	expires_at = CASE
+		WHEN EXCLUDED.expires_at IS NULL OR s.expires_at IS NULL THEN NULL
+		ELSE GREATEST(s.expires_at, EXCLUDED.expires_at)
+	END
+RETURNING id AS "id!", expires_at AS "expiresAt!";
 
 /*
  @name deleteSubscriptions
@@ -45,6 +48,19 @@ SELECT
 	topic AS "topic!",
 	payload::text AS "payload!"
 FROM pgmb2.read_next_events(:groupId!, :chunkSize!);
+
+/* @name replayEvents */
+SELECT
+	id AS "id!",
+	topic AS "topic!",
+	payload AS "payload!",
+	metadata AS "metadata!"
+FROM pgmb2.replay_events(
+	group_id := :groupId!,
+	subscription_id := :subscriptionId!,
+	from_event_id := :fromEventId!::pgmb2.event_id,
+	max_events := :maxEvents!
+);
 
 /* @name setGroupCursor */
 SELECT pgmb2.set_group_cursor(:groupId!,	:cursor!::pgmb2.event_id) AS "success!";
@@ -77,9 +93,9 @@ FROM unnest(
 ) AS t(ts, topic, payload, metadata)
 RETURNING id AS "id!";
 
-/* @name removeHttpSubscriptionsInGroup */
+/* @name removeExpiredSubscriptions */
 DELETE FROM pgmb2.subscriptions
-WHERE group_id = :groupId! AND type = 'http';
+WHERE group_id = :groupId! AND expires_at IS NOT NULL AND expires_at < NOW();
 
 /* @name reenqueueEventsForSubscription */
 SELECT pgmb2.reenqueue_events_for_subscription(
