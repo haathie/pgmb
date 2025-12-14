@@ -6,7 +6,7 @@ import { setTimeout } from 'timers/promises'
 import type { HeaderRecord } from 'undici-types/header.js'
 import { AbortableAsyncIterator } from '../abortable-async-iterator.ts'
 import type { IAssertSubscriptionParams, IReplayEventsResult } from '../queries.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor, writeEvents } from '../queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor } from '../queries.ts'
 import type { JSONifier } from '../types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
 
@@ -15,11 +15,11 @@ type SerialisedEvent = {
 	contentType: string
 }
 
-type WebhookMetadata = {
-	url: string
-	/** Specify what duration after which to retry failed events */
-	retriesS?: number[]
-}
+// type WebhookMetadata = {
+// 	url: string
+// 	/** Specify what duration after which to retry failed events */
+// 	retriesS?: number[]
+// }
 
 type Pgmb2WebhookOpts = {
 	/**
@@ -47,6 +47,11 @@ export type Pgmb2ClientOpts = {
 	subscriptionMaintenanceMs?: number
 
 	readChunkSize?: number
+	/**
+	 * How many durable handlers to run in parallel
+	 * @default 100
+	 */
+	maxEnqueuedTasks?: number
 	poll?: boolean
 	/**
 	 * Maximum interval to replay events for an SSE subscription.
@@ -67,25 +72,37 @@ export type Pgmb2ClientOpts = {
 }
 
 type IReadEvent = {
-	/**
-	 * metadata of the subscription
-	 */
-	metadata?: unknown
 	items: IReadNextEventsResult[]
 }
 
 type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
-type IActiveSubscription = {
-	stream: AbortableAsyncIterator<IReadEvent>
-}
-
-export type ISubscriptionListener = AbortableAsyncIterator<IReadEvent> & {
+export type IEphemeralListener = AbortableAsyncIterator<IReadEvent> & {
 	id: string
 }
 
-const WEBHOOK_RETRY_EVENT = 'pgmb2-webhook-retry'
+type IEventHandler = (item: IReadEvent, signal?: AbortSignal) => Promise<void>
+
+type IListener = {
+	type: 'ephemeral'
+	stream: IEphemeralListener
+} | {
+	type: 'durable'
+	handler: IEventHandler
+	queue: IReadEvent[]
+}
+
+type IListenerStore = {
+	values: IListener[]
+}
+
+type Checkpoint = {
+	activeTasks: number
+	nextCursor: string
+}
+
+// const RETRY_EVENT = 'pgmb2-retry'
 
 export class Pgmb2Client {
 
@@ -99,22 +116,28 @@ export class Pgmb2Client {
 	readonly subscriptionMaintenanceMs: number
 	readonly webhooks: Pgmb2WebhookOpts | null
 	readonly jsonifier: JSONifier
+	readonly maxEnqueuedTasks: number
 
-	readonly subscribers: { [subId: string]: IActiveSubscription[] } = {}
+	readonly listeners: { [subId: string]: IListenerStore } = {}
 
 	#endAc = new AbortController()
 	#eventsPublished = 0
+	activeTasks = 0
 
 	readonly #shouldPoll: boolean
 	#readTask?: Promise<void>
 	#pollTask?: Promise<void>
 	#subMaintainTask?: Promise<void>
 
+	#inMemoryCursor: string | null = null
+	#activeCheckpoints: Checkpoint[] = []
+
 	constructor({
 		client, logger, groupId,
 		webhooks = { },
 		sleepDurationMs = 500,
 		readChunkSize = 1000,
+		maxEnqueuedTasks = 100,
 		maxReplayIntervalMs = 5 * 60 * 1000,
 		poll,
 		jsonifier = JSON,
@@ -135,6 +158,7 @@ export class Pgmb2Client {
 		}
 		this.jsonifier = jsonifier
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
+		this.maxEnqueuedTasks = maxEnqueuedTasks
 	}
 
 	async init() {
@@ -168,10 +192,14 @@ export class Pgmb2Client {
 	}
 
 	async end() {
+		while(this.#activeCheckpoints.length) {
+			await setTimeout(100)
+		}
+
 		this.#endAc.abort()
 
-		for(const id in this.subscribers) {
-			delete this.subscribers[id]
+		for(const id in this.listeners) {
+			delete this.listeners[id]
 		}
 
 		await Promise.all([this.#readTask, this.#pollTask, this.#subMaintainTask])
@@ -179,6 +207,8 @@ export class Pgmb2Client {
 		this.#readTask = undefined
 		this.#pollTask = undefined
 		this.#subMaintainTask = undefined
+		this.activeTasks = 0
+		this.#activeCheckpoints = []
 	}
 
 	async registerSseSubscription(
@@ -186,7 +216,7 @@ export class Pgmb2Client {
 		req: IncomingMessage,
 		res: ServerResponse
 	) {
-		let sub: ISubscriptionListener | undefined
+		let sub: IEphemeralListener | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
 		if(typeof opts.expiryInterval === 'undefined') {
 			opts.expiryInterval = `${this.maxReplayIntervalMs * 2} milliseconds`
@@ -314,50 +344,77 @@ export class Pgmb2Client {
 			.run({ ...opts, groupId: this.groupId }, this.client)
 
 		this.logger
-			.debug({ subId, ...opts }, 'asserted subscription exists')
+			.debug({ subId, ...opts }, 'asserted subscription')
 
 		return this.#listenForEvents(subId)
+	}
+
+	async registerDurableSubscription(
+		opts: RegisterSubscriptionParams,
+		handler: IEventHandler
+	) {
+		const [{ id: subId }] = await assertSubscription
+			.run({ ...opts, groupId: this.groupId }, this.client)
+		const listener: IListener = { type: 'durable', handler, queue: [] }
+
+		this.logger
+			.debug({ subId, ...opts }, 'asserted subscription')
+		this.listeners[subId] ||= { values: [] }
+		this.listeners[subId].values.push(listener)
+
+		return () => this.#removeListener(subId, listener)
 	}
 
 	async removeSubscription(subId: string) {
 		await deleteSubscriptions.run({ ids: [subId] }, this.client)
 		this.logger.debug({ subId }, 'deleted subscription')
 
-		const existingSubs = this.subscribers[subId]
-		delete this.subscribers[subId]
+		const existingSubs = this.listeners[subId]?.values
+		delete this.listeners[subId]
 		if(!existingSubs?.length) {
 			return
 		}
 
 		await Promise.allSettled(existingSubs.map(e => (
-			e.stream.throw(new Error('subscription removed'))
+			e.type === 'ephemeral'
+			&& e.stream.throw(new Error('subscription removed'))
 		)))
 	}
 
-	#listenForEvents(subId: string): ISubscriptionListener {
-		const stream = new AbortableAsyncIterator<IReadEvent>(
+	#listenForEvents(subId: string): IEphemeralListener {
+		let listener: IListener
+		const iterator = new AbortableAsyncIterator<IReadEvent>(
 			this.#endAc.signal,
-			() => {
-				this.subscribers[subId] = this.subscribers[subId]
-					?.filter(s => s.stream !== stream)
-				if(!this.subscribers[subId]?.length) {
-					delete this.subscribers[subId]
-					this.logger.debug({ subId }, 'removed last subscriber for subscription')
-				}
-			}
+			() => this.#removeListener(subId, listener)
 		)
 
-		this.subscribers[subId] ||= []
-		this.subscribers[subId].push({ stream })
+		const stream = iterator as unknown as IEphemeralListener
+		stream.id = subId
 
-		const lt = stream as unknown as ISubscriptionListener
-		lt.id = subId
+		listener = { type: 'ephemeral', stream }
 
-		return lt
+		this.listeners[subId] ||= { values: [] }
+		this.listeners[subId].values.push(listener)
+
+		return stream
+	}
+
+	#removeListener(subId: string, listener: IListener) {
+		const existingSubs = this.listeners[subId]?.values
+		if(!existingSubs?.length) {
+			return
+		}
+
+		this.listeners[subId].values = existingSubs
+			.filter(s => s !== listener)
+		if(!this.listeners[subId]?.values.length) {
+			delete this.listeners[subId]
+			this.logger.debug({ subId }, 'removed last subscriber for subscription')
+		}
 	}
 
 	async #maintainSubscriptions() {
-		const activeIds = Object.keys(this.subscribers)
+		const activeIds = Object.keys(this.listeners)
 		await markSubscriptionsActive.run({ ids: activeIds }, this.client)
 
 		this.logger.debug(
@@ -371,172 +428,232 @@ export class Pgmb2Client {
 	}
 
 	async readChanges(groupId: string, client: IDatabaseConnection = this.client) {
+		if(this.activeTasks >= this.maxEnqueuedTasks) {
+			return 0
+		}
+
 		const now = Date.now()
-		const rows = await readNextEvents
-			.run({ groupId, chunkSize: this.readChunkSize }, client)
+		const rows = await readNextEvents.run(
+			{
+				groupId,
+				cursor: this.#inMemoryCursor,
+				chunkSize: this.readChunkSize
+			},
+			client
+		)
 
 		const subToEventMap:
 			{ [subscriptionId: string]: IReadEvent } = {}
 		for(const row of rows) {
-			for(const [idx, subId] of row.subscriptionIds.entries()) {
-				const metadata = row.subscriptionMetadatas?.[idx]
-				subToEventMap[subId] ||= { items: [], metadata }
+			for(const subId of row.subscriptionIds) {
+				subToEventMap[subId] ||= { items: [] }
 				subToEventMap[subId].items.push(row)
 				this.#eventsPublished ++
 			}
 		}
 
 		const subs = Object.entries(subToEventMap)
-		const tasks: Promise<void>[] = []
+		const checkpoint: Checkpoint = {
+			activeTasks: this.activeTasks,
+			nextCursor: rows.at(0)?.nextCursor || ''
+		}
 		for(const [subId, result] of subs) {
-			// @ts-expect-error
-			if(result.metadata?.['url'] && this.webhooks) {
-				tasks.push(this.#sendWebhook(subId, result))
-			}
-
-			const sub = this.subscribers[subId]
-			if(!sub?.length) {
-				this.logger.trace({ subId }, 'subscription not found')
+			const listenerStore = this.listeners[subId]
+			if(!listenerStore?.values?.length) {
 				continue
 			}
 
-			for(const { stream } of sub) {
-				stream.enqueue(result)
+			for(const item of listenerStore.values) {
+				if(item.type === 'ephemeral') {
+					item.stream.enqueue(result)
+					continue
+				}
+
+				this.#enqueueEventForDurableListener(result, item, checkpoint)
 			}
 		}
 
-		await Promise.all(tasks)
-
 		if(rows.length) {
-			const nextCursor = rows[0].nextCursor
 			this.logger.debug(
 				{
 					rowsRead: rows.length,
 					subscriptions: subs.length,
 					durationMs: Date.now() - now,
 					totalEventsPublished: this.#eventsPublished,
-					nextCursor
+					checkpoint,
+					activeDurableHandlers: this.activeTasks
 				},
 				'read rows'
 			)
+		}
 
-			await setGroupCursor
-				.run({ groupId, cursor: nextCursor }, client)
+		if(checkpoint.nextCursor) {
+			this.#activeCheckpoints.push(checkpoint)
+			await this.#updateCursorFromCompletedCheckpoints()
+
+			this.#inMemoryCursor = checkpoint.nextCursor
 		}
 
 		return rows.length
 	}
 
-	async #sendWebhook(subId: string, event: IReadEvent) {
-		const { metadata } = event
-		if(!isWebhookMetadata(metadata)) {
+	async #enqueueEventForDurableListener(
+		item: IReadEvent,
+		listener: IListener,
+		checkpoint: Checkpoint
+	) {
+		assert(listener.type === 'durable', 'invalid listener type')
+
+		const { handler, queue } = listener
+		queue.push(item)
+		this.activeTasks ++
+		checkpoint.activeTasks ++
+		if(queue.length > 1) {
 			return
 		}
 
-		const { chunkSize, timeoutMs, serialiseEvent, headers } = this.webhooks!
-		const requests: {
-			items: IReadNextEventsResult[]
-			serialised: SerialisedEvent
-			retryNumber?: number
-		}[] = []
-
-		// find previous failed events to retry
-		const items = [...event.items]
-		for(let i = 0; i < items.length;) {
-			const { id, topic, metadata, payload } = items[i]
-			if(topic !== WEBHOOK_RETRY_EVENT) {
-				i++
-				continue
-			}
-
-			const { items: failedItems } = payload as { items: IReadNextEventsResult[] }
-			if(!Array.isArray(failedItems) || !failedItems.length) {
-				this.logger.warn({ subId, id }, 'invalid webhook retry event payload')
-				i++
-				continue
-			}
-
-			requests.push({
-				items: failedItems,
-				serialised: serialiseEvent({ metadata, items: failedItems }),
-				retryNumber: typeof metadata === 'object' && metadata !== null
-					&& 'retryNumber' in metadata
-					&& typeof metadata.retryNumber === 'number'
-					? metadata.retryNumber
-					: undefined
-			})
-
-			items.splice(i, 1)
-		}
-
-		if(chunkSize) {
-			for(let i = 0; i < items.length; i += chunkSize) {
-				const slice = items.slice(i, i + chunkSize)
-				requests.push({
-					items: slice,
-					serialised: serialiseEvent({ metadata, items: slice })
-				})
-			}
-		} else {
-			requests.push({ items, serialised: serialiseEvent(event) })
-		}
-
-		const { url, retriesS = [] } = metadata
-		const retryRequests: {
-			payload: { items: IReadNextEventsResult[] }
-			metadata: { retryNumber: number }
-		}[] = []
-		for(const {
-			items, serialised: { body, contentType }, retryNumber = 0
-		} of requests) {
-			const ids = items.map(i => i.id)
+		while(!this.#endAc.signal.aborted && queue.length) {
 			try {
-				const { status, body: res } = await fetch(url, {
-					method: 'POST',
-					headers: { 'Content-Type': contentType, ...headers },
-					body,
-					redirect: 'manual',
-					signal: AbortSignal.timeout(timeoutMs)
-				})
-				// don't care about response body
-				await res?.cancel().catch(() => { })
-				if(status < 200 || status >= 300) {
-					throw new Error(`Non-2xx response: ${status}`)
-				}
-
-				this.logger.info({ subId, url, status, ids },	'sent webhook request')
+				await handler(queue.shift()!, this.#endAc.signal)
 			} catch(err) {
-				const nextRetry = retriesS[retryNumber]
-				this.logger
-					.error({ subId, url, err, ids, nextRetry }, 'error in webhook request')
-				if(typeof nextRetry !== 'number') {
-					continue
-				}
+				this.logger.error({ err }, 'error in durable event handler')
+			} finally {
+				this.activeTasks --
+				checkpoint.activeTasks --
+			}
 
-				retryRequests
-					.push({ payload: { items }, metadata: { retryNumber: retryNumber + 1 } })
+			if(checkpoint.activeTasks === 0) {
+				await this.#updateCursorFromCompletedCheckpoints()
 			}
 		}
-
-		if(retryRequests.length) {
-			await writeEvents.run(
-				{
-					payloads: retryRequests.map(r => r.payload),
-					metadatas: retryRequests.map(r => r.metadata),
-					topics: Array(retryRequests.length).fill(WEBHOOK_RETRY_EVENT)
-				},
-				this.client
-			)
-		}
 	}
 
-	#isClientEnded() {
-		if('ended' in this.client) {
-			return this.client.ended
+	async #updateCursorFromCompletedCheckpoints() {
+		let latestMaxCursor: string | undefined
+		while(this.#activeCheckpoints.length) {
+			const cp = this.#activeCheckpoints[0]
+			if(cp.activeTasks > 0) {
+				break
+			}
+
+			latestMaxCursor = cp.nextCursor
+			this.#activeCheckpoints.shift()
 		}
 
-		return false
+		if(!latestMaxCursor) {
+			return
+		}
+
+		await setGroupCursor.run(
+			{ groupId: this.groupId, cursor: latestMaxCursor },
+			this.client
+		)
+
+		this.logger.debug({ cursor: latestMaxCursor }, 'set cursor')
 	}
+
+	// async #sendWebhook(subId: string, event: IReadEvent) {
+	// 	const { metadata } = event
+	// 	if(!isWebhookMetadata(metadata)) {
+	// 		return
+	// 	}
+
+	// 	const { chunkSize, timeoutMs, serialiseEvent, headers } = this.webhooks!
+	// 	const requests: {
+	// 		items: IReadNextEventsResult[]
+	// 		serialised: SerialisedEvent
+	// 		retryNumber?: number
+	// 	}[] = []
+
+	// 	// find previous failed events to retry
+	// 	const items = [...event.items]
+	// 	for(let i = 0; i < items.length;) {
+	// 		const { id, topic, metadata, payload } = items[i]
+	// 		if(topic !== WEBHOOK_RETRY_EVENT) {
+	// 			i++
+	// 			continue
+	// 		}
+
+	// 		const { items: failedItems } = payload as { items: IReadNextEventsResult[] }
+	// 		if(!Array.isArray(failedItems) || !failedItems.length) {
+	// 			this.logger.warn({ subId, id }, 'invalid webhook retry event payload')
+	// 			i++
+	// 			continue
+	// 		}
+
+	// 		requests.push({
+	// 			items: failedItems,
+	// 			serialised: serialiseEvent({ metadata, items: failedItems }),
+	// 			retryNumber: typeof metadata === 'object' && metadata !== null
+	// 				&& 'retryNumber' in metadata
+	// 				&& typeof metadata.retryNumber === 'number'
+	// 				? metadata.retryNumber
+	// 				: undefined
+	// 		})
+
+	// 		items.splice(i, 1)
+	// 	}
+
+	// 	if(chunkSize) {
+	// 		for(let i = 0; i < items.length; i += chunkSize) {
+	// 			const slice = items.slice(i, i + chunkSize)
+	// 			requests.push({
+	// 				items: slice,
+	// 				serialised: serialiseEvent({ metadata, items: slice })
+	// 			})
+	// 		}
+	// 	} else {
+	// 		requests.push({ items, serialised: serialiseEvent(event) })
+	// 	}
+
+	// 	const { url, retriesS = [] } = metadata
+	// 	const retryRequests: {
+	// 		payload: { items: IReadNextEventsResult[] }
+	// 		metadata: { retryNumber: number }
+	// 	}[] = []
+	// 	for(const {
+	// 		items, serialised: { body, contentType }, retryNumber = 0
+	// 	} of requests) {
+	// 		const ids = items.map(i => i.id)
+	// 		try {
+	// 			const { status, body: res } = await fetch(url, {
+	// 				method: 'POST',
+	// 				headers: { 'Content-Type': contentType, ...headers },
+	// 				body,
+	// 				redirect: 'manual',
+	// 				signal: AbortSignal.timeout(timeoutMs)
+	// 			})
+	// 			// don't care about response body
+	// 			await res?.cancel().catch(() => { })
+	// 			if(status < 200 || status >= 300) {
+	// 				throw new Error(`Non-2xx response: ${status}`)
+	// 			}
+
+	// 			this.logger.info({ subId, url, status, ids },	'sent webhook request')
+	// 		} catch(err) {
+	// 			const nextRetry = retriesS[retryNumber]
+	// 			this.logger
+	// 				.error({ subId, url, err, ids, nextRetry }, 'error in webhook request')
+	// 			if(typeof nextRetry !== 'number') {
+	// 				continue
+	// 			}
+
+	// 			retryRequests
+	// 				.push({ payload: { items }, metadata: { retryNumber: retryNumber + 1 } })
+	// 		}
+	// 	}
+
+	// 	if(retryRequests.length) {
+	// 		await writeEvents.run(
+	// 			{
+	// 				payloads: retryRequests.map(r => r.payload),
+	// 				metadatas: retryRequests.map(r => r.metadata),
+	// 				topics: Array(retryRequests.length).fill(WEBHOOK_RETRY_EVENT)
+	// 			},
+	// 			this.client
+	// 		)
+	// 	}
+	// }
 
 	#serialiseJsonEvent = (ev: IReadEvent): SerialisedEvent => {
 		return {
@@ -562,18 +679,18 @@ export class Pgmb2Client {
 	}
 }
 
-function isWebhookMetadata(metadata: unknown): metadata is WebhookMetadata {
-	if(typeof metadata !== 'object' || metadata === null) {
-		return false
-	}
+// function isWebhookMetadata(metadata: unknown): metadata is WebhookMetadata {
+// 	if(typeof metadata !== 'object' || metadata === null) {
+// 		return false
+// 	}
 
-	if(!('url' in metadata) || typeof metadata['url'] !== 'string') {
-		return false
-	}
+// 	if(!('url' in metadata) || typeof metadata['url'] !== 'string') {
+// 		return false
+// 	}
 
-	if(('retriesS' in metadata) && !Array.isArray(metadata['retriesS'])) {
-		return false
-	}
+// 	if(('retriesS' in metadata) && !Array.isArray(metadata['retriesS'])) {
+// 		return false
+// 	}
 
-	return true
-}
+// 	return true
+// }

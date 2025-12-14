@@ -50,16 +50,15 @@ SELECT
 	payload AS "payload!",
 	metadata AS "metadata!",
 	subscription_ids::text[] AS "subscriptionIds!",
-	subscription_metadatas AS "subscriptionMetadatas!",
 	next_cursor AS "nextCursor!"
-FROM pgmb2.read_next_events(:groupId!, :chunkSize!);
+FROM pgmb2.read_next_events(:groupId!, :cursor, :chunkSize!);
 
 /* @name readNextEventsText */
 SELECT
 	id AS "id!",
 	topic AS "topic!",
 	payload::text AS "payload!"
-FROM pgmb2.read_next_events(:groupId!, :chunkSize!);
+FROM pgmb2.read_next_events(:groupId!, :cursor, :chunkSize!);
 
 /* @name replayEvents */
 SELECT

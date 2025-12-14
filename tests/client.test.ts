@@ -488,13 +488,11 @@ describe('PGMB Client Tests', () => {
 		// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
 		const sub1Nxt = await sub1.next()
 		assert(!sub1Nxt.done)
-		assert.deepEqual(sub1Nxt.value.metadata, { min: 0.5 })
 		assert.equal(sub1Nxt.value.items.length, 1)
 
 		// 0.7 > 0.5, and 0.7 > 0 -- so matched by both subs
 		const sub2Nxt = await sub2.next()
 		assert(!sub2Nxt.done)
-		assert.deepEqual(sub2Nxt.value.metadata, { min: 0 })
 		assert.equal(sub2Nxt.value.items.length, 2)
 
 		noSub.return?.()
@@ -606,7 +604,7 @@ describe('PGMB Client Tests', () => {
 			// ensure a graceful close, server closes listeners
 			es.close()
 			await setTimeout(100)
-			assert.deepEqual(client.subscribers, {})
+			assert.deepEqual(client.listeners, {})
 		})
 
 		it('should handle receiving missing events over SSE', async() => {
@@ -637,7 +635,7 @@ describe('PGMB Client Tests', () => {
 			await firstEventRecv
 
 			// remove the subscription & consequently end the current SSE connection
-			await client.removeSubscription(Object.keys(client.subscribers)[0])
+			await client.removeSubscription(Object.keys(client.listeners)[0])
 			// removal error
 			await assert.rejects(waitForESOpen(es))
 			// reconnection error

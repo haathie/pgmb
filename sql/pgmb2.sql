@@ -543,6 +543,7 @@ SET search_path TO pgmb2, public;
 
 CREATE OR REPLACE FUNCTION read_next_events(
 	gid VARCHAR(48),
+	cursor event_id DEFAULT NULL,
 	chunk_size INT DEFAULT get_config_value('poll_chunk_size')::INT
 ) RETURNS TABLE(
 	id event_id,
@@ -550,28 +551,26 @@ CREATE OR REPLACE FUNCTION read_next_events(
 	payload JSONB,
 	metadata JSONB,
 	subscription_ids subscription_id[],
-	subscription_metadatas JSONB[],
 	next_cursor event_id
 ) AS $$
-DECLARE
-	cursor event_id;
 BEGIN
-	SELECT sc.last_read_event_id
-	FROM subscription_groups sc
-	WHERE sc.id = gid
-	INTO cursor;
-
+	-- if no cursor is provided, fetch from the group's last read event id
 	IF cursor IS NULL THEN
-		cursor := create_event_id(NOW(), 0);
+		SELECT sc.last_read_event_id
+		FROM subscription_groups sc
+		WHERE sc.id = gid
+		INTO cursor;
+	END IF;
+	-- if still null, don't return anything
+	IF cursor IS NULL THEN
+		RETURN;
 	END IF;
 
 	RETURN QUERY WITH next_events AS (
 		SELECT
 			se.id,
 			se.event_id,
-			se.subscription_id,
-			-- TODO: fix
-			s.params AS subscription_metadata
+			se.subscription_id
 		FROM subscription_events se
 		INNER JOIN subscriptions s ON s.id = se.subscription_id
 		WHERE se.group_id = gid
@@ -582,8 +581,7 @@ BEGIN
 	next_events_grp AS (
 		SELECT
 			ne.event_id,
-			ARRAY_AGG(ne.subscription_id) AS subscription_ids,
-			ARRAY_AGG(ne.subscription_metadata) AS subscription_metadatas
+			ARRAY_AGG(ne.subscription_id) AS subscription_ids
 		FROM next_events ne
 		GROUP BY ne.event_id
 		ORDER BY ne.event_id
@@ -594,7 +592,6 @@ BEGIN
 		e.payload,
 		e.metadata,
 		ne.subscription_ids,
-		ne.subscription_metadatas,
 		(SELECT MAX(ne2.id)::event_id FROM next_events ne2)
 	FROM read_events(ARRAY(SELECT ne.event_id FROM next_events_grp ne)) e
 	INNER JOIN next_events_grp ne ON ne.event_id = e.id;
