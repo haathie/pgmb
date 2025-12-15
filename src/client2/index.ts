@@ -9,6 +9,7 @@ import type { IAssertSubscriptionParams, IFindEventsResult, IReplayEventsResult 
 import { assertGroup, assertSubscription, deleteSubscriptions, findEvents, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, scheduleEventRetry, setGroupCursor } from '../queries.ts'
 import type { FnContext, JSONifier } from '../types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
+import { createHash } from 'crypto'
 
 type SerialisedEvent = {
 	body: Buffer | string
@@ -41,7 +42,7 @@ export type Pgmb2ClientOpts = {
 	poll?: boolean
 }
 
-type IReadEvent = {
+export type IReadEvent = {
 	items: IFindEventsResult[]
 }
 
@@ -196,7 +197,10 @@ export class Pgmb2Client {
 		this.listeners[subId] ||= { values: [] }
 		this.listeners[subId].values.push(listener)
 
-		return () => this.#removeListener(subId, listener)
+		return {
+			subscriptionId: subId,
+			cancel: () => this.#removeListener(subId, listener)
+		}
 	}
 
 	async removeSubscription(subId: string) {
@@ -611,7 +615,6 @@ type IRetryHandlerOpts = {
 export function createRetryHandler(
 	handler: IEventHandler, { retriesS }: IRetryHandlerOpts
 ): IEventHandler {
-	assert(retriesS.length, 'Please provide at least one retry interval')
 	return async(ev: IReadEvent, ctx: FnContext) => {
 		const { client, subscriptionId } = ctx
 		const evs: IMaybeRetryEvent[] = []
@@ -722,6 +725,10 @@ type PgmbWebhookConfig = {
 	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
 
+/**
+ * Create a handler that sends events to a webhook URL via HTTP POST.
+ * @param url Where to send the webhook requests
+ */
 export function createWebhookHandler(
 	url: string | URL,
 	{
@@ -729,10 +736,7 @@ export function createWebhookHandler(
 		headers,
 		retryOpts = { retriesS: [1 * 60, 10 * 60] },
 		jsonifier = JSON,
-		serialiseEvent = ev => ({
-			body: jsonifier.stringify(ev),
-			contentType: 'application/json'
-		})
+		serialiseEvent = createSimpleSerialiser(jsonifier)
 	}: Partial<PgmbWebhookConfig>
 ) {
 	// create URL, also helps validate
@@ -741,7 +745,11 @@ export function createWebhookHandler(
 		const { body, contentType } = serialiseEvent(ev)
 		const { status, body: res } = await fetch(url, {
 			method: 'POST',
-			headers: { 'Content-Type': contentType, ...headers },
+			headers: {
+				'content-type': contentType,
+				'x-idempotency-key': getIdempotencyKeyHeader(ev),
+				...headers
+			},
 			body,
 			redirect: 'manual',
 			signal: AbortSignal.timeout(timeoutMs)
@@ -758,4 +766,25 @@ export function createWebhookHandler(
 	}
 
 	return createRetryHandler(handler, retryOpts)
+}
+
+function getIdempotencyKeyHeader(ev: IReadEvent) {
+	const hasher = createHash('sha256')
+	for(const item of ev.items) {
+		hasher.update(item.id)
+	}
+
+	return hasher.digest('hex').slice(0, 16)
+}
+
+function createSimpleSerialiser(
+	jsonifier: JSONifier
+): ((ev: IReadEvent) => SerialisedEvent) {
+	return ev => ({
+		body: jsonifier.stringify({
+			items: ev.items
+				.map(({ id, payload, topic }) => ({ id, payload, topic	}))
+		}),
+		contentType: 'application/json'
+	})
 }

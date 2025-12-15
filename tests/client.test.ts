@@ -3,21 +3,40 @@ import { Chance } from 'chance'
 import type { ErrorEvent } from 'eventsource'
 import { EventSource } from 'eventsource'
 import { readFile } from 'fs/promises'
-import type { Server, ServerResponse } from 'node:http'
+import type { IncomingHttpHeaders, Server, ServerResponse } from 'node:http'
 import { createServer } from 'node:http'
-import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
+import {
+	after,
+	afterEach,
+	before,
+	beforeEach,
+	describe,
+	it,
+	mock,
+} from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
-import { createRetryHandler, createSSERequestHandler, Pgmb2Client } from '../src/client2/index.ts'
+import {
+	createRetryHandler,
+	createSSERequestHandler,
+	createWebhookHandler,
+	type IReadEvent,
+	Pgmb2Client,
+} from '../src/client2/index.ts'
 import type { IFindEventsResult } from '../src/queries.ts'
-import { pollForEvents, reenqueueEventsForSubscription, removeExpiredSubscriptions, writeEvents, writeScheduledEvents } from '../src/queries.ts'
+import {
+	pollForEvents,
+	reenqueueEventsForSubscription,
+	removeExpiredSubscriptions,
+	writeEvents,
+	writeScheduledEvents,
+} from '../src/queries.ts'
 
 const LOGGER = pino({ level: 'trace' })
 const CHANCE = new Chance()
 
 describe('PGMB Client Tests', () => {
-
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
 
 	let client: Pgmb2Client
@@ -44,7 +63,7 @@ describe('PGMB Client Tests', () => {
 			groupId,
 			sleepDurationMs: 250,
 			subscriptionMaintenanceMs: 1000,
-			maxActiveCheckpoints: 3
+			maxActiveCheckpoints: 3,
 		})
 		await client.init()
 	})
@@ -56,8 +75,8 @@ describe('PGMB Client Tests', () => {
 	it('should receive events on multiple subs', async() => {
 		// we'll create 3 subs, 2 identical, 1 different
 		// to check if de-duping works correctly on same conditions & params
-		const sub1 = await client.registerSubscription({ })
-		const sub2 = await client.registerSubscription({ })
+		const sub1 = await client.registerSubscription({})
+		const sub2 = await client.registerSubscription({})
 		const sub3 = await client.registerSubscription({ params: { a: 1 } })
 
 		// check de-duping happened correctly
@@ -91,8 +110,8 @@ describe('PGMB Client Tests', () => {
 		const sub3Recv = await sub3RecvTask
 
 		// other subs shouldve received both events
-		assert.equal(sub2Recv.flatMap(s => s.items).length, 2)
-		assert.equal(sub3Recv.flatMap(s => s.items).length, 2)
+		assert.equal(sub2Recv.flatMap((s) => s.items).length, 2)
+		assert.equal(sub3Recv.flatMap((s) => s.items).length, 2)
 
 		// check old events aren't replayed, on a new subscription
 		const sub4 = await client.registerSubscription({ params: { a: 4 } })
@@ -102,14 +121,18 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should remove expired subs', async() => {
-		const sub = await client.registerSubscription({ expiryInterval: '1 second' })
+		const sub = await client.registerSubscription({
+			expiryInterval: '1 second',
+		})
 		sub.return()
 
 		await setTimeout(1500)
 
-		const { rows: [{ count }] } = await pool.query<{ count: string }>(
+		const {
+			rows: [{ count }],
+		} = await pool.query<{ count: string }>(
 			'select count(*) as count from pgmb2.subscriptions where id = $1',
-			[sub.id]
+			[sub.id],
 		)
 		assert.equal(count, '0')
 	})
@@ -193,23 +216,27 @@ describe('PGMB Client Tests', () => {
 		await Promise.all([
 			Array.from({ length: 5 }).map(() => insertEvent(pool)),
 			pollForEvents.run(undefined, pool),
-			removeExpiredSubscriptions
-				.run({ groupId: client.groupId, activeIds: [] }, pool),
+			removeExpiredSubscriptions.run(
+				{ groupId: client.groupId, activeIds: [] },
+				pool,
+			),
 			await pool.query(
 				`select pgmb2.maintain_events_table(
 					current_ts := NOW()
 						+ pgmb2.get_config_value('partition_interval')::interval
-				);`
-			)
+				);`,
+			),
 		])
 
 		// check partitions exist
-		const { rows: [{ count, expected }] } = await pool.query<{ count: string, expected: number }>(
+		const {
+			rows: [{ count, expected }],
+		} = await pool.query<{ count: string, expected: number }>(
 			`SELECT
 				count(*) as count,
 				pgmb2.get_config_value('future_partitions_to_create')::int as expected
 			FROM pg_catalog.pg_inherits
-			WHERE inhparent = 'pgmb2.events'::regclass;`
+			WHERE inhparent = 'pgmb2.events'::regclass;`,
 		)
 		// we'd removed 1 old partition by executing maintainence w a future
 		// timestamp, which would've removed 1 old partition and created 1 new one
@@ -225,7 +252,7 @@ describe('PGMB Client Tests', () => {
 		const topic = 'scheduled-event'
 		const sub = await client.registerSubscription({
 			conditionsSql: "s.params @> jsonb_build_object('topic', e.topic)",
-			params: { topic: topic }
+			params: { topic: topic },
 		})
 
 		const [prow, frow] = await writeScheduledEvents.run(
@@ -233,9 +260,9 @@ describe('PGMB Client Tests', () => {
 				ts: [new Date(), new Date(Date.now() + DELAY_MS)],
 				topics: [topic, topic],
 				payloads: [{ a: 1 }, { a: 2 }],
-				metadatas: [{}, {}]
+				metadatas: [{}, {}],
 			},
-			pool
+			pool,
 		)
 
 		const nxt = await sub.next()
@@ -268,39 +295,42 @@ describe('PGMB Client Tests', () => {
 		})()
 
 		const eventsWritten: { payload: unknown }[] = []
-		const task = Promise.all(Array.from({ length: writerCount }).map(async() => {
-			const c = await pool.connect()
-			let state: 'in-tx' | 'out-tx' = 'out-tx'
-			for(let i = 0; i < eventsPerWriter; i++) {
-				if(state === 'out-tx' && Math.random() < 0.1) {
-					await c.query('BEGIN;')
-					state = 'in-tx'
+		const task = Promise.all(
+			Array.from({ length: writerCount }).map(async() => {
+				const c = await pool.connect()
+				let state: 'in-tx' | 'out-tx' = 'out-tx'
+				for(let i = 0; i < eventsPerWriter; i++) {
+					if(state === 'out-tx' && Math.random() < 0.1) {
+						await c.query('BEGIN;')
+						state = 'in-tx'
+					}
+
+					eventsWritten.push(await insertEvent(c))
+
+					if(state === 'in-tx' && Math.random() < 0.1) {
+						await c.query('COMMIT;')
+						state = 'out-tx'
+
+						await setTimeout(Math.floor(Math.random() * 30))
+					}
 				}
 
-				eventsWritten.push(await insertEvent(c))
-
-				if(state === 'in-tx' && Math.random() < 0.1) {
+				if(state === 'in-tx') {
 					await c.query('COMMIT;')
-					state = 'out-tx'
-
-					await setTimeout(Math.floor(Math.random() * 30))
 				}
-			}
 
-			if(state === 'in-tx') {
-				await c.query('COMMIT;')
-			}
-
-			c.release()
-		}))
+				c.release()
+			}),
+		)
 
 		await readPromise
 
 		// ensure all events got read
 		for(const ev of events) {
 			assert.ok(
-				eventsWritten
-					.some(e => JSON.stringify(e.payload) === JSON.stringify(ev.payload))
+				eventsWritten.some(
+					(e) => JSON.stringify(e.payload) === JSON.stringify(ev.payload),
+				),
 			)
 		}
 
@@ -322,7 +352,7 @@ describe('PGMB Client Tests', () => {
 		const SUB_TYPES = 4
 		const TOTAL_SUB_COUNT = SUB_PER_TYPE_COUNT * SUB_TYPES
 
-		for(let i = 0; i < SUB_TYPES;i++) {
+		for(let i = 0; i < SUB_TYPES; i++) {
 			const k = `key${i}`
 			await pool.query<{ id: string }>(
 				`insert into pgmb2.subscriptions (group_id, conditions_sql, params)
@@ -331,23 +361,25 @@ describe('PGMB Client Tests', () => {
 				returning id`,
 				[
 					Array.from({ length: SUB_PER_TYPE_COUNT }).map(() => groupId),
-					Array.from({ length: SUB_PER_TYPE_COUNT }).map(() => (
-						`s.params @> jsonb_build_object(\'${k}\', e.payload->>\'key\')`
-					)),
-					Array.from({ length: SUB_PER_TYPE_COUNT }).map((_, i) => ({ [k]: i.toString() }))
-				]
+					Array.from({ length: SUB_PER_TYPE_COUNT }).map(
+						() => `s.params @> jsonb_build_object(\'${k}\', e.payload->>\'key\')`,
+					),
+					Array.from({ length: SUB_PER_TYPE_COUNT }).map((_, i) => ({
+						[k]: i.toString(),
+					})),
+				],
 			)
 		}
 
 		await writeEvents.run(
 			{
-				topics: Array.from({ length: EVENT_COUNT })
-					.map(() => 'test-topic-1'),
-				payloads: Array.from({ length: EVENT_COUNT })
-					.map((_, i) => ({	key: (i % SUB_PER_TYPE_COUNT).toString() })),
-				metadatas: Array.from({ length: EVENT_COUNT }).map(() => ({}))
+				topics: Array.from({ length: EVENT_COUNT }).map(() => 'test-topic-1'),
+				payloads: Array.from({ length: EVENT_COUNT }).map((_, i) => ({
+					key: (i % SUB_PER_TYPE_COUNT).toString(),
+				})),
+				metadatas: Array.from({ length: EVENT_COUNT }).map(() => ({})),
 			},
-			pool
+			pool,
 		)
 
 		console.log('Inserted events and subs, starting poll...')
@@ -356,7 +388,9 @@ describe('PGMB Client Tests', () => {
 		const [{ count }] = await pollForEvents.run(undefined, pool)
 
 		const tt = Date.now() - now
-		console.log(`Processed ${count} events for ${TOTAL_SUB_COUNT} subs in ${tt}ms`)
+		console.log(
+			`Processed ${count} events for ${TOTAL_SUB_COUNT} subs in ${tt}ms`,
+		)
 
 		// ensure it took less than 1 second
 		assert(tt <= 1000, `Took too long: ${tt}ms`)
@@ -369,15 +403,19 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should update poll fn when conditions_sql uniquely changed', async() => {
-		const cond = 'e.topic = s.params->>\'topic\''
+		const cond = "e.topic = s.params->>'topic'"
 		const fnData0 = await getPollFnData()
-		await client
-			.registerSubscription({ conditionsSql: cond, params: { topic: 'test1' } })
+		await client.registerSubscription({
+			conditionsSql: cond,
+			params: { topic: 'test1' },
+		})
 		const fnData1 = await getPollFnData()
 		assert.notEqual(fnData0.prosrc, fnData1.prosrc)
 
-		const sub2 = await client
-			.registerSubscription({ conditionsSql: cond, params: { topic: 'test2' } })
+		const sub2 = await client.registerSubscription({
+			conditionsSql: cond,
+			params: { topic: 'test2' },
+		})
 		const fnData2 = await getPollFnData()
 		assert.deepEqual(fnData1.prosrc, fnData2.prosrc)
 		await sub2.return?.()
@@ -388,8 +426,10 @@ describe('PGMB Client Tests', () => {
 		assert.deepEqual(fnData2.prosrc, fnData3.prosrc)
 
 		async function getPollFnData() {
-			const { rows: [row] } = await pool.query(
-				'select * from pg_proc where proname = \'poll_for_events\''
+			const {
+				rows: [row],
+			} = await pool.query(
+				"select * from pg_proc where proname = 'poll_for_events'",
 			)
 			assert(row)
 			return row
@@ -398,21 +438,22 @@ describe('PGMB Client Tests', () => {
 
 	it('should concurrently update poll fn', async() => {
 		const conds = [
-			'e.topic = s.params->>\'topic\'',
+			"e.topic = s.params->>'topic'",
 			"e.payload->>'data' = s.params->>'data'",
-			"(e.payload->>'value')::int > (s.params->>'min_value')::int"
+			"(e.payload->>'value')::int > (s.params->>'min_value')::int",
 		]
 		await Promise.all([
 			client.readChanges(groupId),
-			...conds.map(cond => (
-				client.registerSubscription({ conditionsSql: cond })
-			))
+			...conds.map((cond) => client.registerSubscription({ conditionsSql: cond }),
+			),
 		])
 
 		await client.readChanges(groupId)
 
-		const { rows: [procRow] } = await pool.query<{ prosrc: string }>(
-			'select prosrc from pg_proc where proname = \'poll_for_events\''
+		const {
+			rows: [procRow],
+		} = await pool.query<{ prosrc: string }>(
+			"select prosrc from pg_proc where proname = 'poll_for_events'",
 		)
 		for(const cond of conds) {
 			assert.ok(procRow.prosrc.includes(cond))
@@ -420,15 +461,16 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should fail to create subscription with invalid conditions SQL', async() => {
-		await assert.rejects(
-			() => client.registerSubscription({ conditionsSql: 'INVALID SQL' })
+		await assert.rejects(() => client.registerSubscription({ conditionsSql: 'INVALID SQL' }),
 		)
 	})
 
 	it('should re-enqueue event for subscription', async() => {
 		const sub1 = await client.registerSubscription({ conditionsSql: 'TRUE' })
 		// control subscription
-		const sub2 = await client.registerSubscription({ conditionsSql: 'TRUE AND TRUE' })
+		const sub2 = await client.registerSubscription({
+			conditionsSql: 'TRUE AND TRUE',
+		})
 
 		await insertEvent(pool)
 
@@ -442,9 +484,9 @@ describe('PGMB Client Tests', () => {
 			{
 				eventIds: [value.items[0].id],
 				subscriptionId: reSubId,
-				offsetInterval: '1 second'
+				offsetInterval: '1 second',
 			},
-			pool
+			pool,
 		)
 
 		const e2 = await Promise.race([sub1.next(), sub2.next()])
@@ -454,39 +496,34 @@ describe('PGMB Client Tests', () => {
 		assert.ok(Date.now() - now >= 1000)
 
 		assert.equal(e2.value.items.length, 1)
-		assert.partialDeepStrictEqual(
-			e2.value.items,
-			[{ subscriptionIds: [sub1.id] }]
-		)
+		assert.partialDeepStrictEqual(e2.value.items, [
+			{ subscriptionIds: [sub1.id] },
+		])
 	})
 
 	it('should match subscriptions', async() => {
-		const noSub = await client.registerSubscription(
-			{ conditionsSql: "e.payload->>'non_exist' IS NOT NULL" }
-		)
+		const noSub = await client.registerSubscription({
+			conditionsSql: "e.payload->>'non_exist' IS NOT NULL",
+		})
 
 		const noSubItems = Array.fromAsync(noSub)
 
-		const sub1 = await client.registerSubscription(
-			{
-				conditionsSql: "e.payload->'data' > s.params->'min'",
-				params: { min: 0.5 }
-			}
-		)
-		const sub2 = await client.registerSubscription(
-			{
-				conditionsSql: "e.payload->'data' > s.params->'min'",
-				params: { min: 0 }
-			}
-		)
+		const sub1 = await client.registerSubscription({
+			conditionsSql: "e.payload->'data' > s.params->'min'",
+			params: { min: 0.5 },
+		})
+		const sub2 = await client.registerSubscription({
+			conditionsSql: "e.payload->'data' > s.params->'min'",
+			params: { min: 0 },
+		})
 
 		await writeEvents.run(
 			{
 				topics: ['test', 'test'],
 				payloads: [{ data: 0.7 }, { data: 0.3 }],
-				metadatas: [{}, {}]
+				metadatas: [{}, {}],
 			},
-			pool
+			pool,
 		)
 
 		// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
@@ -504,18 +541,17 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should create events from table mutations', async() => {
-		const sub = await client.registerSubscription(
-			{
-				params: {
-					topics: [
-						'public.test_table.insert',
-						'public.test_table.update',
-						'public.test_table.delete'
-					]
-				},
-				conditionsSql: 's.params @> (\'{"topics":["\' || e.topic || \'"]}\')::jsonb'
-			}
-		)
+		const sub = await client.registerSubscription({
+			params: {
+				topics: [
+					'public.test_table.insert',
+					'public.test_table.update',
+					'public.test_table.delete',
+				],
+			},
+			conditionsSql:
+				"s.params @> ('{\"topics\":[\"' || e.topic || '\"]}')::jsonb",
+		})
 		const events: unknown[] = []
 		const task = (async() => {
 			for await (const { items } of sub) {
@@ -536,30 +572,25 @@ describe('PGMB Client Tests', () => {
 			INSERT INTO public.test_table (data) VALUES ('hello'), ('world');
 		`)
 		await pool.query(
-			'UPDATE public.test_table SET data = \'hello!!!\' WHERE id = 1;'
+			"UPDATE public.test_table SET data = 'hello!!!' WHERE id = 1;",
 		)
-		await pool.query(
-			'DELETE FROM public.test_table WHERE id = 2;'
-		)
+		await pool.query('DELETE FROM public.test_table WHERE id = 2;')
 
 		while(!events.length) {
 			await setTimeout(50)
 		}
 
 		assert.equal(events.length, 4)
-		assert.partialDeepStrictEqual(
-			events,
-			[
-				{ topic: 'public.test_table.insert', payload: { id: 1, data: 'hello' } },
-				{ payload: { id: 2, data: 'world' } },
-				{
-					topic: 'public.test_table.update',
-					payload: { data: 'hello!!!' },
-					metadata: { old: { id: 1, data: 'hello' } }
-				},
-				{ topic: 'public.test_table.delete', payload: { id: 2 } }
-			]
-		)
+		assert.partialDeepStrictEqual(events, [
+			{ topic: 'public.test_table.insert', payload: { id: 1, data: 'hello' } },
+			{ payload: { id: 2, data: 'world' } },
+			{
+				topic: 'public.test_table.update',
+				payload: { data: 'hello!!!' },
+				metadata: { old: { id: 1, data: 'hello' } },
+			},
+			{ topic: 'public.test_table.delete', payload: { id: 2 } },
+		])
 
 		// check removing subscribable works
 		await pool.query(`
@@ -585,7 +616,7 @@ describe('PGMB Client Tests', () => {
 				return client.registerDurableSubscription(
 					{
 						params: { value: i },
-						conditionsSql: "e.payload->>'value' = s.params->>'value'"
+						conditionsSql: "e.payload->>'value' = s.params->>'value'",
 					},
 					async({ items }, { signal }) => {
 						assert(!active, 'Handler called concurrently!')
@@ -596,12 +627,17 @@ describe('PGMB Client Tests', () => {
 
 						active = true
 						const ms = Math.floor(Math.random() * 500) + 100
-						await setTimeout(ms, undefined, { signal })
-							.finally(() => (active = false, handled += items.length))
-					}
+						await setTimeout(ms, undefined, { signal }).finally(
+							() => ((active = false), (handled += items.length)),
+						)
+					},
 				)
-			})
+			}),
 		)
+
+		// check eph sub gets all events
+		const ephSub = await client.registerSubscription({})
+		const ephRecvTask = Array.fromAsync(ephSub)
 
 		await pushEvents(subs.length)
 
@@ -613,28 +649,36 @@ describe('PGMB Client Tests', () => {
 		await setTimeout(1_000)
 
 		// verify cursor correctly stored
-		const { rows: [{ cursor }] } = await pool.query<{ cursor: string }>(
+		const {
+			rows: [{ cursor }],
+		} = await pool.query<{ cursor: string }>(
 			`select last_read_event_id as cursor from
 			pgmb2.subscription_groups where id = $1`,
-			[client.groupId]
+			[client.groupId],
 		)
 
 		// max cursor
-		const { rows: [{ maxId }] } = await pool.query<{ maxId: string }>(
-			'select max(id) as "maxId" from pgmb2.subscription_events'
+		const {
+			rows: [{ maxId }],
+		} = await pool.query<{ maxId: string }>(
+			'select max(id) as "maxId" from pgmb2.subscription_events',
 		)
 
 		assert.equal(cursor, maxId)
 
+		ephSub.return?.()
+		const ephRecv = await ephRecvTask
+		assert(ephRecv.flatMap((e) => e.items).length >= EVENT_COUNT)
+
 		async function pushEvents(count: number) {
-			for(let i = 0; i < count;i++) {
+			for(let i = 0; i < count; i++) {
 				await writeEvents.run(
 					{
 						topics: ['test-topic'],
-						payloads: [{ value: (i % 3) }],
-						metadatas: [{}]
+						payloads: [{ value: i % 3 }],
+						metadatas: [{}],
 					},
-					pool
+					pool,
 				)
 			}
 		}
@@ -643,7 +687,7 @@ describe('PGMB Client Tests', () => {
 	it('should retry failed handlers', async() => {
 		let failedEvents: IFindEventsResult[] | undefined
 		let doneEvents: IFindEventsResult[] | undefined
-		await client.registerDurableSubscription(
+		const { subscriptionId } = await client.registerDurableSubscription(
 			{},
 			createRetryHandler(
 				async({ items }) => {
@@ -655,8 +699,8 @@ describe('PGMB Client Tests', () => {
 					await setTimeout(100)
 					doneEvents = items
 				},
-				{ retriesS: [1] }
-			)
+				{ retriesS: [1] },
+			),
 		)
 
 		await Promise.all([insertEvent(pool), insertEvent(pool)])
@@ -673,22 +717,60 @@ describe('PGMB Client Tests', () => {
 		}
 
 		assert.partialDeepStrictEqual(failedEvents, doneEvents)
+		// validate another event didn't get scheduled
+		const {
+			rows: [{ count }],
+		} = await pool.query<{ count: string }>(
+			`select count(*) as count from pgmb2.subscription_events
+			where subscription_id = $1`,
+			[subscriptionId],
+		)
+		// 2 events, 1 retry
+		assert.equal(count, '3')
+	})
+
+	it('should not reschedule after retries exhausted', async() => {
+		const handler = mock.fn<(arg: IReadEvent) => Promise<void>>(() => {
+			throw new Error('Always fails')
+		})
+		const { subscriptionId } = await client.registerDurableSubscription(
+			{},
+			createRetryHandler(handler, { retriesS: [1, 1] }),
+		)
+
+		await insertEvent(pool)
+
+		await setTimeout(3000)
+
+		assert.equal(handler.mock.callCount(), 3)
+
+		// check no more retries scheduled
+		const {
+			rows: [{ count }],
+		} = await pool.query<{ count: string }>(
+			`select count(*) as count from pgmb2.subscription_events
+			where subscription_id = $1`,
+			[subscriptionId],
+		)
+		// only original event + 2 retry
+		assert.equal(count, '3')
+
+		const evs = handler.mock.calls.map((c) => c.arguments[0])
+		assert.deepEqual(evs[0].items.map(i => i.id), evs[2].items.map(i => i.id))
 	})
 
 	describe('SSE', () => {
-
 		let srv: Server
 		let latestSrvRes: ServerResponse
 		const port: number = CHANCE.integer({ min: 10000, max: 65000 })
 
 		before(async() => {
 			srv = createServer()
-			await new Promise<void>(resolve => (
-				srv.listen(port, resolve)
-			))
+			await new Promise<void>((resolve) => srv.listen(port, resolve))
 
-			const handler = createSSERequestHandler
-				.call(client, { getSubscriptionOpts: () => ({}) })
+			const handler = createSSERequestHandler.call(client, {
+				getSubscriptionOpts: () => ({}),
+			})
 			srv.on('request', (req, res) => {
 				latestSrvRes = res
 				return handler(req, res)
@@ -746,13 +828,10 @@ describe('PGMB Client Tests', () => {
 			// removal error
 			await assert.rejects(waitForESOpen(es))
 			// reconnection error
-			await assert.rejects(
-				waitForESOpen(es),
-				(err: ErrorEvent | undefined) => {
-					assert.equal(err?.code, 204)
-					return true
-				}
-			)
+			await assert.rejects(waitForESOpen(es), (err: ErrorEvent | undefined) => {
+				assert.equal(err?.code, 204)
+				return true
+			})
 		})
 
 		async function openEs() {
@@ -762,6 +841,95 @@ describe('PGMB Client Tests', () => {
 			assert(latestSrvRes)
 			return { es, res: latestSrvRes }
 		}
+	})
+
+	describe('Webhooks', () => {
+
+		const port = CHANCE.integer({ min: 10000, max: 65000 })
+		const webhookUrl = `http://localhost:${port}/webhook`
+		const responses: {
+			body: string
+			headers: IncomingHttpHeaders
+		}[] = []
+		let srv: Server
+		let shouldFailNextWebhook = false
+
+		before(async() => {
+			srv = createServer(async(req, res) => {
+				if(req.method !== 'POST') {
+					return res.writeHead(405).end()
+				}
+
+				if(!req.url?.startsWith('/webhook')) {
+					return
+				}
+
+				const bodyChunks: Uint8Array[] = []
+				for await (const chunk of req) {
+					bodyChunks.push(chunk)
+				}
+
+				const body = Buffer.concat(bodyChunks).toString('utf-8')
+				responses.push({ body, headers: req.headers })
+				if(shouldFailNextWebhook) {
+					shouldFailNextWebhook = false
+					return res
+						.writeHead(500, { 'content-type': 'text/plain' })
+						.end('unhappy')
+				}
+
+				res
+					.writeHead(200, { 'content-type': 'text/plain' })
+					.end('happy')
+			})
+
+			srv.listen(port)
+		})
+
+		after(async() => {
+			srv.close()
+		})
+
+		it('should create webhook subscription', async() => {
+			const handler = createWebhookHandler(webhookUrl, {
+				retryOpts: { retriesS: [1, 2] },
+			})
+
+			await client
+				.registerDurableSubscription({ }, handler)
+			const ev = await insertEvent(pool)
+
+			while(!responses.length) {
+				await setTimeout(100)
+			}
+
+			const [{ headers, body }] = responses
+			assert.equal(headers['content-type'], 'application/json')
+			assert.ok(headers['x-idempotency-key'])
+
+			assert.ok(body.includes(ev.id))
+		})
+
+		it('should retry failed webhooks', async() => {
+			const handler = createWebhookHandler(webhookUrl, {
+				retryOpts: { retriesS: [1, 2] },
+			})
+			await client
+				.registerDurableSubscription({ }, handler)
+			await Promise.all([insertEvent(pool), insertEvent(pool)])
+
+			shouldFailNextWebhook = true
+			while(responses.length < 2) {
+				await setTimeout(100)
+			}
+
+			const [
+				{ headers: h1, body: b1 },
+				{ headers: h2, body: b2 }
+			] = responses
+			assert.equal(h1['x-idempotency-key'], h2['x-idempotency-key'])
+			assert.equal(b1, b2)
+		})
 	})
 })
 
@@ -796,9 +964,9 @@ async function insertEvent(client: Pool | PoolClient) {
 		{
 			topics: [topic],
 			payloads: [payload],
-			metadatas: [{}]
+			metadatas: [{}],
 		},
-		client
+		client,
 	)
 
 	return { id, topic, payload }
