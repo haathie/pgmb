@@ -1,5 +1,5 @@
-export * from './client/index.ts'
+export * from './client.ts'
 export type * from './types.ts'
-export * from './serialisers/index.ts'
 export * from './utils.ts'
-export * from './client2/index.ts'
+export * from './sse.ts'
+export * from './retry-handler.ts'

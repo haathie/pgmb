@@ -1,0 +1,76 @@
+import assert from 'node:assert'
+import { createHash } from 'node:crypto'
+import { createRetryHandler } from './retry-handler'
+import type { IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types'
+
+/**
+ * Create a handler that sends events to a webhook URL via HTTP POST.
+ * @param url Where to send the webhook requests
+ */
+export function createWebhookHandler(
+	{
+		timeoutMs = 5_000,
+		headers,
+		retryOpts = { retriesS: [1 * 60, 10 * 60] },
+		jsonifier = JSON,
+		serialiseEvent = createSimpleSerialiser(jsonifier)
+	}: Partial<PgmbWebhookOpts>
+) {
+	const handler: IEventHandler = async(ev, { extra }) => {
+		assert(
+			typeof extra === 'object'
+			&& extra !== null
+			&& 'url' in extra
+			&& (
+				typeof extra.url === 'string'
+				|| extra.url instanceof URL
+			),
+			'webhook handler requires extra.url parameter'
+		)
+		const { url } = extra
+		const { body, contentType } = serialiseEvent(ev)
+		const { status, body: res } = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'content-type': contentType,
+				'x-idempotency-key': getIdempotencyKeyHeader(ev),
+				...headers
+			},
+			body,
+			redirect: 'manual',
+			signal: AbortSignal.timeout(timeoutMs)
+		})
+		// don't care about response body
+		await res?.cancel().catch(() => { })
+		if(status < 200 || status >= 300) {
+			throw new Error(`Non-2xx response: ${status}`)
+		}
+	}
+
+	if(!retryOpts) {
+		return handler
+	}
+
+	return createRetryHandler(handler, retryOpts)
+}
+
+function getIdempotencyKeyHeader(ev: IReadEvent) {
+	const hasher = createHash('sha256')
+	for(const item of ev.items) {
+		hasher.update(item.id)
+	}
+
+	return hasher.digest('hex').slice(0, 16)
+}
+
+function createSimpleSerialiser(
+	jsonifier: JSONifier
+): ((ev: IReadEvent) => SerialisedEvent) {
+	return ev => ({
+		body: jsonifier.stringify({
+			items: ev.items
+				.map(({ id, payload, topic }) => ({ id, payload, topic	}))
+		}),
+		contentType: 'application/json'
+	})
+}

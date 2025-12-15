@@ -18,13 +18,13 @@ import { setTimeout } from 'node:timers/promises'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
 import type {
-	WebhookInfo } from '../src/client2/index.ts'
+	WebhookInfo } from '../src/index.ts'
 import {
 	createRetryHandler,
 	createSSERequestHandler,
 	type IReadEvent,
 	Pgmb2Client
-} from '../src/client2/index.ts'
+} from '../src/index.ts'
 import type { IFindEventsResult } from '../src/queries.ts'
 import {
 	pollForEvents,
