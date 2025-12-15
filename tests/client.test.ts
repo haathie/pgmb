@@ -9,8 +9,8 @@ import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
-import { Pgmb2Client } from '../src/client2/index.ts'
-import type { IReadNextEventsResult } from '../src/queries.ts'
+import { createRetryHandler, createSSERequestHandler, Pgmb2Client } from '../src/client2/index.ts'
+import type { IFindEventsResult } from '../src/queries.ts'
 import { pollForEvents, reenqueueEventsForSubscription, removeExpiredSubscriptions, writeEvents, writeScheduledEvents } from '../src/queries.ts'
 
 const LOGGER = pino({ level: 'trace' })
@@ -120,7 +120,7 @@ describe('PGMB Client Tests', () => {
 		const ins = await insertEvent(c1)
 
 		const sub = await client.registerSubscription({})
-		const received: IReadNextEventsResult[] = []
+		const received: IFindEventsResult[] = []
 		const readPromise = (async() => {
 			for await (const evs of sub) {
 				received.push(...evs.items)
@@ -437,7 +437,7 @@ describe('PGMB Client Tests', () => {
 		assert.equal(value.items.length, 1)
 
 		const now = Date.now()
-		const reSubId = value.items[0].subscriptionIds[0]
+		const reSubId = sub1.id
 		await reenqueueEventsForSubscription.run(
 			{
 				eventIds: [value.items[0].id],
@@ -454,7 +454,10 @@ describe('PGMB Client Tests', () => {
 		assert.ok(Date.now() - now >= 1000)
 
 		assert.equal(e2.value.items.length, 1)
-		assert.deepEqual(e2.value.items[0].subscriptionIds, [reSubId])
+		assert.partialDeepStrictEqual(
+			e2.value.items,
+			[{ subscriptionIds: [sub1.id] }]
+		)
 	})
 
 	it('should match subscriptions', async() => {
@@ -621,11 +624,7 @@ describe('PGMB Client Tests', () => {
 			'select max(id) as "maxId" from pgmb2.subscription_events'
 		)
 
-		console.log('got cursors', { cursor, maxId })
-
 		assert.equal(cursor, maxId)
-
-		console.log('All events handled, cursors verified.')
 
 		async function pushEvents(count: number) {
 			for(let i = 0; i < count;i++) {
@@ -641,7 +640,40 @@ describe('PGMB Client Tests', () => {
 		}
 	})
 
-	it.todo('should retry failed handlers')
+	it('should retry failed handlers', async() => {
+		let failedEvents: IFindEventsResult[] | undefined
+		let doneEvents: IFindEventsResult[] | undefined
+		await client.registerDurableSubscription(
+			{},
+			createRetryHandler(
+				async({ items }) => {
+					if(!failedEvents) {
+						failedEvents = items
+						throw new Error('Simulated failure')
+					}
+
+					await setTimeout(100)
+					doneEvents = items
+				},
+				{ retriesS: [1] }
+			)
+		)
+
+		await Promise.all([insertEvent(pool), insertEvent(pool)])
+
+		await setTimeout(750)
+
+		assert.ok(failedEvents)
+		// ensure we've not yet completed, retry didn't get scheduled
+		// too early
+		assert.deepEqual(doneEvents, undefined)
+
+		while(!doneEvents) {
+			await setTimeout(100)
+		}
+
+		assert.partialDeepStrictEqual(failedEvents, doneEvents)
+	})
 
 	describe('SSE', () => {
 
@@ -654,9 +686,12 @@ describe('PGMB Client Tests', () => {
 			await new Promise<void>(resolve => (
 				srv.listen(port, resolve)
 			))
-			srv.on('request', async(req, res) => {
+
+			const handler = createSSERequestHandler
+				.call(client, { getSubscriptionOpts: () => ({}) })
+			srv.on('request', (req, res) => {
 				latestSrvRes = res
-				await client.registerSseSubscription({}, req, res)
+				return handler(req, res)
 			})
 		})
 

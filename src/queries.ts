@@ -392,6 +392,86 @@ const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"pa
 export const writeScheduledEvents = new PreparedQuery<IWriteScheduledEventsParams,IWriteScheduledEventsResult>(writeScheduledEventsIR);
 
 
+/** 'ScheduleEventRetry' parameters type */
+export interface IScheduleEventRetryParams {
+  delayInterval: DateOrString;
+  ids: stringArray;
+  retryNumber: number;
+  subscriptionId: string;
+}
+
+/** 'ScheduleEventRetry' return type */
+export interface IScheduleEventRetryResult {
+  id: string;
+}
+
+/** 'ScheduleEventRetry' query type */
+export interface IScheduleEventRetryQuery {
+  params: IScheduleEventRetryParams;
+  result: IScheduleEventRetryResult;
+}
+
+const scheduleEventRetryIR: any = {"usedParamSet":{"delayInterval":true,"ids":true,"retryNumber":true,"subscriptionId":true},"params":[{"name":"delayInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":105,"b":119}]},{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":215,"b":219}]},{"name":"retryNumber","required":true,"transform":{"type":"scalar"},"locs":[{"a":259,"b":271}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":283,"b":298}]}],"statement":"INSERT INTO pgmb2.events (id, topic, payload, subscription_id)\nSELECT\n\tpgmb2.create_event_id(\n\t\tNOW() + (:delayInterval!::INTERVAL),\n\t\tpgmb2.create_random_bigint()\n\t),\n\t'pgmb-retry',\n\tjsonb_build_object(\n\t\t'ids',\n\t\t:ids!::pgmb2.event_id[],\n\t\t'retryNumber',\n\t\t:retryNumber!::int\n\t),\n\t:subscriptionId!::pgmb2.subscription_id\nRETURNING id AS \"id!\""};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * INSERT INTO pgmb2.events (id, topic, payload, subscription_id)
+ * SELECT
+ * 	pgmb2.create_event_id(
+ * 		NOW() + (:delayInterval!::INTERVAL),
+ * 		pgmb2.create_random_bigint()
+ * 	),
+ * 	'pgmb-retry',
+ * 	jsonb_build_object(
+ * 		'ids',
+ * 		:ids!::pgmb2.event_id[],
+ * 		'retryNumber',
+ * 		:retryNumber!::int
+ * 	),
+ * 	:subscriptionId!::pgmb2.subscription_id
+ * RETURNING id AS "id!"
+ * ```
+ */
+export const scheduleEventRetry = new PreparedQuery<IScheduleEventRetryParams,IScheduleEventRetryResult>(scheduleEventRetryIR);
+
+
+/** 'FindEvents' parameters type */
+export interface IFindEventsParams {
+  ids: stringArray;
+}
+
+/** 'FindEvents' return type */
+export interface IFindEventsResult {
+  id: string;
+  metadata: unknown;
+  payload: unknown;
+  topic: string;
+}
+
+/** 'FindEvents' query type */
+export interface IFindEventsQuery {
+  params: IFindEventsParams;
+  result: IFindEventsResult;
+}
+
+const findEventsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":123,"b":127}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb2.events\nWHERE id = ANY(:ids!::pgmb2.event_id[])"};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT
+ * 	id AS "id!",
+ * 	topic AS "topic!",
+ * 	payload AS "payload!",
+ * 	metadata AS "metadata!"
+ * FROM pgmb2.events
+ * WHERE id = ANY(:ids!::pgmb2.event_id[])
+ * ```
+ */
+export const findEvents = new PreparedQuery<IFindEventsParams,IFindEventsResult>(findEventsIR);
+
+
 /** 'RemoveExpiredSubscriptions' parameters type */
 export interface IRemoveExpiredSubscriptionsParams {
   activeIds: stringArray;

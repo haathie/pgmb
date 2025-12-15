@@ -5,32 +5,14 @@ import type { Logger } from 'pino'
 import { setTimeout } from 'timers/promises'
 import type { HeaderRecord } from 'undici-types/header.js'
 import { AbortableAsyncIterator } from '../abortable-async-iterator.ts'
-import type { IAssertSubscriptionParams, IReplayEventsResult } from '../queries.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor } from '../queries.ts'
+import type { IAssertSubscriptionParams, IFindEventsResult, IReplayEventsResult } from '../queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, findEvents, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, scheduleEventRetry, setGroupCursor } from '../queries.ts'
 import type { FnContext, JSONifier } from '../types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
 
 type SerialisedEvent = {
 	body: Buffer | string
 	contentType: string
-}
-
-// type WebhookMetadata = {
-// 	url: string
-// 	/** Specify what duration after which to retry failed events */
-// 	retriesS?: number[]
-// }
-
-type Pgmb2WebhookOpts = {
-	/**
-	 * Size of each chunk of events to send in a single webhook request
-	 * @default null // (all events in one request)
-	 */
-	chunkSize: number | null
-	/** Maximum time to wait for webhook request to complete */
-	timeoutMs: number
-	headers?: HeaderRecord
-	serialiseEvent(ev: IReadEvent): SerialisedEvent
 }
 
 export type Pgmb2ClientOpts = {
@@ -57,26 +39,10 @@ export type Pgmb2ClientOpts = {
 	 */
 	maxActiveCheckpoints?: number
 	poll?: boolean
-	/**
-	 * Maximum interval to replay events for an SSE subscription.
-	 * @default 5 minutes
-	 */
-	maxReplayIntervalMs?: number
-	/**
-	 * Specify a non-null object to automatically handle
-	 * webhook subscriptions. By default, webhooks are auto handled.
-	 * @default {}
-	 */
-	webhooks?: Partial<Pgmb2WebhookOpts> | null
-	/**
-	 * Custom JSONifier to use
-	 * @default JSON
-	 */
-	jsonifier?: JSONifier
 }
 
 type IReadEvent = {
-	items: IReadNextEventsResult[]
+	items: IFindEventsResult[]
 }
 
 type RegisterSubscriptionParams
@@ -109,7 +75,12 @@ type Checkpoint = {
 	nextCursor: string
 }
 
-// const RETRY_EVENT = 'pgmb2-retry'
+type RetryEventPayload = {
+	ids: string[]
+	retryNumber: number
+}
+
+const RETRY_EVENT = 'pgmb-retry'
 
 export class Pgmb2Client {
 
@@ -118,11 +89,7 @@ export class Pgmb2Client {
 	readonly groupId: string
 	readonly sleepDurationMs: number
 	readonly readChunkSize: number
-	readonly maxReplayIntervalMs: number
-	readonly maxReplayEvents: number = 1_000
 	readonly subscriptionMaintenanceMs: number
-	readonly webhooks: Pgmb2WebhookOpts | null
-	readonly jsonifier: JSONifier
 	readonly maxActiveCheckpoints: number
 
 	readonly listeners: { [subId: string]: IListenerStore } = {}
@@ -140,13 +107,10 @@ export class Pgmb2Client {
 
 	constructor({
 		client, logger, groupId,
-		webhooks = { },
 		sleepDurationMs = 500,
 		readChunkSize = 1000,
 		maxActiveCheckpoints = 100,
-		maxReplayIntervalMs = 5 * 60 * 1000,
 		poll,
-		jsonifier = JSON,
 		subscriptionMaintenanceMs = 60 * 1000
 	}: Pgmb2ClientOpts) {
 		this.client = client
@@ -155,14 +119,6 @@ export class Pgmb2Client {
 		this.sleepDurationMs = sleepDurationMs
 		this.readChunkSize = readChunkSize
 		this.#shouldPoll = !!poll
-		this.maxReplayIntervalMs = maxReplayIntervalMs
-		this.webhooks = {
-			chunkSize: null,
-			timeoutMs: 30_000,
-			serialiseEvent: this.#serialiseJsonEvent,
-			...webhooks
-		}
-		this.jsonifier = jsonifier
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 		this.maxActiveCheckpoints = maxActiveCheckpoints
 	}
@@ -215,134 +171,6 @@ export class Pgmb2Client {
 		this.#subMaintainTask = undefined
 		this.#activeCheckpoints = []
 		this.eventsPublished = 0
-	}
-
-	async registerSseSubscription(
-		opts: Omit<RegisterSubscriptionParams, 'type'>,
-		req: IncomingMessage,
-		res: ServerResponse
-	) {
-		let sub: IEphemeralListener | undefined
-		let eventsToReplay: IReplayEventsResult[] = []
-		if(typeof opts.expiryInterval === 'undefined') {
-			opts.expiryInterval = `${this.maxReplayIntervalMs * 2} milliseconds`
-		}
-
-		try {
-			assert(
-				req.method?.toLowerCase() === 'get',
-				'SSE only supports GET requests'
-			)
-			// validate last-event-id header
-			const fromEventId = req.headers['last-event-id']
-			if(fromEventId) {
-				assert(this.maxReplayEvents > 0, 'replay disabled on server')
-				assert(typeof fromEventId === 'string', 'invalid last-event-id header')
-				const fromDt = getDateFromMessageId(fromEventId)
-				assert(fromDt, 'invalid last-event-id header value')
-				assert(
-					fromDt.getTime() >= (Date.now() - this.maxReplayIntervalMs),
-					'last-event-id is too old to replay'
-				)
-			}
-
-			sub = await this.registerSubscription(opts)
-			if(fromEventId) {
-				const fromDt = getDateFromMessageId(fromEventId)!
-				const subDt = getCreateDateFromSubscriptionId(sub.id)
-				assert(subDt, 'internal: invalid subscription id format')
-				assert(
-					fromDt >= subDt,
-					'last-event-id is before subscription creation, cannot replay'
-				)
-
-				eventsToReplay = await replayEvents.run(
-					{
-						groupId: this.groupId,
-						subscriptionId: sub.id,
-						fromEventId: fromEventId,
-						maxEvents: this.maxReplayEvents
-					},
-					this.client
-				)
-
-				this.logger.trace(
-					{ subId: sub.id, count: eventsToReplay.length },
-					'got events to replay'
-				)
-			}
-
-			if(res.writableEnded) {
-				throw new Error('response already ended')
-			}
-		} catch(err) {
-			this.logger.error({ err }, 'error in sse subscription setup')
-
-			await sub?.throw(err).catch(() => { })
-
-			if(res.writableEnded) {
-				return
-			}
-
-			const message = err instanceof Error ? err.message : String(err)
-			// if an assertion failed, we cannot connect with these parameters
-			// so use 204 No Content
-			const code = err instanceof AssertionError ? 204 : 500
-			res
-				.writeHead(code, message)
-				.end()
-			return
-		}
-
-		res.once('close', () => {
-			sub?.return()
-		})
-		res.once('error', err => {
-			sub?.throw(err).catch(() => {})
-		})
-
-		res.writeHead(200, {
-			'content-type': 'text/event-stream',
-			'cache-control': 'no-cache',
-			'connection': 'keep-alive',
-			'transfer-encoding': 'chunked',
-		})
-		res.flushHeaders()
-
-		try {
-			// send replayed events first
-			this.#writeSseEvents(res, eventsToReplay)
-
-			for await (const { items } of sub) {
-				this.#writeSseEvents(res, items)
-			}
-		} catch(err) {
-			this.logger.error({ err }, 'error in sse subscription')
-			if(res.writableEnded) {
-				return
-			}
-
-			// send error event
-			const message = err instanceof Error ? err.message : String(err)
-			const errData	= this.jsonifier.stringify({ message })
-			res.write(`event: error\ndata: ${errData}\nretry: 250\n\n`)
-			res.end()
-		}
-	}
-
-	#writeSseEvents(
-		res: ServerResponse,
-		items: IReadNextEventsResult[] | IReplayEventsResult[]
-	) {
-		for(const { id, payload, topic } of items) {
-			const data = this.jsonifier.stringify(payload)
-			if(this.maxReplayEvents) {
-				res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
-			} else {
-				// if replay is disabled, do not send an id field
-				res.write(`event: ${topic}\ndata: ${data}\n\n`)
-			}
-		}
 	}
 
 	async registerSubscription(opts: RegisterSubscriptionParams) {
@@ -532,7 +360,15 @@ export class Pgmb2Client {
 			)
 
 			try {
-				await handler(item, { signal: this.#endAc.signal, logger })
+				await handler(
+					item,
+					{
+						signal: this.#endAc.signal,
+						client: this.client,
+						logger,
+						subscriptionId: subId
+					}
+				)
 			} catch(err) {
 				logger.error({ err }, 'error in durable event handler')
 			} finally {
@@ -591,116 +427,6 @@ export class Pgmb2Client {
 		}
 	}
 
-	// async #sendWebhook(subId: string, event: IReadEvent) {
-	// 	const { metadata } = event
-	// 	if(!isWebhookMetadata(metadata)) {
-	// 		return
-	// 	}
-
-	// 	const { chunkSize, timeoutMs, serialiseEvent, headers } = this.webhooks!
-	// 	const requests: {
-	// 		items: IReadNextEventsResult[]
-	// 		serialised: SerialisedEvent
-	// 		retryNumber?: number
-	// 	}[] = []
-
-	// 	// find previous failed events to retry
-	// 	const items = [...event.items]
-	// 	for(let i = 0; i < items.length;) {
-	// 		const { id, topic, metadata, payload } = items[i]
-	// 		if(topic !== WEBHOOK_RETRY_EVENT) {
-	// 			i++
-	// 			continue
-	// 		}
-
-	// 		const { items: failedItems } = payload as { items: IReadNextEventsResult[] }
-	// 		if(!Array.isArray(failedItems) || !failedItems.length) {
-	// 			this.logger.warn({ subId, id }, 'invalid webhook retry event payload')
-	// 			i++
-	// 			continue
-	// 		}
-
-	// 		requests.push({
-	// 			items: failedItems,
-	// 			serialised: serialiseEvent({ metadata, items: failedItems }),
-	// 			retryNumber: typeof metadata === 'object' && metadata !== null
-	// 				&& 'retryNumber' in metadata
-	// 				&& typeof metadata.retryNumber === 'number'
-	// 				? metadata.retryNumber
-	// 				: undefined
-	// 		})
-
-	// 		items.splice(i, 1)
-	// 	}
-
-	// 	if(chunkSize) {
-	// 		for(let i = 0; i < items.length; i += chunkSize) {
-	// 			const slice = items.slice(i, i + chunkSize)
-	// 			requests.push({
-	// 				items: slice,
-	// 				serialised: serialiseEvent({ metadata, items: slice })
-	// 			})
-	// 		}
-	// 	} else {
-	// 		requests.push({ items, serialised: serialiseEvent(event) })
-	// 	}
-
-	// 	const { url, retriesS = [] } = metadata
-	// 	const retryRequests: {
-	// 		payload: { items: IReadNextEventsResult[] }
-	// 		metadata: { retryNumber: number }
-	// 	}[] = []
-	// 	for(const {
-	// 		items, serialised: { body, contentType }, retryNumber = 0
-	// 	} of requests) {
-	// 		const ids = items.map(i => i.id)
-	// 		try {
-	// 			const { status, body: res } = await fetch(url, {
-	// 				method: 'POST',
-	// 				headers: { 'Content-Type': contentType, ...headers },
-	// 				body,
-	// 				redirect: 'manual',
-	// 				signal: AbortSignal.timeout(timeoutMs)
-	// 			})
-	// 			// don't care about response body
-	// 			await res?.cancel().catch(() => { })
-	// 			if(status < 200 || status >= 300) {
-	// 				throw new Error(`Non-2xx response: ${status}`)
-	// 			}
-
-	// 			this.logger.info({ subId, url, status, ids },	'sent webhook request')
-	// 		} catch(err) {
-	// 			const nextRetry = retriesS[retryNumber]
-	// 			this.logger
-	// 				.error({ subId, url, err, ids, nextRetry }, 'error in webhook request')
-	// 			if(typeof nextRetry !== 'number') {
-	// 				continue
-	// 			}
-
-	// 			retryRequests
-	// 				.push({ payload: { items }, metadata: { retryNumber: retryNumber + 1 } })
-	// 		}
-	// 	}
-
-	// 	if(retryRequests.length) {
-	// 		await writeEvents.run(
-	// 			{
-	// 				payloads: retryRequests.map(r => r.payload),
-	// 				metadatas: retryRequests.map(r => r.metadata),
-	// 				topics: Array(retryRequests.length).fill(WEBHOOK_RETRY_EVENT)
-	// 			},
-	// 			this.client
-	// 		)
-	// 	}
-	// }
-
-	#serialiseJsonEvent = (ev: IReadEvent): SerialisedEvent => {
-		return {
-			body: this.jsonifier.stringify(ev),
-			contentType: 'application/json'
-		}
-	}
-
 	async #startLoop(fn: Function, sleepDurationMs: number) {
 		const signal = this.#endAc.signal
 		while(!signal.aborted) {
@@ -718,18 +444,318 @@ export class Pgmb2Client {
 	}
 }
 
-// function isWebhookMetadata(metadata: unknown): metadata is WebhookMetadata {
-// 	if(typeof metadata !== 'object' || metadata === null) {
-// 		return false
-// 	}
+type SSESubscriptionOpts
+	= Pick<RegisterSubscriptionParams, 'conditionsSql' | 'params'>
 
-// 	if(!('url' in metadata) || typeof metadata['url'] !== 'string') {
-// 		return false
-// 	}
+type SSERequestHandlerOpts = {
+	getSubscriptionOpts(req: IncomingMessage):
+		Promise<SSESubscriptionOpts> | SSESubscriptionOpts
+	/**
+	 * Maximum interval to replay events for an SSE subscription.
+	 * @default 5 minutes
+	 */
+	maxReplayIntervalMs?: number
+	/**
+	 * Max number of events to replay for an SSE subscription.
+	 */
+	maxReplayEvents?: number
 
-// 	if(('retriesS' in metadata) && !Array.isArray(metadata['retriesS'])) {
-// 		return false
-// 	}
+	jsonifier?: JSONifier
+}
 
-// 	return true
-// }
+export function createSSERequestHandler(
+	this: Pgmb2Client,
+	{
+		getSubscriptionOpts,
+		maxReplayEvents = 1000,
+		maxReplayIntervalMs = 5 * 60 * 1000,
+		jsonifier = JSON
+	}: SSERequestHandlerOpts,
+) {
+	return async(req: IncomingMessage, res: ServerResponse) => {
+		let sub: IEphemeralListener | undefined
+		let eventsToReplay: IReplayEventsResult[] = []
+
+		try {
+			assert(
+				req.method?.toLowerCase() === 'get',
+				'SSE only supports GET requests'
+			)
+			// validate last-event-id header
+			const fromEventId = req.headers['last-event-id']
+			if(fromEventId) {
+				assert(maxReplayEvents > 0, 'replay disabled on server')
+				assert(typeof fromEventId === 'string', 'invalid last-event-id header')
+				const fromDt = getDateFromMessageId(fromEventId)
+				assert(fromDt, 'invalid last-event-id header value')
+				assert(
+					fromDt.getTime() >= (Date.now() - maxReplayIntervalMs),
+					'last-event-id is too old to replay'
+				)
+			}
+
+			sub = await this.registerSubscription({
+				...await getSubscriptionOpts(req),
+				expiryInterval: `${maxReplayIntervalMs * 2} milliseconds`
+			})
+			if(fromEventId) {
+				const fromDt = getDateFromMessageId(fromEventId)!
+				const subDt = getCreateDateFromSubscriptionId(sub.id)
+				assert(subDt, 'internal: invalid subscription id format')
+				assert(
+					fromDt >= subDt,
+					'last-event-id is before subscription creation, cannot replay'
+				)
+
+				eventsToReplay = await replayEvents.run(
+					{
+						groupId: this.groupId,
+						subscriptionId: sub.id,
+						fromEventId: fromEventId,
+						maxEvents: maxReplayEvents
+					},
+					this.client
+				)
+
+				this.logger.trace(
+					{ subId: sub.id, count: eventsToReplay.length },
+					'got events to replay'
+				)
+			}
+
+			if(res.writableEnded) {
+				throw new Error('response already ended')
+			}
+		} catch(err) {
+			this.logger
+				.error({ subId: sub?.id, err }, 'error in sse subscription setup')
+
+			await sub?.throw(err).catch(() => { })
+
+			if(res.writableEnded) {
+				return
+			}
+
+			const message = err instanceof Error ? err.message : String(err)
+			// if an assertion failed, we cannot connect with these parameters
+			// so use 204 No Content
+			const code = err instanceof AssertionError ? 204 : 500
+			res
+				.writeHead(code, message)
+				.end()
+			return
+		}
+
+		res.once('close', () => {
+			sub?.return()
+		})
+		res.once('error', err => {
+			sub?.throw(err).catch(() => {})
+		})
+
+		res.writeHead(200, {
+			'content-type': 'text/event-stream',
+			'cache-control': 'no-cache',
+			'connection': 'keep-alive',
+			'transfer-encoding': 'chunked',
+		})
+		res.flushHeaders()
+
+		try {
+			// send replayed events first
+			writeSseEvents(res, eventsToReplay)
+
+			for await (const { items } of sub) {
+				writeSseEvents(res, items)
+			}
+		} catch(err) {
+			this.logger.error({ err }, 'error in sse subscription')
+			if(res.writableEnded) {
+				return
+			}
+
+			// send error event
+			const message = err instanceof Error ? err.message : String(err)
+			const errData	= jsonifier.stringify({ message })
+			res.write(`event: error\ndata: ${errData}\nretry: 250\n\n`)
+			res.end()
+		}
+	}
+
+	function writeSseEvents(
+		res: ServerResponse,
+		items: IFindEventsResult[] | IReplayEventsResult[]
+	) {
+		for(const { id, payload, topic } of items) {
+			const data = jsonifier.stringify(payload)
+			if(!maxReplayEvents) {
+				// if replay is disabled, do not send an id field
+				res.write(`event: ${topic}\ndata: ${data}\n\n`)
+				continue
+			}
+
+			res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
+		}
+	}
+}
+
+type IMaybeRetryEvent = {
+	items: IFindEventsResult[]
+	retryPayload?: RetryEventPayload
+}
+
+type IRetryHandlerOpts = {
+	retriesS: number[]
+}
+
+export function createRetryHandler(
+	handler: IEventHandler, { retriesS }: IRetryHandlerOpts
+): IEventHandler {
+	assert(retriesS.length, 'Please provide at least one retry interval')
+	return async(ev: IReadEvent, ctx: FnContext) => {
+		const { client, subscriptionId } = ctx
+		const evs: IMaybeRetryEvent[] = []
+		const idsToLoad: string[] = []
+
+		const items = [...ev.items]
+
+		for(let i = 0; i < items.length;) {
+			const { topic, payload: _p } = items[i]
+			if(topic !== RETRY_EVENT) {
+				i++
+				continue
+			}
+
+			const retryPayload = _p as RetryEventPayload
+			if(retryPayload.ids?.length) {
+				evs.push({ items: [], retryPayload })
+				idsToLoad.push(...retryPayload.ids)
+			}
+
+			items.splice(i, 1)
+		}
+
+		if(items.length) {
+			evs.push({ items })
+		}
+
+		if(idsToLoad) {
+			const fetchedEvents = await findEvents.run({ ids: idsToLoad }, client)
+			const fetchedEventMap = fetchedEvents.reduce(
+				(map, ev) => {
+					map[ev.id] = ev
+					return map
+				},
+				{} as { [id: string]: IFindEventsResult }
+			)
+
+			ctx.logger.debug(
+				{
+					idsToLoad: idsToLoad.length,
+					fetchedCount: fetchedEvents.length
+				},
+				'loaded events for retry'
+			)
+
+			// populate the events
+			for(const { items, retryPayload } of evs) {
+				if(!retryPayload) {
+					continue
+				}
+
+				for(const id of retryPayload.ids) {
+					const ev = fetchedEventMap[id]
+					if(!ev) {
+						ctx.logger.warn({ id }, 'event to retry not found')
+						continue
+					}
+
+					items.push(ev)
+				}
+			}
+		}
+
+		for(const ev of evs) {
+			const logger = ctx.logger.child({
+				retryNumber: ev.retryPayload?.retryNumber,
+				ids: ev.items.map(i => i.id)
+			})
+
+			try {
+				await handler(ev,	{ ...ctx, logger })
+			} catch(err) {
+				const retryNumber = (ev.retryPayload?.retryNumber ?? 0)
+				const nextRetryGapS = retriesS[retryNumber]
+				logger.error({ err, nextRetryGapS }, 'error in event handler')
+
+				if(!nextRetryGapS) {
+					return
+				}
+
+				await scheduleEventRetry.run(
+					{
+						subscriptionId,
+						ids: ev.items.map(i => i.id),
+						retryNumber: retryNumber + 1,
+						delayInterval: `${nextRetryGapS} seconds`
+					},
+					client
+				)
+			}
+		}
+	}
+}
+
+type PgmbWebhookConfig = {
+	/**
+	 * Maximum time to wait for webhook request to complete
+	 * @default 5 seconds
+	 */
+	timeoutMs?: number
+	headers?: HeaderRecord
+	/**
+	 * Configure retry intervals in seconds for failed webhook requests.
+	 * If null, a failed handler will fail the event processor. Use carefully.
+	 */
+	retryOpts?: IRetryHandlerOpts | null
+	jsonifier?: JSONifier
+	serialiseEvent?(ev: IReadEvent): SerialisedEvent
+}
+
+export function createWebhookHandler(
+	url: string | URL,
+	{
+		timeoutMs = 5_000,
+		headers,
+		retryOpts = { retriesS: [1 * 60, 10 * 60] },
+		jsonifier = JSON,
+		serialiseEvent = ev => ({
+			body: jsonifier.stringify(ev),
+			contentType: 'application/json'
+		})
+	}: Partial<PgmbWebhookConfig>
+) {
+	// create URL, also helps validate
+	url = new URL(url)
+	const handler: IEventHandler = async ev => {
+		const { body, contentType } = serialiseEvent(ev)
+		const { status, body: res } = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': contentType, ...headers },
+			body,
+			redirect: 'manual',
+			signal: AbortSignal.timeout(timeoutMs)
+		})
+		// don't care about response body
+		await res?.cancel().catch(() => { })
+		if(status < 200 || status >= 300) {
+			throw new Error(`Non-2xx response: ${status}`)
+		}
+	}
+
+	if(!retryOpts) {
+		return handler
+	}
+
+	return createRetryHandler(handler, retryOpts)
+}

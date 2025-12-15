@@ -1,3 +1,4 @@
+import type { IDatabaseConnection } from '@pgtyped/runtime'
 import type { Pool, PoolConfig } from 'pg'
 import type { Logger } from 'pino'
 
@@ -239,4 +240,16 @@ export type Serialiser = {
 	contentType: string | undefined
 	encode: (msg: unknown) => Uint8Array<ArrayBufferLike> | string
 	decode: (msg: Uint8Array) => unknown
+}
+
+export interface JSONifier {
+	stringify(data: unknown): string
+	parse(data: string): unknown
+}
+
+export type FnContext = {
+	logger: Logger
+	client: IDatabaseConnection
+	subscriptionId: string
+	signal?: AbortSignal
 }

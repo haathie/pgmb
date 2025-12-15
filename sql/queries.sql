@@ -104,6 +104,32 @@ FROM unnest(
 ) AS t(ts, topic, payload, metadata)
 RETURNING id AS "id!";
 
+/* @name scheduleEventRetry */
+INSERT INTO pgmb2.events (id, topic, payload, subscription_id)
+SELECT
+	pgmb2.create_event_id(
+		NOW() + (:delayInterval!::INTERVAL),
+		pgmb2.create_random_bigint()
+	),
+	'pgmb-retry',
+	jsonb_build_object(
+		'ids',
+		:ids!::pgmb2.event_id[],
+		'retryNumber',
+		:retryNumber!::int
+	),
+	:subscriptionId!::pgmb2.subscription_id
+RETURNING id AS "id!";
+
+/* @name findEvents */
+SELECT
+	id AS "id!",
+	topic AS "topic!",
+	payload AS "payload!",
+	metadata AS "metadata!"
+FROM pgmb2.events
+WHERE id = ANY(:ids!::pgmb2.event_id[]);
+
 /* @name removeExpiredSubscriptions */
 WITH deleted AS (
 	DELETE FROM pgmb2.subscriptions
