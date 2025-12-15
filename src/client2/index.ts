@@ -7,7 +7,7 @@ import type { HeaderRecord } from 'undici-types/header.js'
 import { AbortableAsyncIterator } from '../abortable-async-iterator.ts'
 import type { IAssertSubscriptionParams, IReplayEventsResult } from '../queries.ts'
 import { assertGroup, assertSubscription, deleteSubscriptions, type IReadNextEventsResult, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, setGroupCursor } from '../queries.ts'
-import type { JSONifier } from '../types.ts'
+import type { FnContext, JSONifier } from '../types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
 
 type SerialisedEvent = {
@@ -48,10 +48,14 @@ export type Pgmb2ClientOpts = {
 
 	readChunkSize?: number
 	/**
-	 * How many durable handlers to run in parallel
-	 * @default 100
+	 * As we process in batches, a single handler taking time to finish
+	 * can lead to buildup of unprocessed checkpoints. To avoid this,
+	 * we keep moving forward while handlers run in the background, but
+	 * to avoid an unbounded number of items being backlogged, we limit
+	 * how much further we can go ahead from the earliest uncompleted checkpoint.
+	 * @default 10
 	 */
-	maxEnqueuedTasks?: number
+	maxActiveCheckpoints?: number
 	poll?: boolean
 	/**
 	 * Maximum interval to replay events for an SSE subscription.
@@ -82,7 +86,7 @@ export type IEphemeralListener = AbortableAsyncIterator<IReadEvent> & {
 	id: string
 }
 
-type IEventHandler = (item: IReadEvent, signal?: AbortSignal) => Promise<void>
+type IEventHandler = (item: IReadEvent, ctx: FnContext) => Promise<void>
 
 type IListener = {
 	type: 'ephemeral'
@@ -90,7 +94,10 @@ type IListener = {
 } | {
 	type: 'durable'
 	handler: IEventHandler
-	queue: IReadEvent[]
+	queue: {
+		item: IReadEvent
+		checkpoint: Checkpoint
+	}[]
 }
 
 type IListenerStore = {
@@ -116,13 +123,12 @@ export class Pgmb2Client {
 	readonly subscriptionMaintenanceMs: number
 	readonly webhooks: Pgmb2WebhookOpts | null
 	readonly jsonifier: JSONifier
-	readonly maxEnqueuedTasks: number
+	readonly maxActiveCheckpoints: number
 
 	readonly listeners: { [subId: string]: IListenerStore } = {}
 
 	#endAc = new AbortController()
-	#eventsPublished = 0
-	activeTasks = 0
+	eventsPublished = 0
 
 	readonly #shouldPoll: boolean
 	#readTask?: Promise<void>
@@ -137,7 +143,7 @@ export class Pgmb2Client {
 		webhooks = { },
 		sleepDurationMs = 500,
 		readChunkSize = 1000,
-		maxEnqueuedTasks = 100,
+		maxActiveCheckpoints = 100,
 		maxReplayIntervalMs = 5 * 60 * 1000,
 		poll,
 		jsonifier = JSON,
@@ -158,7 +164,7 @@ export class Pgmb2Client {
 		}
 		this.jsonifier = jsonifier
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
-		this.maxEnqueuedTasks = maxEnqueuedTasks
+		this.maxActiveCheckpoints = maxActiveCheckpoints
 	}
 
 	async init() {
@@ -207,8 +213,8 @@ export class Pgmb2Client {
 		this.#readTask = undefined
 		this.#pollTask = undefined
 		this.#subMaintainTask = undefined
-		this.activeTasks = 0
 		this.#activeCheckpoints = []
+		this.eventsPublished = 0
 	}
 
 	async registerSseSubscription(
@@ -382,10 +388,10 @@ export class Pgmb2Client {
 	}
 
 	#listenForEvents(subId: string): IEphemeralListener {
-		let listener: IListener
+		let listener: IListener | undefined = undefined
 		const iterator = new AbortableAsyncIterator<IReadEvent>(
 			this.#endAc.signal,
-			() => this.#removeListener(subId, listener)
+			() => this.#removeListener(subId, listener!)
 		)
 
 		const stream = iterator as unknown as IEphemeralListener
@@ -417,18 +423,18 @@ export class Pgmb2Client {
 		const activeIds = Object.keys(this.listeners)
 		await markSubscriptionsActive.run({ ids: activeIds }, this.client)
 
-		this.logger.debug(
+		this.logger.trace(
 			{ activeSubscriptions: activeIds.length },
 			'marked subscriptions as active'
 		)
 
 		const [{ deleted }] = await removeExpiredSubscriptions
 			.run({ groupId: this.groupId, activeIds }, this.client)
-		this.logger.debug({ deleted }, 'removed expired subscriptions')
+		this.logger.trace({ deleted }, 'removed expired subscriptions')
 	}
 
 	async readChanges(groupId: string, client: IDatabaseConnection = this.client) {
-		if(this.activeTasks >= this.maxEnqueuedTasks) {
+		if(this.#activeCheckpoints.length >= this.maxActiveCheckpoints) {
 			return 0
 		}
 
@@ -441,6 +447,9 @@ export class Pgmb2Client {
 			},
 			client
 		)
+		if(!rows.length) {
+			return 0
+		}
 
 		const subToEventMap:
 			{ [subscriptionId: string]: IReadEvent } = {}
@@ -448,15 +457,14 @@ export class Pgmb2Client {
 			for(const subId of row.subscriptionIds) {
 				subToEventMap[subId] ||= { items: [] }
 				subToEventMap[subId].items.push(row)
-				this.#eventsPublished ++
 			}
+
+			this.eventsPublished ++
 		}
 
 		const subs = Object.entries(subToEventMap)
-		const checkpoint: Checkpoint = {
-			activeTasks: this.activeTasks,
-			nextCursor: rows.at(0)?.nextCursor || ''
-		}
+		const checkpoint: Checkpoint
+			= { activeTasks: 0, nextCursor: rows[0].nextCursor }
 		for(const [subId, result] of subs) {
 			const listenerStore = this.listeners[subId]
 			if(!listenerStore?.values?.length) {
@@ -469,65 +477,91 @@ export class Pgmb2Client {
 					continue
 				}
 
-				this.#enqueueEventForDurableListener(result, item, checkpoint)
+				item.queue.push({ item: result, checkpoint })
+				checkpoint.activeTasks ++
+				if(item.queue.length > 1) {
+					continue
+				}
+
+				this.#runDurableListener(subId, item)
 			}
 		}
 
-		if(rows.length) {
-			this.logger.debug(
-				{
-					rowsRead: rows.length,
-					subscriptions: subs.length,
-					durationMs: Date.now() - now,
-					totalEventsPublished: this.#eventsPublished,
-					checkpoint,
-					activeDurableHandlers: this.activeTasks
-				},
-				'read rows'
-			)
-		}
+		this.#activeCheckpoints.push(checkpoint)
+		this.#inMemoryCursor = checkpoint.nextCursor
 
-		if(checkpoint.nextCursor) {
-			this.#activeCheckpoints.push(checkpoint)
+		this.logger.debug(
+			{
+				rowsRead: rows.length,
+				subscriptions: subs.length,
+				durationMs: Date.now() - now,
+				totalEventsPublished: this.eventsPublished,
+				checkpoint,
+				activeCheckpoints: this.#activeCheckpoints.length
+			},
+			'read rows'
+		)
+
+		if(!checkpoint.activeTasks) {
 			await this.#updateCursorFromCompletedCheckpoints()
-
-			this.#inMemoryCursor = checkpoint.nextCursor
 		}
 
 		return rows.length
 	}
 
-	async #enqueueEventForDurableListener(
-		item: IReadEvent,
-		listener: IListener,
-		checkpoint: Checkpoint
-	) {
+	/**
+	 * Runs the durable listener's handler for each item in its queue,
+	 * one after the other, till the queue is empty or the client has ended.
+	 * Any errors are logged, swallowed, and processing continues.
+	 */
+	async #runDurableListener(subId: string, listener: IListener) {
 		assert(listener.type === 'durable', 'invalid listener type')
 
 		const { handler, queue } = listener
-		queue.push(item)
-		this.activeTasks ++
-		checkpoint.activeTasks ++
-		if(queue.length > 1) {
-			return
-		}
-
 		while(!this.#endAc.signal.aborted && queue.length) {
-			try {
-				await handler(queue.shift()!, this.#endAc.signal)
-			} catch(err) {
-				this.logger.error({ err }, 'error in durable event handler')
-			} finally {
-				this.activeTasks --
-				checkpoint.activeTasks --
-			}
+			const { item, checkpoint } = queue[0]
+			const logger = this.logger
+				.child({ subId, items: item.items.map(i => i.id) })
 
-			if(checkpoint.activeTasks === 0) {
-				await this.#updateCursorFromCompletedCheckpoints()
+			logger.trace(
+				{
+					cpActiveTasks: checkpoint.activeTasks,
+					queue: queue.length,
+				},
+				'processing durable event handler queue'
+			)
+
+			try {
+				await handler(item, { signal: this.#endAc.signal, logger })
+			} catch(err) {
+				logger.error({ err }, 'error in durable event handler')
+			} finally {
+				checkpoint.activeTasks --
+
+				if(!checkpoint.activeTasks) {
+					await this.#updateCursorFromCompletedCheckpoints()
+				}
+
+				queue.shift()
+				logger.trace(
+					{
+						cpActiveTasks: checkpoint.activeTasks,
+						queue: queue.length,
+					},
+					'completed durable event handler task'
+				)
+
+				assert(checkpoint.activeTasks >= 0, 'internal: checkpoint.activeTasks < 0')
 			}
 		}
 	}
 
+	/**
+	 * Goes through all checkpoints, and sets the group cursor to the latest
+	 * completed checkpoint. If a checkpoint has active tasks, stops there.
+	 * This ensures that we don't accidentally move the cursor forward while
+	 * there are still pending tasks for earlier checkpoints.
+	 */
 	async #updateCursorFromCompletedCheckpoints() {
 		let latestMaxCursor: string | undefined
 		while(this.#activeCheckpoints.length) {
@@ -544,12 +578,17 @@ export class Pgmb2Client {
 			return
 		}
 
-		await setGroupCursor.run(
-			{ groupId: this.groupId, cursor: latestMaxCursor },
-			this.client
-		)
+		try {
+			await setGroupCursor.run(
+				{ groupId: this.groupId, cursor: latestMaxCursor },
+				this.client
+			)
 
-		this.logger.debug({ cursor: latestMaxCursor }, 'set cursor')
+			this.logger.debug({ cursor: latestMaxCursor }, 'set cursor')
+		} catch(err) {
+			this.logger
+				.error({ err, cursor: latestMaxCursor }, 'error setting cursor')
+		}
 	}
 
 	// async #sendWebhook(subId: string, event: IReadEvent) {

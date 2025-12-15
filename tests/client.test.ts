@@ -43,7 +43,8 @@ describe('PGMB Client Tests', () => {
 			poll: true,
 			groupId,
 			sleepDurationMs: 250,
-			subscriptionMaintenanceMs: 1000
+			subscriptionMaintenanceMs: 1000,
+			maxActiveCheckpoints: 3
 		})
 		await client.init()
 	})
@@ -570,6 +571,77 @@ describe('PGMB Client Tests', () => {
 		await task
 		assert.equal(events.length, 4)
 	})
+
+	it('should only update cursor after durable handlers are done', async() => {
+		const EVENT_COUNT = 150
+		let handled = 0
+
+		const subs = await Promise.all(
+			Array.from({ length: 3 }).map((_, i) => {
+				let active = false
+				return client.registerDurableSubscription(
+					{
+						params: { value: i },
+						conditionsSql: "e.payload->>'value' = s.params->>'value'"
+					},
+					async({ items }, { signal }) => {
+						assert(!active, 'Handler called concurrently!')
+						if(handled < EVENT_COUNT) {
+							// add more events
+							pushEvents(Math.floor(Math.random() * 20) + 1)
+						}
+
+						active = true
+						const ms = Math.floor(Math.random() * 500) + 100
+						await setTimeout(ms, undefined, { signal })
+							.finally(() => (active = false, handled += items.length))
+					}
+				)
+			})
+		)
+
+		await pushEvents(subs.length)
+
+		while(handled < EVENT_COUNT) {
+			console.log(`Handled ${handled}/${EVENT_COUNT} events...`)
+			await setTimeout(100)
+		}
+
+		await setTimeout(1_000)
+
+		// verify cursor correctly stored
+		const { rows: [{ cursor }] } = await pool.query<{ cursor: string }>(
+			`select last_read_event_id as cursor from
+			pgmb2.subscription_groups where id = $1`,
+			[client.groupId]
+		)
+
+		// max cursor
+		const { rows: [{ maxId }] } = await pool.query<{ maxId: string }>(
+			'select max(id) as "maxId" from pgmb2.subscription_events'
+		)
+
+		console.log('got cursors', { cursor, maxId })
+
+		assert.equal(cursor, maxId)
+
+		console.log('All events handled, cursors verified.')
+
+		async function pushEvents(count: number) {
+			for(let i = 0; i < count;i++) {
+				await writeEvents.run(
+					{
+						topics: ['test-topic'],
+						payloads: [{ value: (i % 3) }],
+						metadatas: [{}]
+					},
+					pool
+				)
+			}
+		}
+	})
+
+	it.todo('should retry failed handlers')
 
 	describe('SSE', () => {
 
