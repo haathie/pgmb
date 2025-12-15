@@ -1,4 +1,3 @@
-import type { IDatabaseConnection } from '@pgtyped/runtime'
 import type { Pool, PoolConfig } from 'pg'
 import type { Logger } from 'pino'
 
@@ -245,11 +244,4 @@ export type Serialiser = {
 export interface JSONifier {
 	stringify(data: unknown): string
 	parse(data: string): unknown
-}
-
-export type FnContext = {
-	logger: Logger
-	client: IDatabaseConnection
-	subscriptionId: string
-	signal?: AbortSignal
 }

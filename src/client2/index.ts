@@ -1,5 +1,6 @@
 import type { IDatabaseConnection } from '@pgtyped/runtime'
 import assert, { AssertionError } from 'assert'
+import { createHash } from 'crypto'
 import type { IncomingMessage, ServerResponse } from 'http'
 import type { Logger } from 'pino'
 import { setTimeout } from 'timers/promises'
@@ -7,13 +8,37 @@ import type { HeaderRecord } from 'undici-types/header.js'
 import { AbortableAsyncIterator } from '../abortable-async-iterator.ts'
 import type { IAssertSubscriptionParams, IFindEventsResult, IReplayEventsResult } from '../queries.ts'
 import { assertGroup, assertSubscription, deleteSubscriptions, findEvents, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, replayEvents, scheduleEventRetry, setGroupCursor } from '../queries.ts'
-import type { FnContext, JSONifier } from '../types.ts'
+import type { JSONifier } from '../types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from '../utils.ts'
-import { createHash } from 'crypto'
 
 type SerialisedEvent = {
 	body: Buffer | string
 	contentType: string
+}
+
+export type WebhookInfo = {
+	id: string
+	url: string | URL
+}
+
+type GetWebhookInfo = (
+	subscriptionIds: string[]
+) => Promise<{ [id: string]: WebhookInfo[] }> | { [id: string]: WebhookInfo[] }
+
+type PgmbWebhookOpts = {
+	/**
+	 * Maximum time to wait for webhook request to complete
+	 * @default 5 seconds
+	 */
+	timeoutMs?: number
+	headers?: HeaderRecord
+	/**
+	 * Configure retry intervals in seconds for failed webhook requests.
+	 * If null, a failed handler will fail the event processor. Use carefully.
+	 */
+	retryOpts?: IRetryHandlerOpts | null
+	jsonifier?: JSONifier
+	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
 
 export type Pgmb2ClientOpts = {
@@ -40,6 +65,17 @@ export type Pgmb2ClientOpts = {
 	 */
 	maxActiveCheckpoints?: number
 	poll?: boolean
+
+	webhookHandlerOpts?: Partial<PgmbWebhookOpts>
+	getWebhookInfo?: GetWebhookInfo
+}
+
+type FnContext = {
+	logger: Logger
+	client: IDatabaseConnection
+	subscriptionId: string
+	extra?: unknown
+	signal?: AbortSignal
 }
 
 export type IReadEvent = {
@@ -55,20 +91,24 @@ export type IEphemeralListener = AbortableAsyncIterator<IReadEvent> & {
 
 type IEventHandler = (item: IReadEvent, ctx: FnContext) => Promise<void>
 
-type IListener = {
-	type: 'ephemeral'
-	stream: IEphemeralListener
-} | {
+type IDurableListener = {
 	type: 'durable'
 	handler: IEventHandler
+	removeOnEmpty?: boolean
+	extra?: unknown
 	queue: {
 		item: IReadEvent
 		checkpoint: Checkpoint
 	}[]
 }
 
+type IListener = {
+	type: 'ephemeral'
+	stream: IEphemeralListener
+} | IDurableListener
+
 type IListenerStore = {
-	values: IListener[]
+	values: { [id: string]: IListener }
 }
 
 type Checkpoint = {
@@ -93,6 +133,9 @@ export class Pgmb2Client {
 	readonly subscriptionMaintenanceMs: number
 	readonly maxActiveCheckpoints: number
 
+	readonly getWebhookInfo: GetWebhookInfo
+	readonly webhookHandler: IEventHandler
+
 	readonly listeners: { [subId: string]: IListenerStore } = {}
 
 	#endAc = new AbortController()
@@ -112,7 +155,9 @@ export class Pgmb2Client {
 		readChunkSize = 1000,
 		maxActiveCheckpoints = 100,
 		poll,
-		subscriptionMaintenanceMs = 60 * 1000
+		subscriptionMaintenanceMs = 60 * 1000,
+		webhookHandlerOpts = {},
+		getWebhookInfo = () => ({})
 	}: Pgmb2ClientOpts) {
 		this.client = client
 		this.logger = logger
@@ -122,6 +167,8 @@ export class Pgmb2Client {
 		this.#shouldPoll = !!poll
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 		this.maxActiveCheckpoints = maxActiveCheckpoints
+		this.webhookHandler = createWebhookHandler(webhookHandlerOpts)
+		this.getWebhookInfo = getWebhookInfo
 	}
 
 	async init() {
@@ -194,12 +241,13 @@ export class Pgmb2Client {
 
 		this.logger
 			.debug({ subId, ...opts }, 'asserted subscription')
-		this.listeners[subId] ||= { values: [] }
-		this.listeners[subId].values.push(listener)
+		this.listeners[subId] ||= { values: {} }
+		const lid = createListenerId()
+		this.listeners[subId].values[lid] = listener
 
 		return {
 			subscriptionId: subId,
-			cancel: () => this.#removeListener(subId, listener)
+			cancel: () => this.#removeListener(subId, lid)
 		}
 	}
 
@@ -209,46 +257,43 @@ export class Pgmb2Client {
 
 		const existingSubs = this.listeners[subId]?.values
 		delete this.listeners[subId]
-		if(!existingSubs?.length) {
+		if(!existingSubs) {
 			return
 		}
 
-		await Promise.allSettled(existingSubs.map(e => (
-			e.type === 'ephemeral'
-			&& e.stream.throw(new Error('subscription removed'))
-		)))
+		await Promise.allSettled(
+			Object.values(existingSubs).map(e => (
+				e.type === 'ephemeral'
+				&& e.stream.throw(new Error('subscription removed'))
+			))
+		)
 	}
 
 	#listenForEvents(subId: string): IEphemeralListener {
-		let listener: IListener | undefined = undefined
+		const lid = createListenerId()
 		const iterator = new AbortableAsyncIterator<IReadEvent>(
 			this.#endAc.signal,
-			() => this.#removeListener(subId, listener!)
+			() => this.#removeListener(subId, lid)
 		)
 
 		const stream = iterator as unknown as IEphemeralListener
 		stream.id = subId
 
-		listener = { type: 'ephemeral', stream }
-
-		this.listeners[subId] ||= { values: [] }
-		this.listeners[subId].values.push(listener)
+		this.listeners[subId] ||= { values: {} }
+		this.listeners[subId].values[lid] = { type: 'ephemeral', stream }
 
 		return stream
 	}
 
-	#removeListener(subId: string, listener: IListener) {
+	#removeListener(subId: string, lid: string) {
 		const existingSubs = this.listeners[subId]?.values
-		if(!existingSubs?.length) {
+		delete existingSubs?.[lid]
+		if(existingSubs && Object.keys(existingSubs).length) {
 			return
 		}
 
-		this.listeners[subId].values = existingSubs
-			.filter(s => s !== listener)
-		if(!this.listeners[subId]?.values.length) {
-			delete this.listeners[subId]
-			this.logger.debug({ subId }, 'removed last subscriber for subscription')
-		}
+		delete this.listeners[subId]
+		this.logger.debug({ subId }, 'removed last subscriber for sub')
 	}
 
 	async #maintainSubscriptions() {
@@ -283,6 +328,30 @@ export class Pgmb2Client {
 			return 0
 		}
 
+		const uqSubIds = Array.from(
+			new Set(rows.flatMap(r => r.subscriptionIds))
+		)
+		const webhookSubs = await this.getWebhookInfo(uqSubIds)
+		let webhookCount = 0
+
+		for(const sid in webhookSubs) {
+			const webhooks = webhookSubs[sid]
+			const lts = (this.listeners[sid] ||= { values: {} })
+			for(const wh of webhooks) {
+				// add durable listener for each webhook
+				lts.values[wh.id] ||= {
+					type: 'durable',
+					queue: [],
+					extra: wh,
+					removeOnEmpty: true,
+					handler: this.webhookHandler
+				}
+
+				webhookCount++
+			}
+		}
+
+		// reverse the map, do subscriptionId -> events
 		const subToEventMap:
 			{ [subscriptionId: string]: IReadEvent } = {}
 		for(const row of rows) {
@@ -297,25 +366,20 @@ export class Pgmb2Client {
 		const subs = Object.entries(subToEventMap)
 		const checkpoint: Checkpoint
 			= { activeTasks: 0, nextCursor: rows[0].nextCursor }
-		for(const [subId, result] of subs) {
-			const listenerStore = this.listeners[subId]
-			if(!listenerStore?.values?.length) {
+		for(const [subId, ev] of subs) {
+			const listeners = this.listeners[subId]?.values
+			if(!listeners) {
 				continue
 			}
 
-			for(const item of listenerStore.values) {
-				if(item.type === 'ephemeral') {
-					item.stream.enqueue(result)
+			for(const lid in listeners) {
+				const lt = listeners[lid]
+				if(lt.type === 'ephemeral') {
+					lt.stream.enqueue(ev)
 					continue
 				}
 
-				item.queue.push({ item: result, checkpoint })
-				checkpoint.activeTasks ++
-				if(item.queue.length > 1) {
-					continue
-				}
-
-				this.#runDurableListener(subId, item)
+				this.#enqueueEventInDurableListener(subId, lid, ev, checkpoint)
 			}
 		}
 
@@ -329,7 +393,8 @@ export class Pgmb2Client {
 				durationMs: Date.now() - now,
 				totalEventsPublished: this.eventsPublished,
 				checkpoint,
-				activeCheckpoints: this.#activeCheckpoints.length
+				activeCheckpoints: this.#activeCheckpoints.length,
+				webhookCount
 			},
 			'read rows'
 		)
@@ -346,10 +411,23 @@ export class Pgmb2Client {
 	 * one after the other, till the queue is empty or the client has ended.
 	 * Any errors are logged, swallowed, and processing continues.
 	 */
-	async #runDurableListener(subId: string, listener: IListener) {
-		assert(listener.type === 'durable', 'invalid listener type')
+	async #enqueueEventInDurableListener(
+		subId: string,
+		lid: string,
+		item: IReadEvent,
+		checkpoint: Checkpoint
+	) {
+		const lt = this.listeners[subId]?.values?.[lid]
+		assert(lt?.type === 'durable', 'invalid listener type: ' + lt.type)
 
-		const { handler, queue } = listener
+		const { handler, queue, removeOnEmpty, extra } = lt
+
+		queue.push({ item, checkpoint })
+		checkpoint.activeTasks ++
+		if(queue.length > 1) {
+			return
+		}
+
 		while(!this.#endAc.signal.aborted && queue.length) {
 			const { item, checkpoint } = queue[0]
 			const logger = this.logger
@@ -370,14 +448,14 @@ export class Pgmb2Client {
 						signal: this.#endAc.signal,
 						client: this.client,
 						logger,
-						subscriptionId: subId
+						subscriptionId: subId,
+						extra,
 					}
 				)
 			} catch(err) {
 				logger.error({ err }, 'error in durable event handler')
 			} finally {
 				checkpoint.activeTasks --
-
 				if(!checkpoint.activeTasks) {
 					await this.#updateCursorFromCompletedCheckpoints()
 				}
@@ -393,6 +471,10 @@ export class Pgmb2Client {
 
 				assert(checkpoint.activeTasks >= 0, 'internal: checkpoint.activeTasks < 0')
 			}
+		}
+
+		if(removeOnEmpty) {
+			return this.#removeListener(subId, lid)
 		}
 	}
 
@@ -476,7 +558,14 @@ export function createSSERequestHandler(
 		jsonifier = JSON
 	}: SSERequestHandlerOpts,
 ) {
-	return async(req: IncomingMessage, res: ServerResponse) => {
+
+	return handleSSERequest.bind(this)
+
+	async function handleSSERequest(
+		this: Pgmb2Client,
+		req: IncomingMessage,
+		res: ServerResponse
+	) {
 		let sub: IEphemeralListener | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
 
@@ -502,6 +591,7 @@ export function createSSERequestHandler(
 				...await getSubscriptionOpts(req),
 				expiryInterval: `${maxReplayIntervalMs * 2} milliseconds`
 			})
+
 			if(fromEventId) {
 				const fromDt = getDateFromMessageId(fromEventId)!
 				const subDt = getCreateDateFromSubscriptionId(sub.id)
@@ -709,39 +799,31 @@ export function createRetryHandler(
 	}
 }
 
-type PgmbWebhookConfig = {
-	/**
-	 * Maximum time to wait for webhook request to complete
-	 * @default 5 seconds
-	 */
-	timeoutMs?: number
-	headers?: HeaderRecord
-	/**
-	 * Configure retry intervals in seconds for failed webhook requests.
-	 * If null, a failed handler will fail the event processor. Use carefully.
-	 */
-	retryOpts?: IRetryHandlerOpts | null
-	jsonifier?: JSONifier
-	serialiseEvent?(ev: IReadEvent): SerialisedEvent
-}
-
 /**
  * Create a handler that sends events to a webhook URL via HTTP POST.
  * @param url Where to send the webhook requests
  */
-export function createWebhookHandler(
-	url: string | URL,
+function createWebhookHandler(
 	{
 		timeoutMs = 5_000,
 		headers,
 		retryOpts = { retriesS: [1 * 60, 10 * 60] },
 		jsonifier = JSON,
 		serialiseEvent = createSimpleSerialiser(jsonifier)
-	}: Partial<PgmbWebhookConfig>
+	}: Partial<PgmbWebhookOpts>
 ) {
-	// create URL, also helps validate
-	url = new URL(url)
-	const handler: IEventHandler = async ev => {
+	const handler: IEventHandler = async(ev, { extra }) => {
+		assert(
+			typeof extra === 'object'
+			&& extra !== null
+			&& 'url' in extra
+			&& (
+				typeof extra.url === 'string'
+				|| extra.url instanceof URL
+			),
+			'webhook handler requires extra.url parameter'
+		)
+		const { url } = extra
 		const { body, contentType } = serialiseEvent(ev)
 		const { status, body: res } = await fetch(url, {
 			method: 'POST',
@@ -787,4 +869,8 @@ function createSimpleSerialiser(
 		}),
 		contentType: 'application/json'
 	})
+}
+
+function createListenerId() {
+	return Math.random().toString(16).slice(2, 10)
 }

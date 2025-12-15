@@ -17,12 +17,13 @@ import {
 import { setTimeout } from 'node:timers/promises'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
+import type {
+	WebhookInfo } from '../src/client2/index.ts'
 import {
 	createRetryHandler,
 	createSSERequestHandler,
-	createWebhookHandler,
 	type IReadEvent,
-	Pgmb2Client,
+	Pgmb2Client
 } from '../src/client2/index.ts'
 import type { IFindEventsResult } from '../src/queries.ts'
 import {
@@ -38,6 +39,7 @@ const CHANCE = new Chance()
 
 describe('PGMB Client Tests', () => {
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
+	const webhookInfos: { [subId: string]: WebhookInfo[] } = {}
 
 	let client: Pgmb2Client
 	let groupId: string
@@ -64,6 +66,11 @@ describe('PGMB Client Tests', () => {
 			sleepDurationMs: 250,
 			subscriptionMaintenanceMs: 1000,
 			maxActiveCheckpoints: 3,
+			getWebhookInfo: () => webhookInfos,
+			webhookHandlerOpts: {
+				retryOpts: { retriesS: [1, 2] },
+				timeoutMs: 1_000
+			}
 		})
 		await client.init()
 	})
@@ -593,10 +600,10 @@ describe('PGMB Client Tests', () => {
 		])
 
 		// check removing subscribable works
-		await pool.query(`
-			SELECT pgmb2.stop_table_mutations_push('public.test_table'::regclass);
-			INSERT INTO public.test_table (data) VALUES ('new data');
-		`)
+		await pool.query(
+			`SELECT pgmb2.stop_table_mutations_push('public.test_table'::regclass);
+			INSERT INTO public.test_table (data) VALUES ('new data');`
+		)
 
 		// ensure no new events come in
 		await setTimeout(500)
@@ -646,7 +653,7 @@ describe('PGMB Client Tests', () => {
 			await setTimeout(100)
 		}
 
-		await setTimeout(1_000)
+		await setTimeout(1_500)
 
 		// verify cursor correctly stored
 		const {
@@ -740,7 +747,9 @@ describe('PGMB Client Tests', () => {
 
 		await insertEvent(pool)
 
-		await setTimeout(3000)
+		while(handler.mock.callCount() < 3) {
+			await setTimeout(100)
+		}
 
 		assert.equal(handler.mock.callCount(), 3)
 
@@ -763,22 +772,30 @@ describe('PGMB Client Tests', () => {
 		let srv: Server
 		let latestSrvRes: ServerResponse
 		const port: number = CHANCE.integer({ min: 10000, max: 65000 })
+		const sseUrl = `http://localhost:${port}/sse`
 
 		before(async() => {
 			srv = createServer()
 			await new Promise<void>((resolve) => srv.listen(port, resolve))
+		})
 
-			const handler = createSSERequestHandler.call(client, {
-				getSubscriptionOpts: () => ({}),
-			})
+		after(async() => {
+			srv.close()
+		})
+
+		beforeEach(async() => {
+			const handler = createSSERequestHandler.call(
+				client,
+				{ getSubscriptionOpts: () => ({})	}
+			)
 			srv.on('request', (req, res) => {
 				latestSrvRes = res
 				return handler(req, res)
 			})
 		})
 
-		after(async() => {
-			srv.close()
+		afterEach(() => {
+			srv.removeAllListeners('request')
 		})
 
 		it('should receive events over SSE', async() => {
@@ -835,7 +852,7 @@ describe('PGMB Client Tests', () => {
 		})
 
 		async function openEs() {
-			const es = new EventSource(`http://localhost:${port}/sse`)
+			const es = new EventSource(sseUrl)
 			await waitForESOpen(es)
 
 			assert(latestSrvRes)
@@ -847,7 +864,7 @@ describe('PGMB Client Tests', () => {
 
 		const port = CHANCE.integer({ min: 10000, max: 65000 })
 		const webhookUrl = `http://localhost:${port}/webhook`
-		const responses: {
+		let responses: {
 			body: string
 			headers: IncomingHttpHeaders
 		}[] = []
@@ -890,13 +907,14 @@ describe('PGMB Client Tests', () => {
 			srv.close()
 		})
 
-		it('should create webhook subscription', async() => {
-			const handler = createWebhookHandler(webhookUrl, {
-				retryOpts: { retriesS: [1, 2] },
-			})
+		beforeEach(() => {
+			responses = []
+		})
 
-			await client
-				.registerDurableSubscription({ }, handler)
+		it('should create webhook subscription', async() => {
+			const { id: subId } = await client
+				.registerSubscription({ })
+			webhookInfos[subId] = [{ id: '1', url: webhookUrl }]
 			const ev = await insertEvent(pool)
 
 			while(!responses.length) {
@@ -911,11 +929,9 @@ describe('PGMB Client Tests', () => {
 		})
 
 		it('should retry failed webhooks', async() => {
-			const handler = createWebhookHandler(webhookUrl, {
-				retryOpts: { retriesS: [1, 2] },
-			})
-			await client
-				.registerDurableSubscription({ }, handler)
+			const { id: subId } = await client
+				.registerSubscription({ })
+			webhookInfos[subId] = [{ id: '1', url: webhookUrl }]
 			await Promise.all([insertEvent(pool), insertEvent(pool)])
 
 			shouldFailNextWebhook = true
@@ -927,8 +943,8 @@ describe('PGMB Client Tests', () => {
 				{ headers: h1, body: b1 },
 				{ headers: h2, body: b2 }
 			] = responses
-			assert.equal(h1['x-idempotency-key'], h2['x-idempotency-key'])
 			assert.equal(b1, b2)
+			assert.equal(h1['x-idempotency-key'], h2['x-idempotency-key'])
 		})
 	})
 })
