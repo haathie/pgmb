@@ -23,7 +23,7 @@ import {
 	createRetryHandler,
 	createSSERequestHandler,
 	type IReadEvent,
-	Pgmb2Client
+	PgmbClient
 } from '../src/index.ts'
 import type { IFindEventsResult } from '../src/queries.ts'
 import {
@@ -41,13 +41,13 @@ describe('PGMB Client Tests', () => {
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
 	const webhookInfos: { [subId: string]: WebhookInfo[] } = {}
 
-	let client: Pgmb2Client
+	let client: PgmbClient
 	let groupId: string
 
 	before(async() => {
-		await pool.query('DROP SCHEMA IF EXISTS pgmb2 CASCADE;')
+		await pool.query('DROP SCHEMA IF EXISTS pgmb CASCADE;')
 
-		const sql = await readFile('./sql/pgmb2.sql', 'utf-8')
+		const sql = await readFile('./sql/pgmb.sql', 'utf-8')
 		await pool.query(sql)
 	})
 
@@ -58,7 +58,7 @@ describe('PGMB Client Tests', () => {
 	beforeEach(async() => {
 		groupId = `grp${Math.random().toString(36).substring(2, 15)}`
 
-		client = new Pgmb2Client({
+		client = new PgmbClient({
 			client: pool,
 			logger: LOGGER,
 			poll: true,
@@ -138,7 +138,7 @@ describe('PGMB Client Tests', () => {
 		const {
 			rows: [{ count }],
 		} = await pool.query<{ count: string }>(
-			'select count(*) as count from pgmb2.subscriptions where id = $1',
+			'select count(*) as count from pgmb.subscriptions where id = $1',
 			[sub.id],
 		)
 		assert.equal(count, '0')
@@ -228,9 +228,9 @@ describe('PGMB Client Tests', () => {
 				pool,
 			),
 			await pool.query(
-				`select pgmb2.maintain_events_table(
+				`select pgmb.maintain_events_table(
 					current_ts := NOW()
-						+ pgmb2.get_config_value('partition_interval')::interval
+						+ pgmb.get_config_value('partition_interval')::interval
 				);`,
 			),
 		])
@@ -241,9 +241,9 @@ describe('PGMB Client Tests', () => {
 		} = await pool.query<{ count: string, expected: number }>(
 			`SELECT
 				count(*) as count,
-				pgmb2.get_config_value('future_partitions_to_create')::int as expected
+				pgmb.get_config_value('future_partitions_to_create')::int as expected
 			FROM pg_catalog.pg_inherits
-			WHERE inhparent = 'pgmb2.events'::regclass;`,
+			WHERE inhparent = 'pgmb.events'::regclass;`,
 		)
 		// we'd removed 1 old partition by executing maintainence w a future
 		// timestamp, which would've removed 1 old partition and created 1 new one
@@ -352,7 +352,7 @@ describe('PGMB Client Tests', () => {
 		await client.end()
 
 		// remove existing subs
-		await pool.query('truncate pgmb2.subscriptions;')
+		await pool.query('truncate pgmb.subscriptions;')
 
 		const EVENT_COUNT = 10_000
 		const SUB_PER_TYPE_COUNT = 1_000
@@ -362,7 +362,7 @@ describe('PGMB Client Tests', () => {
 		for(let i = 0; i < SUB_TYPES; i++) {
 			const k = `key${i}`
 			await pool.query<{ id: string }>(
-				`insert into pgmb2.subscriptions (group_id, conditions_sql, params)
+				`insert into pgmb.subscriptions (group_id, conditions_sql, params)
 				select * from unnest($1::text[], $2::text[], $3::jsonb[])
 				 as t(group_id, conditions_sql, params)
 				returning id`,
@@ -404,7 +404,7 @@ describe('PGMB Client Tests', () => {
 
 		assert.equal(count, SUB_TYPES * EVENT_COUNT)
 
-		await pool.query('truncate pgmb2.subscription_events;')
+		await pool.query('truncate pgmb.subscription_events;')
 
 		await client.init()
 	})
@@ -572,7 +572,7 @@ describe('PGMB Client Tests', () => {
 				id SERIAL PRIMARY KEY,
 				data TEXT NOT NULL
 			);
-			SELECT pgmb2.push_table_mutations('public.test_table'::regclass);
+			SELECT pgmb.push_table_mutations('public.test_table'::regclass);
 		`)
 
 		await pool.query(`
@@ -601,7 +601,7 @@ describe('PGMB Client Tests', () => {
 
 		// check removing subscribable works
 		await pool.query(
-			`SELECT pgmb2.stop_table_mutations_push('public.test_table'::regclass);
+			`SELECT pgmb.stop_table_mutations_push('public.test_table'::regclass);
 			INSERT INTO public.test_table (data) VALUES ('new data');`
 		)
 
@@ -660,7 +660,7 @@ describe('PGMB Client Tests', () => {
 			rows: [{ cursor }],
 		} = await pool.query<{ cursor: string }>(
 			`select last_read_event_id as cursor from
-			pgmb2.subscription_groups where id = $1`,
+			pgmb.subscription_groups where id = $1`,
 			[client.groupId],
 		)
 
@@ -668,7 +668,7 @@ describe('PGMB Client Tests', () => {
 		const {
 			rows: [{ maxId }],
 		} = await pool.query<{ maxId: string }>(
-			'select max(id) as "maxId" from pgmb2.subscription_events',
+			'select max(id) as "maxId" from pgmb.subscription_events',
 		)
 
 		assert.equal(cursor, maxId)
@@ -728,7 +728,7 @@ describe('PGMB Client Tests', () => {
 		const {
 			rows: [{ count }],
 		} = await pool.query<{ count: string }>(
-			`select count(*) as count from pgmb2.subscription_events
+			`select count(*) as count from pgmb.subscription_events
 			where subscription_id = $1`,
 			[subscriptionId],
 		)
@@ -757,7 +757,7 @@ describe('PGMB Client Tests', () => {
 		const {
 			rows: [{ count }],
 		} = await pool.query<{ count: string }>(
-			`select count(*) as count from pgmb2.subscription_events
+			`select count(*) as count from pgmb.subscription_events
 			where subscription_id = $1`,
 			[subscriptionId],
 		)

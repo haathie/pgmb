@@ -112,12 +112,12 @@ export async function install(fresh?: boolean) {
 	await conn.connect()
 
 	if(fresh) {
-		await conn.query('DROP SCHEMA IF EXISTS pgmb2 CASCADE')
+		await conn.query('DROP SCHEMA IF EXISTS pgmb CASCADE')
 	}
 
 	const { rowCount } = await conn.query(
 		'SELECT schema_name FROM information_schema.schemata'
-		+ " WHERE schema_name = 'pgmb2'"
+		+ " WHERE schema_name = 'pgmb'"
 	)
 	if(rowCount) {
 		await conn.end()
@@ -125,7 +125,7 @@ export async function install(fresh?: boolean) {
 	}
 
 	await new Promise<void>((resolve, reject) => {
-		exec(`psql ${uri} -f ./sql/pgmb2.sql -1`, (err, stdout, stderr) => {
+		exec(`psql ${uri} -f ./sql/pgmb.sql -1`, (err, stdout, stderr) => {
 			process.stdout.write(stdout)
 			process.stderr.write(stderr)
 			if(err) {

@@ -8,12 +8,12 @@ SET auto_explain.log_min_duration = 0;
 SET client_min_messages TO log;
 */
 
--- DROP SCHEMA IF EXISTS pgmb2 CASCADE;
-CREATE SCHEMA IF NOT EXISTS "pgmb2";
+-- DROP SCHEMA IF EXISTS pgmb CASCADE;
+CREATE SCHEMA IF NOT EXISTS "pgmb";
 
-SET search_path TO pgmb2, public;
+SET search_path TO pgmb, public;
 
--- create the configuration table for pgmb2 ----------------
+-- create the configuration table for pgmb ----------------
 
 CREATE TYPE config_type AS ENUM(
 	'plugin_version',
@@ -33,7 +33,7 @@ CREATE OR REPLACE FUNCTION get_config_value(
 	config_id config_type
 ) RETURNS TEXT AS $$
 	SELECT value FROM config WHERE id = config_id
-$$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb2, public;
+$$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb, public;
 
 INSERT INTO config(id, value)
 	VALUES
@@ -79,13 +79,13 @@ SELECT substr(
 	24
 )
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb2, public;
+ SET search_path TO pgmb, public;
 
 CREATE OR REPLACE FUNCTION create_event_id_default()
 RETURNS event_id AS $$
 	SELECT create_event_id(clock_timestamp(), create_random_bigint())
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb2, public;
+ SET search_path TO pgmb, public;
 
 CREATE TABLE IF NOT EXISTS events(
 	id event_id PRIMARY KEY DEFAULT create_event_id_default(),
@@ -110,7 +110,7 @@ BEGIN
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb2, public;
+	SET search_path TO pgmb, public;
 
 CREATE TRIGGER mark_events_as_unread_trigger
 AFTER INSERT ON events
@@ -141,11 +141,11 @@ CREATE OR REPLACE FUNCTION maintain_time_partitions_using_event_id(
 RETURNS void AS $$
 DECLARE
 	ts_trunc timestamptz := date_bin(partition_interval, current_ts, '2000-1-1');
-	oldest_partition_name text := pgmb2
+	oldest_partition_name text := pgmb
 		.get_time_partition_name(table_id, ts_trunc - retention_period);
 	p_info RECORD;
 	lock_key CONSTANT BIGINT :=
-		hashtext('pgmb2.maintain_tp.' || table_id::text);
+		hashtext('pgmb.maintain_tp.' || table_id::text);
 BEGIN
 	IF NOT pg_try_advisory_xact_lock(lock_key) THEN
 		-- another process is already maintaining partitions for this table
@@ -156,7 +156,7 @@ BEGIN
 	FOR i IN 0..(future_partitions_to_create-1) LOOP
 		DECLARE
 			target_ts timestamptz := ts_trunc + (i * partition_interval);
-			pt_name TEXT := pgmb2.get_time_partition_name(table_id, target_ts);
+			pt_name TEXT := pgmb.get_time_partition_name(table_id, target_ts);
 		BEGIN
 			IF pt_name < oldest_partition_name THEN
 				RAISE EXCEPTION 'pt_name(%) < op(%); rp=%, ts=%', pt_name, oldest_partition_name, (ts_trunc - retention_period), target_ts;
@@ -177,9 +177,9 @@ BEGIN
 				'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
 				pt_name,
 				table_id,
-				pgmb2.create_event_id(target_ts, 0),
+				pgmb.create_event_id(target_ts, 0),
 				-- fill with max possible tx id
-				pgmb2.create_event_id(target_ts + partition_interval, 0)
+				pgmb.create_event_id(target_ts + partition_interval, 0)
 			);
 
 			IF additional_sql IS NOT NULL THEN
@@ -207,7 +207,7 @@ CREATE OR REPLACE FUNCTION get_current_partition(
 	SELECT inhrelid::regclass
 	FROM pg_catalog.pg_inherits
 	WHERE inhparent = table_id
-		AND inhrelid::regclass::text <= pgmb2.get_time_partition_name(table_id, current_ts)
+		AND inhrelid::regclass::text <= pgmb.get_time_partition_name(table_id, current_ts)
 	ORDER BY inhrelid DESC
 	LIMIT 1
 $$ LANGUAGE sql STABLE PARALLEL SAFE SECURITY DEFINER;
@@ -230,7 +230,7 @@ RETURNS subscription_id AS $$
 		FROM 3
 	);
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb2, public;
+ SET search_path TO pgmb, public;
 
 -- subscription, groups tables and functions will go here ----------------
 
@@ -267,7 +267,7 @@ CREATE FUNCTION add_interval_imm(tstz TIMESTAMPTZ, itvl INTERVAL)
 RETURNS TIMESTAMPTZ AS $$
 	SELECT tstz + itvl;
 $$ LANGUAGE sql IMMUTABLE PARALLEL SAFE
-	SET search_path TO pgmb2, public;
+	SET search_path TO pgmb, public;
 
 -- note: index to quickly find expired subscriptions, not creating
 -- a column separately because there's some weird deadlock issue
@@ -339,13 +339,13 @@ CREATE INDEX IF NOT EXISTS subscription_events_group_idx
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
 RETURNS TRIGGER AS $$
 BEGIN
-	EXECUTE 'SELECT * FROM jsonb_populate_recordset(NULL::pgmb2.events, ''[]'') e
-		INNER JOIN jsonb_populate_recordset(NULL::pgmb2.subscriptions, ''[{}]'') s
+	EXECUTE 'SELECT * FROM jsonb_populate_recordset(NULL::pgmb.events, ''[]'') e
+		INNER JOIN jsonb_populate_recordset(NULL::pgmb.subscriptions, ''[{}]'') s
 		ON ' || NEW.conditions_sql;
 	RETURN NEW;
 END;
 $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
-	SET search_path TO pgmb2, public
+	SET search_path TO pgmb, public
 	SECURITY INVOKER;
 
 CREATE TRIGGER validate_subscription_conditions_sql_trigger
@@ -427,7 +427,7 @@ BEGIN
 	RETURN inserted_rows;
 END;
 $body$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
-SET search_path TO pgmb2, public
+SET search_path TO pgmb, public
 SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION prepare_poll_for_events_fn(
@@ -475,7 +475,7 @@ BEGIN
 	EXECUTE proc_src;
 END;
 $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
-SET search_path TO pgmb2, public
+SET search_path TO pgmb, public
 SECURITY DEFINER;
 
 SELECT prepare_poll_for_events_fn(ARRAY['true']);
@@ -489,7 +489,7 @@ DECLARE
 	conditions_sql TEXT[];
 
 	lk_name CONSTANT bigint :=
-		hashtext('pgmb2.refresh_subscription_read_statements');
+		hashtext('pgmb.refresh_subscription_read_statements');
 BEGIN
 	old_conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
 
@@ -505,7 +505,7 @@ BEGIN
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb2, public
+	SET search_path TO pgmb, public
 	SECURITY INVOKER;
 
 CREATE TRIGGER refresh_subscription_read_statements_trigger
@@ -539,7 +539,7 @@ BEGIN
 		ORDER BY u.eid;
 END;
 $$ LANGUAGE plpgsql STRICT STABLE PARALLEL SAFE
-SET search_path TO pgmb2, public;
+SET search_path TO pgmb, public;
 
 CREATE OR REPLACE FUNCTION read_next_events(
 	gid VARCHAR(48),
@@ -597,7 +597,7 @@ BEGIN
 	INNER JOIN next_events_grp ne ON ne.event_id = e.id;
 END
 $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
-	SET search_path TO pgmb2, public
+	SET search_path TO pgmb, public
 	SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION replay_events(
@@ -630,7 +630,7 @@ BEGIN
 
 	RETURN QUERY SELECT * FROM read_events(event_ids);
 END $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
-	SET search_path TO pgmb2, public
+	SET search_path TO pgmb, public
 	SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION set_group_cursor(
@@ -641,7 +641,7 @@ INSERT INTO subscription_groups(id, last_read_event_id)
 	ON CONFLICT (id) DO UPDATE
 	SET last_read_event_id = EXCLUDED.last_read_event_id;
 $$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb2, public;
+SET search_path TO pgmb, public;
 
 -- Function to re-enqueue events for a specific subscription
 CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
@@ -664,7 +664,7 @@ CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
 	INNER JOIN unnest(event_ids) AS u(eid) ON e.id = u.eid
 	RETURNING id;
 $$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb2, public
+SET search_path TO pgmb, public
 SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION maintain_events_table(
@@ -677,7 +677,7 @@ DECLARE
 	rp INTERVAL := get_config_value('partition_retention_period')::INTERVAL;
 BEGIN
 	PERFORM maintain_time_partitions_using_event_id(
-		'pgmb2.events'::regclass,
+		'pgmb.events'::regclass,
 		partition_interval := pi,
 		future_partitions_to_create := fpc,
 		retention_period := rp,
@@ -693,7 +693,7 @@ BEGIN
 	);
 
 	PERFORM maintain_time_partitions_using_event_id(
-		'pgmb2.subscription_events'::regclass,
+		'pgmb.subscription_events'::regclass,
 		partition_interval := pi,
 		future_partitions_to_create := fpc,
 		retention_period := rp,
@@ -709,7 +709,7 @@ BEGIN
 	);
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb2, public;
+SET search_path TO pgmb, public;
 
 SELECT maintain_events_table();
 
@@ -804,7 +804,7 @@ BEGIN
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb2, public;
+	SET search_path TO pgmb, public;
 
 -- Pushes table mutations to the events table. I.e. makes the table subscribable.
 -- and creates triggers to push changes to the events table.
@@ -862,7 +862,7 @@ BEGIN
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER
 	VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb2, public;
+	SET search_path TO pgmb, public;
 
 -- Stops the table from being subscribable.
 -- I.e removes the triggers that push changes to the events table.
@@ -876,4 +876,4 @@ BEGIN
 	EXECUTE 'DROP TRIGGER IF EXISTS post_update_event ON ' || tbl::varchar || ';';
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE
-	SET search_path TO pgmb2, public;
+	SET search_path TO pgmb, public;

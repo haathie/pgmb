@@ -32,7 +32,7 @@ export type IListenerStore = {
 	values: { [id: string]: IListener }
 }
 
-export class Pgmb2Client {
+export class PgmbClient {
 
 	readonly client: IDatabaseConnection
 	readonly logger: Logger

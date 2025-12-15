@@ -1,13 +1,13 @@
 import assert, { AssertionError } from 'node:assert'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { Pgmb2Client } from './client'
+import type { PgmbClient } from './client'
 import type { IFindEventsResult, IReplayEventsResult } from './queries'
 import { replayEvents } from './queries'
 import type { IEphemeralListener, SSERequestHandlerOpts } from './types'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from './utils'
 
 export function createSSERequestHandler(
-	this: Pgmb2Client,
+	this: PgmbClient,
 	{
 		getSubscriptionOpts,
 		maxReplayEvents = 1000,
@@ -19,7 +19,7 @@ export function createSSERequestHandler(
 	return handleSSERequest.bind(this)
 
 	async function handleSSERequest(
-		this: Pgmb2Client,
+		this: PgmbClient,
 		req: IncomingMessage,
 		res: ServerResponse
 	) {
