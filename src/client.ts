@@ -4,7 +4,7 @@ import { type Logger, pino } from 'pino'
 import { setTimeout } from 'timers/promises'
 import { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import { PGMBEventBatcher } from './batcher.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
 import type { GetWebhookInfoFn, IEphemeralListener, IEvent, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
@@ -42,6 +42,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 	readonly sleepDurationMs: number
 	readonly readChunkSize: number
 	readonly subscriptionMaintenanceMs: number
+	readonly tableMaintenanceMs: number
 	readonly maxActiveCheckpoints: number
 
 	readonly getWebhookInfo: GetWebhookInfoFn
@@ -56,6 +57,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 	#readTask?: Promise<void>
 	#pollTask?: Promise<void>
 	#subMaintainTask?: Promise<void>
+	#tableMaintainTask?: Promise<void>
 
 	#inMemoryCursor: string | null = null
 	#activeCheckpoints: Checkpoint[] = []
@@ -71,6 +73,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		subscriptionMaintenanceMs = 60 * 1000,
 		webhookHandlerOpts = {},
 		getWebhookInfo = () => ({}),
+		tableMaintainanceMs = 5 * 60 * 1000,
 		...batcherOpts
 	}: Pgmb2ClientOpts) {
 		super({
@@ -88,10 +91,15 @@ export class PgmbClient<T extends IEventData = IEventData>
 		this.maxActiveCheckpoints = maxActiveCheckpoints
 		this.webhookHandler = createWebhookHandler(webhookHandlerOpts)
 		this.getWebhookInfo = getWebhookInfo
+		this.tableMaintenanceMs = tableMaintainanceMs
 	}
 
 	async init() {
 		this.#endAc = new AbortController()
+
+		// maintain event table
+		await maintainEventsTable.run(undefined, this.client)
+		this.logger.debug('maintained events table')
 
 		await assertGroup.run({ id: this.groupId }, this.client)
 		this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
@@ -116,6 +124,14 @@ export class PgmbClient<T extends IEventData = IEventData>
 				this.subscriptionMaintenanceMs
 			)
 		}
+
+		if(this.tableMaintenanceMs) {
+			this.#tableMaintainTask = this.#startLoop(
+				maintainEventsTable.run
+					.bind(maintainEventsTable, undefined, this.client),
+				this.tableMaintenanceMs
+			)
+		}
 	}
 
 	async end() {
@@ -130,7 +146,12 @@ export class PgmbClient<T extends IEventData = IEventData>
 			delete this.listeners[id]
 		}
 
-		await Promise.all([this.#readTask, this.#pollTask, this.#subMaintainTask])
+		await Promise.all([
+			this.#readTask,
+			this.#pollTask,
+			this.#subMaintainTask,
+			this.tableMaintenanceMs
+		])
 
 		this.#readTask = undefined
 		this.#pollTask = undefined

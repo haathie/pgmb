@@ -80,6 +80,11 @@ export type Pgmb2ClientOpts = {
 	 * @default 1 minute
 	 */
 	subscriptionMaintenanceMs?: number
+	/** How often to maintain the events tables
+	 * (drop old partitions, create new ones, etc)
+	 * @default 5 minutes
+	 */
+	tableMaintainanceMs?: number
 
 	readChunkSize?: number
 	/**
