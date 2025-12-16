@@ -1,38 +1,40 @@
 import type { IDatabaseConnection } from '@pgtyped/runtime'
 import assert from 'assert'
-import type { Logger } from 'pino'
+import { type Logger, pino } from 'pino'
 import { setTimeout } from 'timers/promises'
 import { AbortableAsyncIterator } from './abortable-async-iterator.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, setGroupCursor } from './queries.ts'
-import type { GetWebhookInfoFn, IEphemeralListener, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
+import { PGMBEventBatcher } from './batcher.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
+import type { GetWebhookInfoFn, IEphemeralListener, IEvent, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
-type IDurableListener = {
+type IDurableListener<T extends IEventData> = {
 	type: 'durable'
-	handler: IEventHandler
+	handler: IEventHandler<T>
 	removeOnEmpty?: boolean
 	extra?: unknown
 	queue: {
-		item: IReadEvent
+		item: IReadEvent<T>
 		checkpoint: Checkpoint
 	}[]
 }
 
-type IListener = {
+type IListener<T extends IEventData> = {
 	type: 'ephemeral'
-	stream: IEphemeralListener
-} | IDurableListener
+	stream: IEphemeralListener<T>
+} | IDurableListener<T>
 
 type Checkpoint = {
 	activeTasks: number
 	nextCursor: string
 }
 
-export type IListenerStore = {
-	values: { [id: string]: IListener }
+export type IListenerStore<T extends IEventData> = {
+	values: { [id: string]: IListener<T> }
 }
 
-export class PgmbClient {
+export class PgmbClient<T extends IEventData = IEventData>
+	extends PGMBEventBatcher<T> {
 
 	readonly client: IDatabaseConnection
 	readonly logger: Logger
@@ -45,7 +47,7 @@ export class PgmbClient {
 	readonly getWebhookInfo: GetWebhookInfoFn
 	readonly webhookHandler: IEventHandler
 
-	readonly listeners: { [subId: string]: IListenerStore } = {}
+	readonly listeners: { [subId: string]: IListenerStore<T> } = {}
 
 	#endAc = new AbortController()
 	eventsPublished = 0
@@ -59,15 +61,23 @@ export class PgmbClient {
 	#activeCheckpoints: Checkpoint[] = []
 
 	constructor({
-		client, logger, groupId,
+		client,
+		groupId,
+		logger = pino(),
 		sleepDurationMs = 500,
 		readChunkSize = 1000,
 		maxActiveCheckpoints = 100,
 		poll,
 		subscriptionMaintenanceMs = 60 * 1000,
 		webhookHandlerOpts = {},
-		getWebhookInfo = () => ({})
+		getWebhookInfo = () => ({}),
+		...batcherOpts
 	}: Pgmb2ClientOpts) {
+		super({
+			...batcherOpts,
+			logger,
+			publish: (...e) => this.publish(e)
+		})
 		this.client = client
 		this.logger = logger
 		this.groupId = groupId
@@ -90,10 +100,8 @@ export class PgmbClient {
 			.run({ groupId: this.groupId, activeIds: [] }, this.client)
 		this.logger.debug({ deleted }, 'removed expired subscriptions')
 
-		this.#readTask = this.#startLoop(
-			this.readChanges.bind(this, this.groupId),
-			this.sleepDurationMs
-		)
+		this.#readTask
+			= this.#startLoop(this.readChanges.bind(this), this.sleepDurationMs)
 
 		if(this.#shouldPoll) {
 			this.#pollTask = this.#startLoop(
@@ -111,6 +119,8 @@ export class PgmbClient {
 	}
 
 	async end() {
+		await super.end()
+
 		while(this.#activeCheckpoints.length) {
 			await setTimeout(100)
 		}
@@ -130,6 +140,17 @@ export class PgmbClient {
 		this.eventsPublished = 0
 	}
 
+	publish(events: T[], client: IDatabaseConnection = this.client) {
+		return writeEvents.run(
+			{
+				topics: events.map(e => e.topic),
+				payloads: events.map(e => e.payload),
+				metadatas: events.map(e => e.metadata || null),
+			},
+			client
+		)
+	}
+
 	async registerSubscription(opts: RegisterSubscriptionParams) {
 		const [{ id: subId }] = await assertSubscription
 			.run({ ...opts, groupId: this.groupId }, this.client)
@@ -142,11 +163,11 @@ export class PgmbClient {
 
 	async registerDurableSubscription(
 		opts: RegisterSubscriptionParams,
-		handler: IEventHandler
+		handler: IEventHandler<T>
 	) {
 		const [{ id: subId }] = await assertSubscription
 			.run({ ...opts, groupId: this.groupId }, this.client)
-		const listener: IListener = { type: 'durable', handler, queue: [] }
+		const listener: IListener<T> = { type: 'durable', handler, queue: [] }
 
 		this.logger
 			.debug({ subId, ...opts }, 'asserted subscription')
@@ -178,14 +199,14 @@ export class PgmbClient {
 		)
 	}
 
-	#listenForEvents(subId: string): IEphemeralListener {
+	#listenForEvents(subId: string): IEphemeralListener<T> {
 		const lid = createListenerId()
-		const iterator = new AbortableAsyncIterator<IReadEvent>(
+		const iterator = new AbortableAsyncIterator<IReadEvent<T>>(
 			this.#endAc.signal,
 			() => this.#removeListener(subId, lid)
 		)
 
-		const stream = iterator as unknown as IEphemeralListener
+		const stream = iterator as IEphemeralListener<T>
 		stream.id = subId
 
 		this.listeners[subId] ||= { values: {} }
@@ -219,7 +240,7 @@ export class PgmbClient {
 		this.logger.trace({ deleted }, 'removed expired subscriptions')
 	}
 
-	async readChanges(groupId: string, client: IDatabaseConnection = this.client) {
+	async readChanges(client: IDatabaseConnection = this.client) {
 		if(this.#activeCheckpoints.length >= this.maxActiveCheckpoints) {
 			return 0
 		}
@@ -227,7 +248,7 @@ export class PgmbClient {
 		const now = Date.now()
 		const rows = await readNextEvents.run(
 			{
-				groupId,
+				groupId: this.groupId,
 				cursor: this.#inMemoryCursor,
 				chunkSize: this.readChunkSize
 			},
@@ -262,11 +283,11 @@ export class PgmbClient {
 
 		// reverse the map, do subscriptionId -> events
 		const subToEventMap:
-			{ [subscriptionId: string]: IReadEvent } = {}
+			{ [subscriptionId: string]: IReadEvent<T> } = {}
 		for(const row of rows) {
 			for(const subId of row.subscriptionIds) {
 				subToEventMap[subId] ||= { items: [] }
-				subToEventMap[subId].items.push(row)
+				subToEventMap[subId].items.push(row as unknown as IEvent<T>)
 			}
 
 			this.eventsPublished ++
@@ -323,7 +344,7 @@ export class PgmbClient {
 	async #enqueueEventInDurableListener(
 		subId: string,
 		lid: string,
-		item: IReadEvent,
+		item: IReadEvent<T>,
 		checkpoint: Checkpoint
 	) {
 		const lt = this.listeners[subId]?.values?.[lid]

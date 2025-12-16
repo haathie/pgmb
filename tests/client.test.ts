@@ -18,6 +18,8 @@ import { setTimeout } from 'node:timers/promises'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
 import type {
+	IEvent,
+	ITableMutationEventData,
 	WebhookInfo } from '../src/index.ts'
 import {
 	createRetryHandler,
@@ -25,23 +27,37 @@ import {
 	type IReadEvent,
 	PgmbClient
 } from '../src/index.ts'
-import type { IFindEventsResult } from '../src/queries.ts'
 import {
 	pollForEvents,
 	reenqueueEventsForSubscription,
 	removeExpiredSubscriptions,
-	writeEvents,
 	writeScheduledEvents,
 } from '../src/queries.ts'
 
 const LOGGER = pino({ level: 'trace' })
 const CHANCE = new Chance()
 
+type TestEventData = {
+	topic: 'test-topic'
+	payload: { data: number }
+} | {
+	topic: 'test-topic-1'
+	payload: { key: string }
+} | ITableMutationEventData<
+	{
+		id: number
+		data: string
+	},
+	'public.test_table'
+>
+
+type ITestEvent = IEvent<TestEventData>
+
 describe('PGMB Client Tests', () => {
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
 	const webhookInfos: { [subId: string]: WebhookInfo[] } = {}
 
-	let client: PgmbClient
+	let client: PgmbClient<TestEventData>
 	let groupId: string
 
 	before(async() => {
@@ -150,7 +166,7 @@ describe('PGMB Client Tests', () => {
 		const ins = await insertEvent(c1)
 
 		const sub = await client.registerSubscription({})
-		const received: IFindEventsResult[] = []
+		const received: unknown[] = []
 		const readPromise = (async() => {
 			for await (const evs of sub) {
 				received.push(...evs.items)
@@ -172,13 +188,13 @@ describe('PGMB Client Tests', () => {
 
 	it('should handle concurrent subscription writes', async() => {
 		await client.registerSubscription({})
-		await client.readChanges(groupId)
+		await client.readChanges()
 		await insertEvent(pool)
 		const [changeCount1] = await Promise.all([
-			client.readChanges(groupId),
+			client.readChanges(),
 			pollForEvents.run(undefined, pool),
 		])
-		const changeCount2 = await client.readChanges(groupId)
+		const changeCount2 = await client.readChanges()
 		assert.equal(changeCount1 + changeCount2, 1)
 	})
 
@@ -200,15 +216,16 @@ describe('PGMB Client Tests', () => {
 
 		const eventsWritten: unknown[] = []
 
-		const writeEvents = (async() => {
-			for(let i = 0; i < eventcount; i++) {
-				eventsWritten.push(await insertEvent(c1))
-			}
+		await Promise.all([
+			readPromise,
+			(async() => {
+				for(let i = 0; i < eventcount; i++) {
+					eventsWritten.push(await insertEvent(c1))
+				}
 
-			await c1.query('COMMIT;')
-		})()
-
-		await Promise.all([readPromise, writeEvents])
+				await c1.query('COMMIT;')
+			})()
+		])
 
 		assert.equal(events.length, eventcount)
 
@@ -378,15 +395,11 @@ describe('PGMB Client Tests', () => {
 			)
 		}
 
-		await writeEvents.run(
-			{
-				topics: Array.from({ length: EVENT_COUNT }).map(() => 'test-topic-1'),
-				payloads: Array.from({ length: EVENT_COUNT }).map((_, i) => ({
-					key: (i % SUB_PER_TYPE_COUNT).toString(),
-				})),
-				metadatas: Array.from({ length: EVENT_COUNT }).map(() => ({})),
-			},
-			pool,
+		await client.publish(
+			Array.from({ length: EVENT_COUNT }).map((_, i) => ({
+				topic: 'test-topic-1',
+				payload: { key: (i % SUB_PER_TYPE_COUNT).toString() },
+			}))
 		)
 
 		console.log('Inserted events and subs, starting poll...')
@@ -450,12 +463,12 @@ describe('PGMB Client Tests', () => {
 			"(e.payload->>'value')::int > (s.params->>'min_value')::int",
 		]
 		await Promise.all([
-			client.readChanges(groupId),
+			client.readChanges(),
 			...conds.map((cond) => client.registerSubscription({ conditionsSql: cond }),
 			),
 		])
 
-		await client.readChanges(groupId)
+		await client.readChanges()
 
 		const {
 			rows: [procRow],
@@ -524,13 +537,11 @@ describe('PGMB Client Tests', () => {
 			params: { min: 0 },
 		})
 
-		await writeEvents.run(
-			{
-				topics: ['test', 'test'],
-				payloads: [{ data: 0.7 }, { data: 0.3 }],
-				metadatas: [{}, {}],
-			},
-			pool,
+		await client.publish(
+			[
+				{ topic: 'test-topic', payload: { data: 0.7 } },
+				{ topic: 'test-topic', payload: { data: 0.3 } },
+			]
 		)
 
 		// 0.3 !> 0.5, but 0.3 > 0 -- so matched only by sub2
@@ -557,7 +568,7 @@ describe('PGMB Client Tests', () => {
 				],
 			},
 			conditionsSql:
-				"s.params @> ('{\"topics\":[\"' || e.topic || '\"]}')::jsonb",
+				's.params @> jsonb_build_object(\'topics\', ARRAY[e.topic])',
 		})
 		const events: unknown[] = []
 		const task = (async() => {
@@ -622,8 +633,8 @@ describe('PGMB Client Tests', () => {
 				let active = false
 				return client.registerDurableSubscription(
 					{
-						params: { value: i },
-						conditionsSql: "e.payload->>'value' = s.params->>'value'",
+						params: { data: i },
+						conditionsSql: 's.params @> e.payload',
 					},
 					async({ items }, { signal }) => {
 						assert(!active, 'Handler called concurrently!')
@@ -679,24 +690,19 @@ describe('PGMB Client Tests', () => {
 
 		async function pushEvents(count: number) {
 			for(let i = 0; i < count; i++) {
-				await writeEvents.run(
-					{
-						topics: ['test-topic'],
-						payloads: [{ value: i % 3 }],
-						metadatas: [{}],
-					},
-					pool,
-				)
+				await client
+					.publish([{ topic: 'test-topic', payload: { data: i % 3 } }])
 			}
 		}
 	})
 
 	it('should retry failed handlers', async() => {
-		let failedEvents: IFindEventsResult[] | undefined
-		let doneEvents: IFindEventsResult[] | undefined
+		let failedEvents: ITestEvent[] | undefined
+		let doneEvents: ITestEvent[] | undefined
 		const { subscriptionId } = await client.registerDurableSubscription(
 			{},
 			createRetryHandler(
+				{ retriesS: [1] },
 				async({ items }) => {
 					if(!failedEvents) {
 						failedEvents = items
@@ -706,7 +712,6 @@ describe('PGMB Client Tests', () => {
 					await setTimeout(100)
 					doneEvents = items
 				},
-				{ retriesS: [1] },
 			),
 		)
 
@@ -742,7 +747,7 @@ describe('PGMB Client Tests', () => {
 		})
 		const { subscriptionId } = await client.registerDurableSubscription(
 			{},
-			createRetryHandler(handler, { retriesS: [1, 1] }),
+			createRetryHandler({ retriesS: [1, 1] }, handler),
 		)
 
 		await insertEvent(pool)
@@ -784,7 +789,7 @@ describe('PGMB Client Tests', () => {
 		})
 
 		beforeEach(async() => {
-			const handler = createSSERequestHandler.call(
+			const handler = (createSSERequestHandler<TestEventData>).call(
 				client,
 				{ getSubscriptionOpts: () => ({})	}
 			)
@@ -947,6 +952,13 @@ describe('PGMB Client Tests', () => {
 			assert.equal(h1['x-idempotency-key'], h2['x-idempotency-key'])
 		})
 	})
+
+	async function insertEvent(db: Pool | PoolClient) {
+		const topic = 'test-topic'
+		const payload = { data: Math.random() }
+		const [{ id }] = await client.publish([{ topic, payload }], db)
+		return { id, topic, payload }
+	}
 })
 
 function waitForESOpen(es: EventSource) {
@@ -971,19 +983,4 @@ function waitForESEvent(es: EventSource, topic = 'test-topic') {
 			es.removeEventListener('message', onMsg)
 		}
 	})
-}
-
-async function insertEvent(client: Pool | PoolClient) {
-	const topic = 'test-topic'
-	const payload = { data: Math.random() }
-	const [{ id }] = await writeEvents.run(
-		{
-			topics: [topic],
-			payloads: [payload],
-			metadatas: [{}],
-		},
-		client,
-	)
-
-	return { id, topic, payload }
 }

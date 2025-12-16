@@ -23,7 +23,7 @@ export interface IAssertGroupQuery {
   result: IAssertGroupResult;
 }
 
-const assertGroupIR: any = {"usedParamSet":{"id":true},"params":[{"name":"id","required":true,"transform":{"type":"scalar"},"locs":[{"a":51,"b":54}]}],"statement":"INSERT INTO pgmb.subscription_groups (id)\nVALUES (:id!)\nON CONFLICT DO NOTHING"};
+const assertGroupIR: any = {"usedParamSet":{"id":true},"params":[{"name":"id","required":true,"transform":{"type":"scalar"},"locs":[{"a":50,"b":53}]}],"statement":"INSERT INTO pgmb.subscription_groups (id)\nVALUES (:id!)\nON CONFLICT DO NOTHING"};
 
 /**
  * Query generated from SQL:
@@ -55,7 +55,7 @@ export interface IAssertSubscriptionQuery {
   result: IAssertSubscriptionResult;
 }
 
-const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"params":true,"expiryInterval":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":99,"b":107}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":120,"b":133}]},{"name":"params","required":false,"transform":{"type":"scalar"},"locs":[{"a":155,"b":161}]},{"name":"expiryInterval","required":false,"transform":{"type":"scalar"},"locs":[{"a":179,"b":193}]}],"statement":"INSERT INTO pgmb.subscriptions\n\tAS s(group_id, conditions_sql, params, expiry_interval)\nVALUES (\n\t:groupId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:params::jsonb, '{}'),\n\t:expiryInterval::interval\n)\nON CONFLICT (identity) DO UPDATE\nSET\n\t-- set expiry_interval to the new value only if it's greater than the existing one\n\t-- or if the new value is NULL (indicating no expiration)\n\texpiry_interval = CASE\n\t\tWHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL\n\t\t\tTHEN NULL\n\t\tELSE\n\t\t\tGREATEST(s.expiry_interval, EXCLUDED.expiry_interval)\n\tEND,\n\tlast_active_at = NOW()\nRETURNING id AS \"id!\""};
+const assertSubscriptionIR: any = {"usedParamSet":{"groupId":true,"conditionsSql":true,"params":true,"expiryInterval":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":106}]},{"name":"conditionsSql","required":false,"transform":{"type":"scalar"},"locs":[{"a":119,"b":132}]},{"name":"params","required":false,"transform":{"type":"scalar"},"locs":[{"a":154,"b":160}]},{"name":"expiryInterval","required":false,"transform":{"type":"scalar"},"locs":[{"a":178,"b":192}]}],"statement":"INSERT INTO pgmb.subscriptions\n\tAS s(group_id, conditions_sql, params, expiry_interval)\nVALUES (\n\t:groupId!,\n\tCOALESCE(:conditionsSql, 'TRUE'),\n\tCOALESCE(:params::jsonb, '{}'),\n\t:expiryInterval::interval\n)\nON CONFLICT (identity) DO UPDATE\nSET\n\t-- set expiry_interval to the new value only if it's greater than the existing one\n\t-- or if the new value is NULL (indicating no expiration)\n\texpiry_interval = CASE\n\t\tWHEN EXCLUDED.expiry_interval IS NULL OR s.expiry_interval IS NULL\n\t\t\tTHEN NULL\n\t\tELSE\n\t\t\tGREATEST(s.expiry_interval, EXCLUDED.expiry_interval)\n\tEND,\n\tlast_active_at = NOW()\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
@@ -99,7 +99,7 @@ export interface IDeleteSubscriptionsQuery {
   result: IDeleteSubscriptionsResult;
 }
 
-const deleteSubscriptionsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"array_spread"},"locs":[{"a":44,"b":48}]}],"statement":"DELETE FROM pgmb.subscriptions\nWHERE id IN :ids!"};
+const deleteSubscriptionsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"array_spread"},"locs":[{"a":43,"b":47}]}],"statement":"DELETE FROM pgmb.subscriptions\nWHERE id IN :ids!"};
 
 /**
  * Query generated from SQL:
@@ -125,7 +125,7 @@ export interface IMarkSubscriptionsActiveQuery {
   result: IMarkSubscriptionsActiveResult;
 }
 
-const markSubscriptionsActiveIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":89,"b":93}]}],"statement":"UPDATE pgmb.subscriptions\nSET\n\tlast_active_at = NOW()\nWHERE id IN (SELECT * FROM unnest(:ids!::pgmb.subscription_id[]))"};
+const markSubscriptionsActiveIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":88,"b":92}]}],"statement":"UPDATE pgmb.subscriptions\nSET\n\tlast_active_at = NOW()\nWHERE id IN (SELECT * FROM unnest(:ids!::pgmb.subscription_id[]))"};
 
 /**
  * Query generated from SQL:
@@ -187,7 +187,7 @@ export interface IReadNextEventsQuery {
   result: IReadNextEventsResult;
 }
 
-const readNextEventsIR: any = {"usedParamSet":{"groupId":true,"cursor":true,"chunkSize":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":198,"b":206}]},{"name":"cursor","required":false,"transform":{"type":"scalar"},"locs":[{"a":209,"b":215}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":218,"b":228}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids::text[] AS \"subscriptionIds!\",\n\tnext_cursor AS \"nextCursor!\"\nFROM pgmb.read_next_events(:groupId!, :cursor, :chunkSize!)"};
+const readNextEventsIR: any = {"usedParamSet":{"groupId":true,"cursor":true,"chunkSize":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":197,"b":205}]},{"name":"cursor","required":false,"transform":{"type":"scalar"},"locs":[{"a":208,"b":214}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":217,"b":227}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\",\n\tsubscription_ids::text[] AS \"subscriptionIds!\",\n\tnext_cursor AS \"nextCursor!\"\nFROM pgmb.read_next_events(:groupId!, :cursor, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -225,7 +225,7 @@ export interface IReadNextEventsTextQuery {
   result: IReadNextEventsTextResult;
 }
 
-const readNextEventsTextIR: any = {"usedParamSet":{"groupId":true,"cursor":true,"chunkSize":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":98,"b":106}]},{"name":"cursor","required":false,"transform":{"type":"scalar"},"locs":[{"a":109,"b":115}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":118,"b":128}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb.read_next_events(:groupId!, :cursor, :chunkSize!)"};
+const readNextEventsTextIR: any = {"usedParamSet":{"groupId":true,"cursor":true,"chunkSize":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":97,"b":105}]},{"name":"cursor","required":false,"transform":{"type":"scalar"},"locs":[{"a":108,"b":114}]},{"name":"chunkSize","required":true,"transform":{"type":"scalar"},"locs":[{"a":117,"b":127}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload::text AS \"payload!\"\nFROM pgmb.read_next_events(:groupId!, :cursor, :chunkSize!)"};
 
 /**
  * Query generated from SQL:
@@ -262,7 +262,7 @@ export interface IReplayEventsQuery {
   result: IReplayEventsResult;
 }
 
-const replayEventsIR: any = {"usedParamSet":{"groupId":true,"subscriptionId":true,"fromEventId":true,"maxEvents":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":117,"b":125}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":129,"b":144}]},{"name":"fromEventId","required":true,"transform":{"type":"scalar"},"locs":[{"a":148,"b":160}]},{"name":"maxEvents","required":true,"transform":{"type":"scalar"},"locs":[{"a":180,"b":190}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb.replay_events(\n\t:groupId!,\n\t:subscriptionId!,\n\t:fromEventId!::pgmb.event_id,\n\t:maxEvents!\n)"};
+const replayEventsIR: any = {"usedParamSet":{"groupId":true,"subscriptionId":true,"fromEventId":true,"maxEvents":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":116,"b":124}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":128,"b":143}]},{"name":"fromEventId","required":true,"transform":{"type":"scalar"},"locs":[{"a":147,"b":159}]},{"name":"maxEvents","required":true,"transform":{"type":"scalar"},"locs":[{"a":178,"b":188}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb.replay_events(\n\t:groupId!,\n\t:subscriptionId!,\n\t:fromEventId!::pgmb.event_id,\n\t:maxEvents!\n)"};
 
 /**
  * Query generated from SQL:
@@ -300,7 +300,7 @@ export interface ISetGroupCursorQuery {
   result: ISetGroupCursorResult;
 }
 
-const setGroupCursorIR: any = {"usedParamSet":{"groupId":true,"cursor":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":30,"b":38}]},{"name":"cursor","required":true,"transform":{"type":"scalar"},"locs":[{"a":41,"b":48}]}],"statement":"SELECT pgmb.set_group_cursor(:groupId!,\t:cursor!::pgmb.event_id) AS \"success!\""};
+const setGroupCursorIR: any = {"usedParamSet":{"groupId":true,"cursor":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":29,"b":37}]},{"name":"cursor","required":true,"transform":{"type":"scalar"},"locs":[{"a":40,"b":47}]}],"statement":"SELECT pgmb.set_group_cursor(:groupId!,\t:cursor!::pgmb.event_id) AS \"success!\""};
 
 /**
  * Query generated from SQL:
@@ -329,7 +329,7 @@ export interface IWriteEventsQuery {
   result: IWriteEventsResult;
 }
 
-const writeEventsIR: any = {"usedParamSet":{"topics":true,"payloads":true,"metadatas":true},"params":[{"name":"topics","required":true,"transform":{"type":"scalar"},"locs":[{"a":101,"b":108}]},{"name":"payloads","required":true,"transform":{"type":"scalar"},"locs":[{"a":120,"b":129}]},{"name":"metadatas","required":true,"transform":{"type":"scalar"},"locs":[{"a":142,"b":152}]}],"statement":"INSERT INTO pgmb.events (topic, payload, metadata)\nSELECT\n\ttopic,\n\tpayload,\n\tmetadata\nFROM unnest(\n\t:topics!::TEXT[],\n\t:payloads!::JSONB[],\n\t:metadatas!::JSONB[]\n) AS t(topic, payload, metadata)\nRETURNING id AS \"id!\""};
+const writeEventsIR: any = {"usedParamSet":{"topics":true,"payloads":true,"metadatas":true},"params":[{"name":"topics","required":true,"transform":{"type":"scalar"},"locs":[{"a":100,"b":107}]},{"name":"payloads","required":true,"transform":{"type":"scalar"},"locs":[{"a":119,"b":128}]},{"name":"metadatas","required":true,"transform":{"type":"scalar"},"locs":[{"a":141,"b":151}]}],"statement":"INSERT INTO pgmb.events (topic, payload, metadata)\nSELECT\n\ttopic,\n\tpayload,\n\tmetadata\nFROM unnest(\n\t:topics!::TEXT[],\n\t:payloads!::JSONB[],\n\t:metadatas!::JSONB[]\n) AS t(topic, payload, metadata)\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
@@ -369,7 +369,7 @@ export interface IWriteScheduledEventsQuery {
   result: IWriteScheduledEventsResult;
 }
 
-const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"payloads":true,"metadatas":true},"params":[{"name":"ts","required":true,"transform":{"type":"scalar"},"locs":[{"a":192,"b":195}]},{"name":"topics","required":true,"transform":{"type":"scalar"},"locs":[{"a":214,"b":221}]},{"name":"payloads","required":true,"transform":{"type":"scalar"},"locs":[{"a":233,"b":242}]},{"name":"metadatas","required":true,"transform":{"type":"scalar"},"locs":[{"a":255,"b":265}]}],"statement":"INSERT INTO pgmb.events (id, topic, payload, metadata)\nSELECT\n\tpgmb2.create_event_id(COALESCE(ts, clock_timestamp()), pgmb.create_random_bigint()),\n\ttopic,\n\tpayload,\n\tmetadata\nFROM unnest(\n\t:ts!::TIMESTAMPTZ[],\n\t:topics!::TEXT[],\n\t:payloads!::JSONB[],\n\t:metadatas!::JSONB[]\n) AS t(ts, topic, payload, metadata)\nRETURNING id AS \"id!\""};
+const writeScheduledEventsIR: any = {"usedParamSet":{"ts":true,"topics":true,"payloads":true,"metadatas":true},"params":[{"name":"ts","required":true,"transform":{"type":"scalar"},"locs":[{"a":189,"b":192}]},{"name":"topics","required":true,"transform":{"type":"scalar"},"locs":[{"a":211,"b":218}]},{"name":"payloads","required":true,"transform":{"type":"scalar"},"locs":[{"a":230,"b":239}]},{"name":"metadatas","required":true,"transform":{"type":"scalar"},"locs":[{"a":252,"b":262}]}],"statement":"INSERT INTO pgmb.events (id, topic, payload, metadata)\nSELECT\n\tpgmb.create_event_id(COALESCE(ts, clock_timestamp()), pgmb.create_random_bigint()),\n\ttopic,\n\tpayload,\n\tmetadata\nFROM unnest(\n\t:ts!::TIMESTAMPTZ[],\n\t:topics!::TEXT[],\n\t:payloads!::JSONB[],\n\t:metadatas!::JSONB[]\n) AS t(ts, topic, payload, metadata)\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
@@ -411,7 +411,7 @@ export interface IScheduleEventRetryQuery {
   result: IScheduleEventRetryResult;
 }
 
-const scheduleEventRetryIR: any = {"usedParamSet":{"delayInterval":true,"ids":true,"retryNumber":true,"subscriptionId":true},"params":[{"name":"delayInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":105,"b":119}]},{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":215,"b":219}]},{"name":"retryNumber","required":true,"transform":{"type":"scalar"},"locs":[{"a":259,"b":271}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":283,"b":298}]}],"statement":"INSERT INTO pgmb.events (id, topic, payload, subscription_id)\nSELECT\n\tpgmb2.create_event_id(\n\t\tNOW() + (:delayInterval!::INTERVAL),\n\t\tpgmb2.create_random_bigint()\n\t),\n\t'pgmb-retry',\n\tjsonb_build_object(\n\t\t'ids',\n\t\t:ids!::pgmb.event_id[],\n\t\t'retryNumber',\n\t\t:retryNumber!::int\n\t),\n\t:subscriptionId!::pgmb.subscription_id\nRETURNING id AS \"id!\""};
+const scheduleEventRetryIR: any = {"usedParamSet":{"delayInterval":true,"ids":true,"retryNumber":true,"subscriptionId":true},"params":[{"name":"delayInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":103,"b":117}]},{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":212,"b":216}]},{"name":"retryNumber","required":true,"transform":{"type":"scalar"},"locs":[{"a":255,"b":267}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":279,"b":294}]}],"statement":"INSERT INTO pgmb.events (id, topic, payload, subscription_id)\nSELECT\n\tpgmb.create_event_id(\n\t\tNOW() + (:delayInterval!::INTERVAL),\n\t\tpgmb.create_random_bigint()\n\t),\n\t'pgmb-retry',\n\tjsonb_build_object(\n\t\t'ids',\n\t\t:ids!::pgmb.event_id[],\n\t\t'retryNumber',\n\t\t:retryNumber!::int\n\t),\n\t:subscriptionId!::pgmb.subscription_id\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
@@ -455,7 +455,7 @@ export interface IFindEventsQuery {
   result: IFindEventsResult;
 }
 
-const findEventsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":123,"b":127}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb.events\nWHERE id = ANY(:ids!::pgmb.event_id[])"};
+const findEventsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":122,"b":126}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb.events\nWHERE id = ANY(:ids!::pgmb.event_id[])"};
 
 /**
  * Query generated from SQL:
@@ -489,7 +489,7 @@ export interface IRemoveExpiredSubscriptionsQuery {
   result: IRemoveExpiredSubscriptionsResult;
 }
 
-const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activeIds":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":69,"b":77}]},{"name":"activeIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":221,"b":231}]}],"statement":"WITH deleted AS (\n\tDELETE FROM pgmb.subscriptions\n\tWHERE group_id = :groupId!\n\t\tAND expiry_interval IS NOT NULL\n\t\tAND pgmb.add_interval_imm(last_active_at, expiry_interval) < NOW()\n\t\tAND id NOT IN (select * from unnest(:activeIds!::pgmb.subscription_id[]))\n\tRETURNING id\n)\nSELECT COUNT(*) AS \"deleted!\" FROM deleted"};
+const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activeIds":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":68,"b":76}]},{"name":"activeIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":219,"b":229}]}],"statement":"WITH deleted AS (\n\tDELETE FROM pgmb.subscriptions\n\tWHERE group_id = :groupId!\n\t\tAND expiry_interval IS NOT NULL\n\t\tAND pgmb.add_interval_imm(last_active_at, expiry_interval) < NOW()\n\t\tAND id NOT IN (select * from unnest(:activeIds!::pgmb.subscription_id[]))\n\tRETURNING id\n)\nSELECT COUNT(*) AS \"deleted!\" FROM deleted"};
 
 /**
  * Query generated from SQL:
@@ -526,7 +526,7 @@ export interface IReenqueueEventsForSubscriptionQuery {
   result: IReenqueueEventsForSubscriptionResult;
 }
 
-const reenqueueEventsForSubscriptionIR: any = {"usedParamSet":{"eventIds":true,"subscriptionId":true,"offsetInterval":true},"params":[{"name":"eventIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":49,"b":58}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":70,"b":85}]},{"name":"offsetInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":89,"b":104}]}],"statement":"SELECT pgmb.reenqueue_events_for_subscription(\n\t:eventIds!::text[],\n\t:subscriptionId!,\n\t:offsetInterval!::INTERVAL\n) AS \"reenqueuedEventIds!\""};
+const reenqueueEventsForSubscriptionIR: any = {"usedParamSet":{"eventIds":true,"subscriptionId":true,"offsetInterval":true},"params":[{"name":"eventIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":48,"b":57}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":69,"b":84}]},{"name":"offsetInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":88,"b":103}]}],"statement":"SELECT pgmb.reenqueue_events_for_subscription(\n\t:eventIds!::text[],\n\t:subscriptionId!,\n\t:offsetInterval!::INTERVAL\n) AS \"reenqueuedEventIds!\""};
 
 /**
  * Query generated from SQL:
@@ -564,3 +564,5 @@ const maintainEventsTableIR: any = {"usedParamSet":{},"params":[],"statement":"S
  * ```
  */
 export const maintainEventsTable = new PreparedQuery<IMaintainEventsTableParams,IMaintainEventsTableResult>(maintainEventsTableIR);
+
+

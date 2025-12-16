@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http'
 import type { Logger } from 'pino'
 import type { HeaderRecord } from 'undici-types/header.js'
 import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
-import type { IAssertSubscriptionParams, IFindEventsResult } from './queries.ts'
+import type { IAssertSubscriptionParams } from './queries.ts'
 
 export type SerialisedEvent = {
 	body: Buffer | string
@@ -35,10 +35,43 @@ export type PgmbWebhookOpts = {
 	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
 
+export interface IEventData {
+	topic: string
+	payload: unknown
+	metadata?: unknown
+}
+
+export type IEvent<T extends IEventData> = (T & { id: string })
+
+export type PGMBEventBatcherOpts<T extends IEventData> = {
+	/**
+	 * Whether a particular published message should be logged.
+	 * By default, all messages are logged -- in case of certain
+	 * failures, the logs can be used to replay the messages.
+	 */
+	shouldLog?(msg: T): boolean
+
+	publish(...msgs: T[]): Promise<{ id: string }[]>
+
+	logger?: Logger
+	/**
+	 * Automatically flush after this interval.
+	 * Set to undefined or 0 to disable. Will need to
+	 * manually call `flush()` to publish messages.
+	 * @default undefined
+	 */
+	flushIntervalMs?: number
+	/**
+	 * Max number of messages to send in a batch
+	 * @default 2500
+	 */
+	maxBatchSize?: number
+}
+
 export type Pgmb2ClientOpts = {
 	client: IDatabaseConnection
-	logger: Logger
 	groupId: string
+	logger?: Logger
 	/** How long to sleep between polls & read fn calls */
 	sleepDurationMs?: number
 	/**
@@ -62,17 +95,20 @@ export type Pgmb2ClientOpts = {
 
 	webhookHandlerOpts?: Partial<PgmbWebhookOpts>
 	getWebhookInfo?: GetWebhookInfoFn
-}
+} & Pick<
+	PGMBEventBatcherOpts<IEventData>,
+	'flushIntervalMs' | 'maxBatchSize' | 'shouldLog'
+>
 
-export type IReadEvent = {
-	items: IFindEventsResult[]
+export type IReadEvent<T extends IEventData = IEventData> = {
+	items: IEvent<T>[]
 }
 
 export type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
-export interface IEphemeralListener
-	extends AbortableAsyncIterator<IReadEvent> {
+export interface IEphemeralListener<T extends IEventData>
+	extends AbortableAsyncIterator<IReadEvent<T>> {
 	id: string
 }
 
@@ -84,8 +120,8 @@ export type IEventHandlerContext = {
 	signal?: AbortSignal
 }
 
-export type IEventHandler = (
-	item: IReadEvent,
+export type IEventHandler<T extends IEventData = IEventData> = (
+	item: IReadEvent<T>,
 	ctx: IEventHandlerContext
 ) => Promise<void>
 
@@ -120,4 +156,23 @@ export type IRetryHandlerOpts = {
 export interface JSONifier {
 	stringify(data: unknown): string
 	parse(data: string): unknown
+}
+
+export type ITableMutationEventData<T, N extends string> = {
+	topic: `${N}.insert`
+	payload: T
+	metadata: {}
+} | {
+	topic: `${N}.delete`
+	payload: T
+	metadata: {}
+} | {
+	topic: `${N}.update`
+	/**
+	 * The fields that were updated in the row
+	 */
+	payload: Partial<T>
+	metadata: {
+		old: T
+	}
 }

@@ -1,19 +1,19 @@
-import { RETRY_EVENT } from './consts'
-import type { IFindEventsResult } from './queries'
-import { findEvents, scheduleEventRetry } from './queries'
-import type { IEventHandler, IRetryHandlerOpts, RetryEventPayload } from './types'
+import { RETRY_EVENT } from './consts.ts'
+import { findEvents, scheduleEventRetry } from './queries.ts'
+import type { IEvent, IEventData, IEventHandler, IRetryHandlerOpts, RetryEventPayload } from './types.ts'
 
-type IMaybeRetryEvent = {
-	items: IFindEventsResult[]
+type IMaybeRetryEvent<T extends IEventData> = {
+	items: IEvent<T>[]
 	retryPayload?: RetryEventPayload
 }
 
-export function createRetryHandler(
-	handler: IEventHandler, { retriesS }: IRetryHandlerOpts
-): IEventHandler {
+export function createRetryHandler<T extends IEventData>(
+	{ retriesS }: IRetryHandlerOpts,
+	handler: IEventHandler<T>,
+): IEventHandler<T> {
 	return async(ev, ctx) => {
 		const { client, subscriptionId } = ctx
-		const evs: IMaybeRetryEvent[] = []
+		const evs: IMaybeRetryEvent<T>[] = []
 		const idsToLoad: string[] = []
 
 		const items = [...ev.items]
@@ -42,10 +42,10 @@ export function createRetryHandler(
 			const fetchedEvents = await findEvents.run({ ids: idsToLoad }, client)
 			const fetchedEventMap = fetchedEvents.reduce(
 				(map, ev) => {
-					map[ev.id] = ev
+					map[ev.id] = ev as IEvent<T>
 					return map
 				},
-				{} as { [id: string]: IFindEventsResult }
+				{} as { [id: string]: IEvent<T> }
 			)
 
 			ctx.logger.debug(

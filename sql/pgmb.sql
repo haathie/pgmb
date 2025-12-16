@@ -463,7 +463,8 @@ BEGIN
 
 	-- fetch the source of the template procedure
 	select pg_get_functiondef(oid) INTO proc_src
-	from pg_proc where proname = tmpl_proc_name;
+	from pg_proc where proname = tmpl_proc_name and
+		pronamespace = 'pgmb'::regnamespace;
 	IF proc_src IS NULL THEN
 		RAISE EXCEPTION 'Template procedure % not found', tmpl_proc_name;
 	END IF;

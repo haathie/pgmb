@@ -1,7 +1,7 @@
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
-import { createRetryHandler } from './retry-handler'
-import type { IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types'
+import { createRetryHandler } from './retry-handler.ts'
+import type { IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types.ts'
 
 /**
  * Create a handler that sends events to a webhook URL via HTTP POST.
@@ -51,7 +51,7 @@ export function createWebhookHandler(
 		return handler
 	}
 
-	return createRetryHandler(handler, retryOpts)
+	return createRetryHandler(retryOpts, handler)
 }
 
 function getIdempotencyKeyHeader(ev: IReadEvent) {

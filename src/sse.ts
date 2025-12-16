@@ -1,13 +1,13 @@
 import assert, { AssertionError } from 'node:assert'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { PgmbClient } from './client'
-import type { IFindEventsResult, IReplayEventsResult } from './queries'
-import { replayEvents } from './queries'
-import type { IEphemeralListener, SSERequestHandlerOpts } from './types'
-import { getCreateDateFromSubscriptionId, getDateFromMessageId } from './utils'
+import type { PgmbClient } from './client.ts'
+import type { IReplayEventsResult } from './queries.ts'
+import { replayEvents } from './queries.ts'
+import type { IEphemeralListener, IEvent, IEventData, SSERequestHandlerOpts } from './types.ts'
+import { getCreateDateFromSubscriptionId, getDateFromMessageId } from './utils.ts'
 
-export function createSSERequestHandler(
-	this: PgmbClient,
+export function createSSERequestHandler<T extends IEventData>(
+	this: PgmbClient<T>,
 	{
 		getSubscriptionOpts,
 		maxReplayEvents = 1000,
@@ -19,11 +19,11 @@ export function createSSERequestHandler(
 	return handleSSERequest.bind(this)
 
 	async function handleSSERequest(
-		this: PgmbClient,
+		this: PgmbClient<T>,
 		req: IncomingMessage,
 		res: ServerResponse
 	) {
-		let sub: IEphemeralListener | undefined
+		let sub: IEphemeralListener<T> | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
 
 		try {
@@ -114,7 +114,7 @@ export function createSSERequestHandler(
 
 		try {
 			// send replayed events first
-			writeSseEvents(res, eventsToReplay)
+			writeSseEvents(res, eventsToReplay as IEvent<T>[])
 
 			for await (const { items } of sub) {
 				writeSseEvents(res, items)
@@ -133,7 +133,7 @@ export function createSSERequestHandler(
 		}
 	}
 
-	function writeSseEvents(res: ServerResponse, items: IFindEventsResult[]) {
+	function writeSseEvents(res: ServerResponse, items: IEvent<T>[]) {
 		for(const { id, payload, topic } of items) {
 			const data = jsonifier.stringify(payload)
 			if(!maxReplayEvents) {
