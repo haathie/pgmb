@@ -681,7 +681,7 @@ describe('PGMB Client Tests', () => {
 						params: { data: i },
 						conditionsSql: 's.params @> e.payload',
 					},
-					async({ items }, { signal }) => {
+					async({ items }, {}) => {
 						assert(!active, 'Handler called concurrently!')
 						if(handled < EVENT_COUNT) {
 							// add more events
@@ -690,9 +690,9 @@ describe('PGMB Client Tests', () => {
 
 						active = true
 						const ms = Math.floor(Math.random() * 500) + 100
-						await setTimeout(ms, undefined, { signal }).finally(
-							() => ((active = false), (handled += items.length)),
-						)
+						await setTimeout(ms)
+						active = false
+						handled += items.length
 					},
 				)
 			}),

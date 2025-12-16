@@ -117,7 +117,6 @@ export type IEventHandlerContext = {
 	client: IDatabaseConnection
 	subscriptionId: string
 	extra?: unknown
-	signal?: AbortSignal
 }
 
 export type IEventHandler<T extends IEventData = IEventData> = (

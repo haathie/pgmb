@@ -120,12 +120,11 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 	async end() {
 		await super.end()
+		this.#endAc.abort()
 
 		while(this.#activeCheckpoints.length) {
 			await setTimeout(100)
 		}
-
-		this.#endAc.abort()
 
 		for(const id in this.listeners) {
 			delete this.listeners[id]
@@ -358,7 +357,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			return
 		}
 
-		while(!this.#endAc.signal.aborted && queue.length) {
+		while(queue.length) {
 			const { item, checkpoint } = queue[0]
 			const logger = this.logger
 				.child({ subId, items: item.items.map(i => i.id) })
@@ -375,7 +374,6 @@ export class PgmbClient<T extends IEventData = IEventData>
 				await handler(
 					item,
 					{
-						signal: this.#endAc.signal,
 						client: this.client,
 						logger,
 						subscriptionId: subId,
