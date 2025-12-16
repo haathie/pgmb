@@ -270,6 +270,57 @@ describe('PGMB Client Tests', () => {
 		await client.init()
 	})
 
+	it('should handle multiple clients w the same groupId', async() => {
+		const evCount = 20
+
+		const addClients = await Promise.all(
+			Array.from({ length: 2 }).map(async(_, i) => {
+				const pgmb = new PgmbClient<TestEventData>({
+					groupId: client.groupId,
+					logger: LOGGER.child({ dup: i + 1 }),
+					client: pool,
+					poll: true,
+					sleepDurationMs: 100
+				})
+				await pgmb.init()
+				return pgmb
+			})
+		)
+
+		const allClients = [client, ...addClients]
+		let processed = 0
+		await Promise.all(
+			allClients.map((c) => (
+				c.registerDurableSubscription(
+					createTopicalSubscriptionParams<TestEventData>({
+						topics: ['test-topic-1']
+					}),
+					async({ items }) => {
+						await setTimeout(Math.random() * 250)
+						processed += items.length
+					}
+				)
+			))
+		)
+
+		for(let i = 0; i < evCount;i++) {
+			await client.publish(
+				[{ topic: 'test-topic-1', payload: { key: i.toString() } }]
+			)
+			await setTimeout(50)
+		}
+
+		while(processed < evCount) {
+			await setTimeout(100)
+		}
+
+		await setTimeout(1000)
+
+		await Promise.all(addClients.map(cl => cl.end()))
+
+		assert.equal(processed, evCount)
+	})
+
 	it('should not read future events', async() => {
 		const DELAY_MS = 1000
 
@@ -443,16 +494,6 @@ describe('PGMB Client Tests', () => {
 
 		const fnData3 = await getPollFnData()
 		assert.deepEqual(fnData2.prosrc, fnData3.prosrc)
-
-		async function getPollFnData() {
-			const {
-				rows: [row],
-			} = await pool.query(
-				"select * from pg_proc where proname = 'poll_for_events'",
-			)
-			assert(row)
-			return row
-		}
 	})
 
 	it('should concurrently update poll fn', async() => {
@@ -469,13 +510,9 @@ describe('PGMB Client Tests', () => {
 
 		await client.readChanges()
 
-		const {
-			rows: [procRow],
-		} = await pool.query<{ prosrc: string }>(
-			"select prosrc from pg_proc where proname = 'poll_for_events'",
-		)
+		const { prosrc } = await getPollFnData()
 		for(const cond of conds) {
-			assert.ok(procRow.prosrc.includes(cond))
+			assert.ok(prosrc.includes(cond))
 		}
 	})
 
@@ -1006,6 +1043,18 @@ describe('PGMB Client Tests', () => {
 		const payload = { data: Math.random() }
 		const [{ id }] = await client.publish([{ topic, payload }], db)
 		return { id, topic, payload }
+	}
+
+	async function getPollFnData() {
+		const {
+			rows: [row],
+		} = await pool.query<{ prosrc: string }>(
+			`select * from pg_proc
+			where proname = 'poll_for_events'
+			and pronamespace = 'pgmb'::regnamespace`
+		)
+		assert(row)
+		return row
 	}
 })
 

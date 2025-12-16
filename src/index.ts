@@ -1,5 +1,6 @@
 export * from './client.ts'
 export type * from './types.ts'
+export type * from './query-types.ts'
 export * from './utils.ts'
 export * from './sse.ts'
 export * from './retry-handler.ts'

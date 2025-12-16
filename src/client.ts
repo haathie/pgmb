@@ -1,10 +1,10 @@
-import type { IDatabaseConnection } from '@pgtyped/runtime'
 import assert from 'assert'
 import { type Logger, pino } from 'pino'
 import { setTimeout } from 'timers/promises'
 import { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import { PGMBEventBatcher } from './batcher.ts'
 import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
+import type { PgClientLike, PgReleasableClient } from './query-types.ts'
 import type { GetWebhookInfoFn, IEphemeralListener, IEvent, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
@@ -36,7 +36,7 @@ export type IListenerStore<T extends IEventData> = {
 export class PgmbClient<T extends IEventData = IEventData>
 	extends PGMBEventBatcher<T> {
 
-	readonly client: IDatabaseConnection
+	readonly client: PgClientLike
 	readonly logger: Logger
 	readonly groupId: string
 	readonly sleepDurationMs: number
@@ -49,6 +49,8 @@ export class PgmbClient<T extends IEventData = IEventData>
 	readonly webhookHandler: IEventHandler
 
 	readonly listeners: { [subId: string]: IListenerStore<T> } = {}
+
+	#readClient?: PgReleasableClient
 
 	#endAc = new AbortController()
 	eventsPublished = 0
@@ -96,6 +98,11 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 	async init() {
 		this.#endAc = new AbortController()
+
+		if('connect' in this.client) {
+			this.#readClient = await this.client.connect()
+			this.logger.debug('acquired dedicated read client')
+		}
 
 		// maintain event table
 		await maintainEventsTable.run(undefined, this.client)
@@ -150,8 +157,10 @@ export class PgmbClient<T extends IEventData = IEventData>
 			this.#readTask,
 			this.#pollTask,
 			this.#subMaintainTask,
-			this.tableMaintenanceMs
+			this.#tableMaintainTask
 		])
+
+		this.#readClient?.release()
 
 		this.#readTask = undefined
 		this.#pollTask = undefined
@@ -160,7 +169,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		this.eventsPublished = 0
 	}
 
-	publish(events: T[], client: IDatabaseConnection = this.client) {
+	publish(events: T[], client = this.client) {
 		return writeEvents.run(
 			{
 				topics: events.map(e => e.topic),
@@ -260,7 +269,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		this.logger.trace({ deleted }, 'removed expired subscriptions')
 	}
 
-	async readChanges(client: IDatabaseConnection = this.client) {
+	async readChanges() {
 		if(this.#activeCheckpoints.length >= this.maxActiveCheckpoints) {
 			return 0
 		}
@@ -272,7 +281,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 				cursor: this.#inMemoryCursor,
 				chunkSize: this.readChunkSize
 			},
-			client
+			this.#readClient || this.client
 		)
 		if(!rows.length) {
 			return 0
@@ -451,11 +460,27 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 		try {
 			await setGroupCursor.run(
-				{ groupId: this.groupId, cursor: latestMaxCursor },
-				this.client
+				{
+					groupId: this.groupId,
+					cursor: latestMaxCursor,
+					releaseLock: !this.#activeCheckpoints.length
+				},
+				this.#readClient || this.client
+			)
+			this.logger.debug(
+				{
+					cursor: latestMaxCursor,
+					activeCheckpoints: this.#activeCheckpoints.length
+				},
+				'set cursor'
 			)
 
-			this.logger.debug({ cursor: latestMaxCursor }, 'set cursor')
+			// if there are no more active checkpoints,
+			// clear in-memory cursor, so in case another process takes
+			// over, if & when we start reading again, we read from the DB cursor
+			if(!this.#activeCheckpoints.length) {
+				this.#inMemoryCursor = null
+			}
 		} catch(err) {
 			this.logger
 				.error({ err, cursor: latestMaxCursor }, 'error setting cursor')

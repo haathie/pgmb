@@ -287,6 +287,7 @@ export const replayEvents = new PreparedQuery<IReplayEventsParams,IReplayEventsR
 export interface ISetGroupCursorParams {
   cursor: string;
   groupId: string;
+  releaseLock?: boolean | null | void;
 }
 
 /** 'SetGroupCursor' return type */
@@ -300,12 +301,16 @@ export interface ISetGroupCursorQuery {
   result: ISetGroupCursorResult;
 }
 
-const setGroupCursorIR: any = {"usedParamSet":{"groupId":true,"cursor":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":29,"b":37}]},{"name":"cursor","required":true,"transform":{"type":"scalar"},"locs":[{"a":40,"b":47}]}],"statement":"SELECT pgmb.set_group_cursor(:groupId!,\t:cursor!::pgmb.event_id) AS \"success!\""};
+const setGroupCursorIR: any = {"usedParamSet":{"groupId":true,"cursor":true,"releaseLock":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":31,"b":39}]},{"name":"cursor","required":true,"transform":{"type":"scalar"},"locs":[{"a":43,"b":50}]},{"name":"releaseLock","required":false,"transform":{"type":"scalar"},"locs":[{"a":69,"b":80}]}],"statement":"SELECT pgmb.set_group_cursor(\n\t:groupId!,\n\t:cursor!::pgmb.event_id,\n\t:releaseLock::boolean\n) AS \"success!\""};
 
 /**
  * Query generated from SQL:
  * ```
- * SELECT pgmb.set_group_cursor(:groupId!,	:cursor!::pgmb.event_id) AS "success!"
+ * SELECT pgmb.set_group_cursor(
+ * 	:groupId!,
+ * 	:cursor!::pgmb.event_id,
+ * 	:releaseLock::boolean
+ * ) AS "success!"
  * ```
  */
 export const setGroupCursor = new PreparedQuery<ISetGroupCursorParams,ISetGroupCursorResult>(setGroupCursorIR);

@@ -554,7 +554,17 @@ CREATE OR REPLACE FUNCTION read_next_events(
 	subscription_ids subscription_id[],
 	next_cursor event_id
 ) AS $$
+DECLARE
+	lock_key CONSTANT BIGINT :=
+		hashtext('pgmb.read_next_events.' || gid);
 BEGIN
+	-- provide a lock for the group, so that if we temporarily
+	-- or accidentally have multiple readers for the same group,
+	-- they don't interfere with each other.
+	IF NOT pg_try_advisory_lock(lock_key) THEN
+		RETURN;
+	END IF;
+	-- fetch the cursor to read from
 	-- if no cursor is provided, fetch from the group's last read event id
 	IF cursor IS NULL THEN
 		SELECT sc.last_read_event_id
@@ -635,13 +645,26 @@ END $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 	SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION set_group_cursor(
-	gid VARCHAR(48), new_cursor event_id
+	gid VARCHAR(48),
+	new_cursor event_id,
+	release_lock BOOLEAN DEFAULT TRUE
 ) RETURNS VOID AS $$
-INSERT INTO subscription_groups(id, last_read_event_id)
-	VALUES (gid, new_cursor)
-	ON CONFLICT (id) DO UPDATE
-	SET last_read_event_id = EXCLUDED.last_read_event_id;
-$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
+DECLARE
+	lock_key CONSTANT BIGINT :=
+		hashtext('pgmb.read_next_events.' || gid);
+BEGIN
+	-- release any existing lock for this group, if we hold one
+	IF release_lock THEN
+		PERFORM pg_advisory_unlock(lock_key);
+	END IF;
+
+	-- upsert the new cursor
+	INSERT INTO subscription_groups(id, last_read_event_id)
+		VALUES (gid, new_cursor)
+		ON CONFLICT (id) DO UPDATE
+		SET last_read_event_id = EXCLUDED.last_read_event_id;
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb, public;
 
 -- Function to re-enqueue events for a specific subscription

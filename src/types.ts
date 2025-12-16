@@ -1,9 +1,9 @@
-import type { IDatabaseConnection } from '@pgtyped/runtime'
 import type { IncomingMessage } from 'node:http'
 import type { Logger } from 'pino'
 import type { HeaderRecord } from 'undici-types/header.js'
 import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import type { IAssertSubscriptionParams } from './queries.ts'
+import type { PgClientLike } from './query-types.ts'
 
 export type SerialisedEvent = {
 	body: Buffer | string
@@ -69,7 +69,7 @@ export type PGMBEventBatcherOpts<T extends IEventData> = {
 }
 
 export type Pgmb2ClientOpts = {
-	client: IDatabaseConnection
+	client: PgClientLike
 	groupId: string
 	logger?: Logger
 	/** How long to sleep between polls & read fn calls */
@@ -145,7 +145,7 @@ export interface IEphemeralListener<T extends IEventData>
 
 export type IEventHandlerContext = {
 	logger: Logger
-	client: IDatabaseConnection
+	client: PgClientLike
 	subscriptionId: string
 	extra?: unknown
 }

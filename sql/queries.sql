@@ -74,7 +74,11 @@ FROM pgmb.replay_events(
 );
 
 /* @name setGroupCursor */
-SELECT pgmb.set_group_cursor(:groupId!,	:cursor!::pgmb.event_id) AS "success!";
+SELECT pgmb.set_group_cursor(
+	:groupId!,
+	:cursor!::pgmb.event_id,
+	:releaseLock::boolean
+) AS "success!";
 
 /* @name writeEvents */
 INSERT INTO pgmb.events (topic, payload, metadata)
