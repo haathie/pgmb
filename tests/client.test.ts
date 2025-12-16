@@ -1002,7 +1002,7 @@ describe('PGMB Client Tests', () => {
 
 			const [{ headers, body }] = responses
 			assert.equal(headers['content-type'], 'application/json')
-			assert.ok(headers['x-idempotency-key'])
+			assert.ok(headers['idempotency-key'])
 
 			assert.ok(body.includes(ev.id))
 		})
@@ -1023,7 +1023,7 @@ describe('PGMB Client Tests', () => {
 				{ headers: h2, body: b2 }
 			] = responses
 			assert.equal(b1, b2)
-			assert.equal(h1['x-idempotency-key'], h2['x-idempotency-key'])
+			assert.equal(h1['idempotency-key'], h2['idempotency-key'])
 		})
 	})
 

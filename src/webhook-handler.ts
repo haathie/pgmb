@@ -33,7 +33,7 @@ export function createWebhookHandler(
 			method: 'POST',
 			headers: {
 				'content-type': contentType,
-				'x-idempotency-key': getIdempotencyKeyHeader(ev),
+				'idempotency-key': getIdempotencyKeyHeader(ev),
 				...headers
 			},
 			body,
