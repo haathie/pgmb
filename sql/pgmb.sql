@@ -644,25 +644,33 @@ END $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
 	SET search_path TO pgmb, public
 	SECURITY INVOKER;
 
-CREATE OR REPLACE FUNCTION set_group_cursor(
-	gid VARCHAR(48),
-	new_cursor event_id,
-	release_lock BOOLEAN DEFAULT TRUE
-) RETURNS VOID AS $$
+CREATE OR REPLACE FUNCTION release_group_lock(gid VARCHAR(48))
+RETURNS VOID AS $$
 DECLARE
 	lock_key CONSTANT BIGINT :=
 		hashtext('pgmb.read_next_events.' || gid);
 BEGIN
-	-- release any existing lock for this group, if we hold one
-	IF release_lock THEN
-		PERFORM pg_advisory_unlock(lock_key);
-	END IF;
+	PERFORM pg_advisory_unlock(lock_key);
+END
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+SET search_path TO pgmb, public;
 
+CREATE OR REPLACE FUNCTION set_group_cursor(
+	gid VARCHAR(48),
+	new_cursor event_id,
+	release_lock BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
 	-- upsert the new cursor
 	INSERT INTO subscription_groups(id, last_read_event_id)
 		VALUES (gid, new_cursor)
 		ON CONFLICT (id) DO UPDATE
 		SET last_read_event_id = EXCLUDED.last_read_event_id;
+
+	-- release any existing lock for this group, if we hold one
+	IF release_lock THEN
+		PERFORM release_group_lock(gid);
+	END IF;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb, public;

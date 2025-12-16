@@ -14,6 +14,8 @@ export interface PgReleasableClient extends PgClient {
 
 export interface PgPoolLike extends PgClient {
 	connect: () => Promise<PgReleasableClient>
+	on(ev: 'remove', handler: (cl: PgReleasableClient) => void): this
+	off(ev: 'remove', handler: (cl: PgReleasableClient) => void): this
 }
 
 export type PgClientLike = PgClient | PgPoolLike

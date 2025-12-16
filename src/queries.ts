@@ -316,6 +316,33 @@ const setGroupCursorIR: any = {"usedParamSet":{"groupId":true,"cursor":true,"rel
 export const setGroupCursor = new PreparedQuery<ISetGroupCursorParams,ISetGroupCursorResult>(setGroupCursorIR);
 
 
+/** 'ReleaseGroupLock' parameters type */
+export interface IReleaseGroupLockParams {
+  groupId: string;
+}
+
+/** 'ReleaseGroupLock' return type */
+export interface IReleaseGroupLockResult {
+  success: undefined;
+}
+
+/** 'ReleaseGroupLock' query type */
+export interface IReleaseGroupLockQuery {
+  params: IReleaseGroupLockParams;
+  result: IReleaseGroupLockResult;
+}
+
+const releaseGroupLockIR: any = {"usedParamSet":{"groupId":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":31,"b":39}]}],"statement":"SELECT pgmb.release_group_lock(:groupId!) AS \"success!\""};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT pgmb.release_group_lock(:groupId!) AS "success!"
+ * ```
+ */
+export const releaseGroupLock = new PreparedQuery<IReleaseGroupLockParams,IReleaseGroupLockResult>(releaseGroupLockIR);
+
+
 /** 'WriteEvents' parameters type */
 export interface IWriteEventsParams {
   metadatas: unknownArray;

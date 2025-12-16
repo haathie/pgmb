@@ -3,7 +3,7 @@ import { type Logger, pino } from 'pino'
 import { setTimeout } from 'timers/promises'
 import { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import { PGMBEventBatcher } from './batcher.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
+import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, releaseGroupLock, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
 import type { PgClientLike, PgReleasableClient } from './query-types.ts'
 import type { GetWebhookInfoFn, IEphemeralListener, IEvent, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
@@ -100,8 +100,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		this.#endAc = new AbortController()
 
 		if('connect' in this.client) {
-			this.#readClient = await this.client.connect()
-			this.logger.debug('acquired dedicated read client')
+			this.client.on('remove', this.#onPoolClientRemoved)
 		}
 
 		// maintain event table
@@ -143,6 +142,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 	async end() {
 		await super.end()
+
 		this.#endAc.abort()
 
 		while(this.#activeCheckpoints.length) {
@@ -160,8 +160,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			this.#tableMaintainTask
 		])
 
-		this.#readClient?.release()
-
+		await this.#releaseReadClient()
 		this.#readTask = undefined
 		this.#pollTask = undefined
 		this.#subMaintainTask = undefined
@@ -275,6 +274,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 
 		const now = Date.now()
+		await this.#connectReadClient()
 		const rows = await readNextEvents.run(
 			{
 				groupId: this.groupId,
@@ -283,7 +283,20 @@ export class PgmbClient<T extends IEventData = IEventData>
 			},
 			this.#readClient || this.client
 		)
+			.catch(async err => {
+				if(err instanceof Error && err.message.includes('connection error')) {
+					await this.#releaseReadClient()
+				}
+
+				throw err
+			})
 		if(!rows.length) {
+			// if nothing is happening and there are no active checkpoints,
+			// we can just let the read client go
+			if(!this.#activeCheckpoints.length) {
+				await this.#releaseReadClient()
+			}
+
 			return 0
 		}
 
@@ -390,7 +403,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		while(queue.length) {
 			const { item, checkpoint } = queue[0]
 			const logger = this.logger
-				.child({ subId, items: item.items.map(i => i.id) })
+				.child({ subId, items: item.items.map(i => i.id), extra })
 
 			logger.trace(
 				{
@@ -459,11 +472,12 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 
 		try {
+			const releaseLock = !this.#activeCheckpoints.length
 			await setGroupCursor.run(
 				{
 					groupId: this.groupId,
 					cursor: latestMaxCursor,
-					releaseLock: !this.#activeCheckpoints.length
+					releaseLock: releaseLock
 				},
 				this.#readClient || this.client
 			)
@@ -478,13 +492,56 @@ export class PgmbClient<T extends IEventData = IEventData>
 			// if there are no more active checkpoints,
 			// clear in-memory cursor, so in case another process takes
 			// over, if & when we start reading again, we read from the DB cursor
-			if(!this.#activeCheckpoints.length) {
+			if(releaseLock) {
 				this.#inMemoryCursor = null
+				this.#readClient?.release()
+				this.#readClient = undefined
 			}
 		} catch(err) {
 			this.logger
 				.error({ err, cursor: latestMaxCursor }, 'error setting cursor')
 		}
+	}
+
+	async #releaseReadClient() {
+		if(!this.#readClient) {
+			return
+		}
+
+		try {
+			await releaseGroupLock
+				.run({ groupId: this.groupId }, this.#readClient)
+		} catch(err) {
+			this.logger.error({ err }, 'error releasing read client')
+		} finally {
+			this.#readClient?.release()
+			this.#readClient = undefined
+		}
+	}
+
+	async #connectReadClient() {
+		if(!('connect' in this.client)) {
+			return false
+		}
+
+		if(this.#readClient) {
+			return true
+		}
+
+		this.#readClient = await this.client.connect()
+		this.logger.trace('acquired dedicated read client')
+		return true
+	}
+
+	#onPoolClientRemoved = async(cl: PgReleasableClient) => {
+		if(cl !== this.#readClient) {
+			return
+		}
+
+		this.logger
+			.info('dedicated read client disconnected, may have dup event processing')
+		this.#readClient?.release()
+		this.#readClient = undefined
 	}
 
 	async #startLoop(fn: Function, sleepDurationMs: number) {

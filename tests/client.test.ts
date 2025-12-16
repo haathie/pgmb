@@ -160,6 +160,29 @@ describe('PGMB Client Tests', () => {
 		assert.equal(count, '0')
 	})
 
+	it('should handle disconnections when reading changes', async() => {
+		const sub = await client.registerSubscription({})
+		const evs = Array.fromAsync(sub)
+
+		await insertEvent(pool)
+		await setTimeout(500)
+		// disconnect all backends
+		await pool.query(
+			'SELECT pg_terminate_backend(pid) FROM pg_stat_activity'
+		).catch(() => {})
+		await setTimeout(50)
+		await insertEvent(pool)
+
+		await setTimeout(1000)
+
+		await sub.return()
+		const received = await evs
+		assert.equal(
+			received.flatMap(r => r.items).length,
+			2
+		)
+	})
+
 	it('should not read uncommitted events', async() => {
 		const c1 = await pool.connect()
 		await c1.query('BEGIN;')
@@ -928,6 +951,42 @@ describe('PGMB Client Tests', () => {
 				assert.equal(err?.code, 204)
 				return true
 			})
+		})
+
+		it('should handle reconnection on pgmb destruction', async() => {
+			const { es } = await openEs()
+			await client.registerDurableSubscription({}, () => setTimeout(500))
+
+			await insertEvent(pool)
+			await waitForESEvent(es)
+
+			await insertEvent(pool)
+			await insertEvent(pool)
+			// simulate pgmb client being destroyed, while simultaneously
+			// bringing up a new client to handle reconnection
+			const ogEndTask = client.end()
+			client = new PgmbClient<TestEventData>({
+				client: pool,
+				logger: LOGGER.child({ r: 1 }),
+				groupId: groupId,
+				poll: true,
+			})
+			await client.init()
+
+			const handler = (createSSERequestHandler<TestEventData>).call(
+				client,
+				{ getSubscriptionOpts: () => ({})	}
+			)
+			srv.removeAllListeners('request')
+			srv.on('request', (req, res) => {
+				latestSrvRes = res
+				return handler(req, res)
+			})
+
+			await waitForESEvent(es)
+			es.close()
+
+			await ogEndTask
 		})
 
 		async function openEs() {

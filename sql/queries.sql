@@ -80,6 +80,9 @@ SELECT pgmb.set_group_cursor(
 	:releaseLock::boolean
 ) AS "success!";
 
+/* @name releaseGroupLock */
+SELECT pgmb.release_group_lock(:groupId!) AS "success!";
+
 /* @name writeEvents */
 INSERT INTO pgmb.events (topic, payload, metadata)
 SELECT
