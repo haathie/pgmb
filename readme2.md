@@ -61,6 +61,29 @@ process.on('SIGINT', async () => {
 })
 ```
 
+Typically, we'd like our events to be typed. This can be achieved by providing a type parameter to the `PgmbClient` class. For example, if our events have the following structure:
+``` ts
+interface MyEventData {
+	topic: 'user-created'
+	payload: {
+		id: number
+		name: string
+		email: string
+	}
+} | {
+	topic: 'order-placed'
+	payload: {
+		orderId: number
+		userId: number
+		amount: number
+	}
+}
+
+// when publishing or consuming events,
+// TypeScript will now ensure type-safety
+const pgmb = new PgmbClient<MyEventData>({ ... })
+```
+
 ## Basic Concepts
 
 Full details about the architecture & design of PGMB can be found in the [docs](/docs/sql.md). At a high level, PGMB revolves around the concept of **events** & **subscriptions**, all features emerge from the interaction between these two concepts.
@@ -83,14 +106,16 @@ import { createRetryHandler } from '@haathie/pgmb'
 
 // setup a reliable consumer. Should execute this on each boot of your
 // service that wants to consume messages.
-const consumer = await pgmb.registerDurableSubscription(
+const consumer = await pgmb.registerReliableSubscription(
 	{
 		// we'll listen to "msg-created" and "msg-updated" events.
 		// note: this SQL leverages the GIN index on "params" column
 		conditionsSql: "s.params @> jsonb_build_object('topics', ARRAY[e.topic])",
 		params: { topics: ['msg-created', 'msg-updated'] },
 		// if the subscription isn't actively handled for more than 15 minutes,
-		// it'll be expired & removed
+		// it'll be expired & removed. We'll put this here in case the conditions,
+		// or parameters change in the future, the stale subscription will be
+		// removed automatically.
 		expiryInterval: '15 minutes'
 	},
 	// ideally add a retry handler, this will ensure that
@@ -125,7 +150,7 @@ const pgmb = new PgmbClient({
 	...otherOpts
 })
 
-await pgmb.registerDurableSubscription(
+await pgmb.registerReliableSubscription(
 	{
 		// we're partitioning by the event ID here, but it's just as
 		// easy to partition by any other attribute of the event.
@@ -149,7 +174,7 @@ As registering topical subscriptions is a common use case, PGMB provides a helpe
 ``` ts
 import { createTopicalSubscriptionParams } from '@haathie/pgmb'
 
-const sub = await pgmb.registerDurableSubscription(
+const sub = await pgmb.registerReliableSubscription(
 	createTopicalSubscriptionParams({
 		topics: ['msg-created', 'msg-updated'],
 		partition: { current: workerNumber, total: 3 },
@@ -245,7 +270,7 @@ type UserEventData = ITableMutationEventData<
 const pgmb = new PgmbClient<UserEventData>({ ... })
 
 // you can now consume events with proper typing:
-const sub = await pgmb.registerSubscription({})
+const sub = await pgmb.registerFireAndForgetSubscription({})
 for await(const { items } of sub) {
 	for(const item of items) {
 		if(item.topic === 'public.users.insert') {

@@ -44,7 +44,7 @@ export function createSSERequestHandler<T extends IEventData>(
 				)
 			}
 
-			sub = await this.registerSubscription({
+			sub = await this.registerFireAndForgetSubscription({
 				...await getSubscriptionOpts(req),
 				expiryInterval: `${maxReplayIntervalMs * 2} milliseconds`
 			})

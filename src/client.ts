@@ -8,8 +8,8 @@ import type { PgClientLike, PgReleasableClient } from './query-types.ts'
 import type { GetWebhookInfoFn, IEphemeralListener, IEvent, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
-type IDurableListener<T extends IEventData> = {
-	type: 'durable'
+type IReliableListener<T extends IEventData> = {
+	type: 'reliable'
 	handler: IEventHandler<T>
 	removeOnEmpty?: boolean
 	extra?: unknown
@@ -19,10 +19,13 @@ type IDurableListener<T extends IEventData> = {
 	}[]
 }
 
-type IListener<T extends IEventData> = {
-	type: 'ephemeral'
+type IFireAndForgetListener<T extends IEventData> = {
+	type: 'fire-and-forget'
 	stream: IEphemeralListener<T>
-} | IDurableListener<T>
+}
+
+type IListener<T extends IEventData> = IFireAndForgetListener<T>
+	| IReliableListener<T>
 
 type Checkpoint = {
 	activeTasks: number
@@ -179,7 +182,14 @@ export class PgmbClient<T extends IEventData = IEventData>
 		)
 	}
 
-	async registerSubscription(opts: RegisterSubscriptionParams) {
+	/**
+	 * Registers a fire-and-forget subscription, returning an async iterator
+	 * that yields events as they arrive. The client does not wait for event
+	 * processing acknowledgements. Useful for cases where data is eventually
+	 * consistent, or when event delivery isn't critical
+	 * (eg. http SSE, websockets).
+	 */
+	async registerFireAndForgetSubscription(opts: RegisterSubscriptionParams) {
 		const [{ id: subId }] = await assertSubscription
 			.run({ ...opts, groupId: this.groupId }, this.client)
 
@@ -189,19 +199,17 @@ export class PgmbClient<T extends IEventData = IEventData>
 		return this.#listenForEvents(subId)
 	}
 
-	async registerDurableSubscription(
+	async registerReliableSubscription(
 		opts: RegisterSubscriptionParams,
 		handler: IEventHandler<T>
 	) {
 		const [{ id: subId }] = await assertSubscription
 			.run({ ...opts, groupId: this.groupId }, this.client)
-		const listener: IListener<T> = { type: 'durable', handler, queue: [] }
-
 		this.logger
 			.debug({ subId, ...opts }, 'asserted subscription')
 		this.listeners[subId] ||= { values: {} }
 		const lid = createListenerId()
-		this.listeners[subId].values[lid] = listener
+		this.listeners[subId].values[lid] = { type: 'reliable', handler, queue: [] }
 
 		return {
 			subscriptionId: subId,
@@ -221,7 +229,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 		await Promise.allSettled(
 			Object.values(existingSubs).map(e => (
-				e.type === 'ephemeral'
+				e.type === 'fire-and-forget'
 				&& e.stream.throw(new Error('subscription removed'))
 			))
 		)
@@ -238,7 +246,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		stream.id = subId
 
 		this.listeners[subId] ||= { values: {} }
-		this.listeners[subId].values[lid] = { type: 'ephemeral', stream }
+		this.listeners[subId].values[lid] = { type: 'fire-and-forget', stream }
 
 		return stream
 	}
@@ -310,9 +318,9 @@ export class PgmbClient<T extends IEventData = IEventData>
 			const webhooks = webhookSubs[sid]
 			const lts = (this.listeners[sid] ||= { values: {} })
 			for(const wh of webhooks) {
-				// add durable listener for each webhook
+				// add reliable listener for each webhook
 				lts.values[wh.id] ||= {
-					type: 'durable',
+					type: 'reliable',
 					queue: [],
 					extra: wh,
 					removeOnEmpty: true,
@@ -346,12 +354,12 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 			for(const lid in listeners) {
 				const lt = listeners[lid]
-				if(lt.type === 'ephemeral') {
+				if(lt.type === 'fire-and-forget') {
 					lt.stream.enqueue(ev)
 					continue
 				}
 
-				this.#enqueueEventInDurableListener(subId, lid, ev, checkpoint)
+				this.#enqueueEventInReliableListener(subId, lid, ev, checkpoint)
 			}
 		}
 
@@ -379,18 +387,18 @@ export class PgmbClient<T extends IEventData = IEventData>
 	}
 
 	/**
-	 * Runs the durable listener's handler for each item in its queue,
+	 * Runs the reliable listener's handler for each item in its queue,
 	 * one after the other, till the queue is empty or the client has ended.
 	 * Any errors are logged, swallowed, and processing continues.
 	 */
-	async #enqueueEventInDurableListener(
+	async #enqueueEventInReliableListener(
 		subId: string,
 		lid: string,
 		item: IReadEvent<T>,
 		checkpoint: Checkpoint
 	) {
 		const lt = this.listeners[subId]?.values?.[lid]
-		assert(lt?.type === 'durable', 'invalid listener type: ' + lt.type)
+		assert(lt?.type === 'reliable', 'invalid listener type: ' + lt.type)
 
 		const { handler, queue, removeOnEmpty, extra } = lt
 
@@ -410,7 +418,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 					cpActiveTasks: checkpoint.activeTasks,
 					queue: queue.length,
 				},
-				'processing durable event handler queue'
+				'processing reliable event handler queue'
 			)
 
 			try {
@@ -424,7 +432,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 					}
 				)
 			} catch(err) {
-				logger.error({ err }, 'error in durable event handler')
+				logger.error({ err }, 'error in reliable event handler')
 			} finally {
 				checkpoint.activeTasks --
 				if(!checkpoint.activeTasks) {
@@ -437,7 +445,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 						cpActiveTasks: checkpoint.activeTasks,
 						queue: queue.length,
 					},
-					'completed durable event handler task'
+					'completed reliable event handler task'
 				)
 
 				assert(checkpoint.activeTasks >= 0, 'internal: checkpoint.activeTasks < 0')
