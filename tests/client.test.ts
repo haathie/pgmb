@@ -19,7 +19,7 @@ import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
 import type {
 	IEvent,
-	ITableMutationEventData,
+	IEventHandler,	ITableMutationEventData,
 	WebhookInfo } from '../src/index.ts'
 import {
 	createRetryHandler,
@@ -624,6 +624,51 @@ describe('PGMB Client Tests', () => {
 		assert.equal(events.length, 4)
 	})
 
+	it('should not update cursor if previous checkpoint still active', async() => {
+		const cursor0 = await getGroupCursor()
+		const sub2Fn = mock.fn<IEventHandler<TestEventData>>(async() => { })
+
+		let resolveFirst: (() => void) | undefined
+
+		await client.registerDurableSubscription(
+			{},
+			async() => {
+				if(!resolveFirst) {
+					return new Promise<void>((resolve) => {
+						resolveFirst = resolve
+					})
+				}
+			}
+		)
+
+		await client.registerDurableSubscription({}, sub2Fn)
+
+		for(let i = 0; i < client.maxActiveCheckpoints + 2;i++) {
+			await insertEvent(pool)
+			await setTimeout(client.sleepDurationMs)
+		}
+
+		const cursor1 = await getGroupCursor()
+		assert.equal(cursor0, cursor1)
+		// sub2 shouldve been called maxActiveCheckpoints times
+		// ensure we don't skip ahead too far
+		assert.equal(sub2Fn.mock.callCount(), client.maxActiveCheckpoints)
+
+		assert(resolveFirst)
+		resolveFirst()
+
+		await setTimeout(100)
+
+		const cursor2 = await getGroupCursor()
+		assert.notEqual(cursor2, cursor1)
+
+		await setTimeout(500)
+
+		// after the checkpoint got released, the next "readChanges()" call
+		// would read the remaining events in 1 batch
+		assert.equal(sub2Fn.mock.callCount(), client.maxActiveCheckpoints + 1)
+	})
+
 	it('should only update cursor after durable handlers are done', async() => {
 		const EVENT_COUNT = 150
 		let handled = 0
@@ -667,13 +712,7 @@ describe('PGMB Client Tests', () => {
 		await setTimeout(1_500)
 
 		// verify cursor correctly stored
-		const {
-			rows: [{ cursor }],
-		} = await pool.query<{ cursor: string }>(
-			`select last_read_event_id as cursor from
-			pgmb.subscription_groups where id = $1`,
-			[client.groupId],
-		)
+		const cursor = await getGroupCursor()
 
 		// max cursor
 		const {
@@ -952,6 +991,17 @@ describe('PGMB Client Tests', () => {
 			assert.equal(h1['x-idempotency-key'], h2['x-idempotency-key'])
 		})
 	})
+
+	async function getGroupCursor() {
+		const {
+			rows: [{ cursor }],
+		} = await pool.query<{ cursor: string }>(
+			`select last_read_event_id as cursor from
+			pgmb.subscription_groups where id = $1`,
+			[client.groupId],
+		)
+		return cursor
+	}
 
 	async function insertEvent(db: Pool | PoolClient) {
 		const topic = 'test-topic'
