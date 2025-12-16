@@ -24,6 +24,7 @@ import type {
 import {
 	createRetryHandler,
 	createSSERequestHandler,
+	createTopicalSubscriptionParams,
 	type IReadEvent,
 	PgmbClient
 } from '../src/index.ts'
@@ -144,9 +145,8 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should remove expired subs', async() => {
-		const sub = await client.registerSubscription({
-			expiryInterval: '1 second',
-		})
+		const sub = await client
+			.registerSubscription({ expiryInterval: '1 second' })
 		sub.return()
 
 		await setTimeout(1500)
@@ -274,10 +274,9 @@ describe('PGMB Client Tests', () => {
 		const DELAY_MS = 1000
 
 		const topic = 'scheduled-event'
-		const sub = await client.registerSubscription({
-			conditionsSql: "s.params @> jsonb_build_object('topic', e.topic)",
-			params: { topic: topic },
-		})
+		const sub = await client.registerSubscription(
+			createTopicalSubscriptionParams({ topics: [topic] })
+		)
 
 		const [prow, frow] = await writeScheduledEvents.run(
 			{
@@ -481,7 +480,8 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should fail to create subscription with invalid conditions SQL', async() => {
-		await assert.rejects(() => client.registerSubscription({ conditionsSql: 'INVALID SQL' }),
+		await assert.rejects(
+			() => client.registerSubscription({ conditionsSql: 'INVALID SQL' })
 		)
 	})
 
@@ -559,17 +559,15 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should create events from table mutations', async() => {
-		const sub = await client.registerSubscription({
-			params: {
+		const sub = await client.registerSubscription(
+			createTopicalSubscriptionParams<TestEventData>({
 				topics: [
-					'public.test_table.insert',
-					'public.test_table.update',
 					'public.test_table.delete',
-				],
-			},
-			conditionsSql:
-				's.params @> jsonb_build_object(\'topics\', ARRAY[e.topic])',
-		})
+					'public.test_table.insert',
+					'public.test_table.update'
+				]
+			})
+		)
 		const events: unknown[] = []
 		const task = (async() => {
 			for await (const { items } of sub) {

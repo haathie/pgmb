@@ -112,6 +112,32 @@ export type IReadEvent<T extends IEventData = IEventData> = {
 export type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
+export type CreateTopicalSubscriptionOpts<T extends IEventData> = {
+	/**
+	 * The topics to subscribe to.
+	 */
+	topics: T['topic'][]
+	/**
+	 * To scale out processing, you can partition the subscriptions.
+	 * For example, with `current: 0, total: 3`, only messages
+	 * where `hashtext(e.id) % 3 == 0` will be received by this subscription.
+	 */
+	partition?: {
+		current: number
+		total: number
+	}
+	/**
+	 * Add any additional params to filter by.
+	 * i.e "s.params @> jsonb_build_object(...additionalFilters)"
+	 * The value should be a valid SQL snippet.
+	 */
+	additionalFilters?: Record<string, string>
+	/** JSON to populate params */
+	additionalParams?: Record<string, any>
+
+	expiryInterval?: RegisterSubscriptionParams['expiryInterval']
+}
+
 export interface IEphemeralListener<T extends IEventData>
 	extends AbortableAsyncIterator<IReadEvent<T>> {
 	id: string
