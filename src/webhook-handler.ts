@@ -16,7 +16,7 @@ export function createWebhookHandler(
 		serialiseEvent = createSimpleSerialiser(jsonifier)
 	}: Partial<PgmbWebhookOpts>
 ) {
-	const handler: IEventHandler = async(ev, { extra }) => {
+	const handler: IEventHandler = async(ev, { logger, extra }) => {
 		assert(
 			typeof extra === 'object'
 			&& extra !== null
@@ -42,6 +42,12 @@ export function createWebhookHandler(
 		})
 		// don't care about response body
 		await res?.cancel().catch(() => { })
+		// see: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Idempotency-Key
+		if(status === 422) { // unprocessable request, do not retry
+			logger.warn('webhook returned 422, dropping event')
+			return
+		}
+
 		if(status < 200 || status >= 300) {
 			throw new Error(`Non-2xx response: ${status}`)
 		}
