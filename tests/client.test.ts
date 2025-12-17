@@ -29,6 +29,7 @@ import {
 	PgmbClient
 } from '../src/index.ts'
 import {
+	maintainEventsTable,
 	pollForEvents,
 	reenqueueEventsForSubscription,
 	removeExpiredSubscriptions,
@@ -260,6 +261,8 @@ describe('PGMB Client Tests', () => {
 	it('should handle concurrent changes', async() => {
 		await client.end()
 
+		const initialPartCount = await getEventsPartitionCount()
+
 		await Promise.all([
 			Array.from({ length: 5 }).map(() => insertEvent(pool)),
 			pollForEvents.run(undefined, pool),
@@ -277,20 +280,59 @@ describe('PGMB Client Tests', () => {
 
 		// check partitions exist
 		const {
-			rows: [{ count, expected }],
-		} = await pool.query<{ count: string, expected: number }>(
+			rows: [{ count }],
+		} = await pool.query<{ count: string }>(
 			`SELECT
-				count(*) as count,
-				pgmb.get_config_value('future_partitions_to_create')::int as expected
+				count(*) as count
 			FROM pg_catalog.pg_inherits
 			WHERE inhparent = 'pgmb.events'::regclass;`,
 		)
 		// we'd removed 1 old partition by executing maintainence w a future
 		// timestamp, which would've removed 1 old partition and created 1 new one
 		// since by default we retain 2 oldest partitions, we should be 1 ahead
-		assert.equal(+count, expected + 1)
+		assert.equal(+count, initialPartCount + 1)
 
 		await client.init()
+	})
+
+	it('should handle partition interval changes', async() => {
+		const initialPartCount = await getEventsPartitionCount()
+		await pool.query(
+			"UPDATE pgmb.config SET value = '1 minute' WHERE id = 'partition_interval';"
+		)
+		await maintainEventsTable.run(undefined, pool)
+
+		const initialPartCount2 = await getEventsPartitionCount()
+		assert.equal(initialPartCount2, initialPartCount)
+
+		await pool.query(
+			`UPDATE pgmb.config
+			SET value = (value::interval + '30 minutes' + '2 minutes'::interval)::text
+			WHERE id = 'future_intervals_to_create';`
+		)
+		await maintainEventsTable.run(undefined, pool)
+
+		// check inserting events still works
+		await insertEvent(pool)
+
+		await pool.query(
+			"UPDATE pgmb.config SET value = '1 day' WHERE id = 'partition_interval';"
+			+ `UPDATE pgmb.config SET value = '2 days'
+			WHERE id = 'future_intervals_to_create';`
+		)
+
+		await maintainEventsTable.run(undefined, pool)
+
+		// check inserting events still works
+		await writeScheduledEvents.run(
+			{
+				ts: [new Date(Date.now() + 24 * 60 * 60 * 1000)],
+				topics: ['test-topic'],
+				payloads: [{ data: 123 }],
+				metadatas: [{}],
+			},
+			pool
+		)
 	})
 
 	it('should handle multiple clients w the same groupId', async() => {
@@ -1085,6 +1127,15 @@ describe('PGMB Client Tests', () => {
 			assert.equal(h1['idempotency-key'], h2['idempotency-key'])
 		})
 	})
+
+	async function getEventsPartitionCount() {
+		// get current number of partitions
+		const { rows: [{ count }] } = await pool.query<{ count: string }>(
+			`SELECT count(*) as count FROM pg_catalog.pg_inherits
+			 WHERE inhparent = 'pgmb.events'::regclass;`,
+		)
+		return +count
+	}
 
 	async function getGroupCursor() {
 		const {

@@ -184,6 +184,30 @@ const sub = await pgmb.registerReliableSubscription(
 )
 ```
 
+If your use case doesn't need reliable processing of messages, and you just want to "fire-and-forget" process messages as they arrive, PGMB also provides a simpler API for that:
+
+``` ts
+const sub = await pgmb.registerFireAndForgetSubscription(
+	createTopicalSubscriptionParams({
+		topics: ['msg-created', 'msg-updated'],
+		// can expire this much quicker, because there's no
+		// state to maintain
+		expiryInterval: '1 minute'
+	})
+)
+for await(const { items } of sub) {
+	for(const item of items) {
+		console.log('Received event', item.payload)
+	}
+	
+	// breaking the for loop will automatically
+	// unregister the subscription
+	// break
+	// alternatively, you can call sub.return() to
+	// unregister the subscription
+}
+```
+
 ## Publishing Messages
 
 As shown above, it's quite easy to publish a message or two:
@@ -211,6 +235,11 @@ const pgmb = new PgmbClient({
 
 // enqueue messages to be published in the background
 pgmb.enqueue({ topic: 'msg-created', payload: { id: 123, hello: 'world' } })
+```
+
+To flush any queued messages immediately, you can call:
+``` ts
+await pgmb.flush()
 ```
 
 In case of failures while publishing messages in the background, PGMB will log the full failed message so it can be picked up later.
@@ -246,6 +275,8 @@ and push events whenever a mutation occurs. The following events are produced:
 - `<schema>.<table>.insert` (eg. `public.users.insert`)
 - `<schema>.<table>.update` (eg. `public.users.update`)
 - `<schema>.<table>.delete` (eg. `public.users.delete`)
+
+Note: table event names are lowercased automatically.
 
 As events are published via triggers in the same transaction as the mutation,
 you can be sure that if the transaction rolls back, no events are published.
@@ -283,6 +314,179 @@ for await(const { items } of sub) {
 
 ### Customising Table Events
 
-Sometimes, it's not desirable to publish events for all mutations on a table, but only a subset of them. Or perhaps some transformations need to be applied to the data before publishing. To achieve this, PGMB allows you to create custom functions that determine whether to publish an event or not + have the ability to serialise the data to JSON on your own.
+Sometimes, it's not desirable to publish events for all mutations on a table, but only a subset of them. Or perhaps some transformations need to be applied to the data before publishing. To achieve this, PGMB allows you to override the default serialise function that determines whether to publish an event or not + have the ability to serialise the data to JSON on your own.
 
-TODO
+``` sql
+REPLACE FUNCTION serialise_record_for_event(
+	tabl oid,
+	op TEXT, -- 'INSERT', 'UPDATE', 'DELETE'
+	record RECORD,
+	serialised OUT JSONB,
+	emit OUT BOOLEAN
+) AS $$
+BEGIN
+	if tabl = 'public.users'::regclass THEN
+		serialised := jsonb_build_object(
+			'id', record.id,
+			'name', record.name
+			-- note: we're omitting email & created_at from the event payload
+		);
+		-- don't emit events for spam users, just a demo condition
+		emit := record.email NOT LIKE '%@spam.com';
+		RETURN;
+	END IF;
+	
+	-- add other table customisations here, if needed
+	
+	serialised := to_jsonb(record);
+	emit := TRUE;
+END
+$$ LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
+	SECURITY INVOKER;
+```
+
+## HTTP SSE Subscriptions
+
+PGMB makes it super easy to create HTTP SSE (Server Sent Events) endpoints that stream events to clients in real-time. PGMB also supports efficient resumption of SSE streams via the standard `Last-Event-ID` header, as events & their mappings are stored durably in Postgres.
+
+``` ts
+import express from 'express'
+
+const app = express()
+
+const handler = createSSERequestHandler.call(pgmb, {
+	// obtain subscription parameters based on the request,
+	// can throw errors if the request is invalid, unauthenticated
+	// or any other checks fail.
+	getSubscriptionOpts: req => (
+		// we'll listen to user-updated events for the user ID
+		// specified in the query param
+		createTopicalSubscriptionParams({
+			topics: ['user-updated'],
+			// the old row is stored in metadata->'old'
+			additionalFilters: { id: "e.metadata->'old'->>'id'" },
+			additionalParams: { id: req.query.id },
+		})
+	),
+	// upon reconnection, we'll replay at most 1000 events
+	maxReplayEvents: 1000,
+	// we'll only allow replaying events that are at most 5 minutes old
+	maxReplayIntervalMs: 5 * 60 * 1000,
+})
+
+app.get('/sse', handler)
+app.listen(8000)
+```
+
+Now, on the client side, you can connect to this SSE endpoint as follows:
+
+``` js
+const evtSource = new EventSource('/sse?id=123')
+
+evtSource.addEventListener('user-updated', function(event) {
+	const data = JSON.parse(event.data)
+	console.log('User updated:', data)
+})
+```
+
+Note: in case an assertion with the "last-event-id" fails, PGMB will automatically close the SSE connection with a 204, which tells the client to not retry the connection.
+
+## Webhook Subscriptions
+
+PGMB also supports HTTP webhooks for events, with retry logic built-in.
+
+``` ts
+const pgmb = new PgmbClient({
+	webhookHandlerOpts: {
+		retryOpts: {
+			// if a webhook failes, retry it after
+			// 1 minute, then after 5 minutes, then after 15 minutes
+			retriesS: [60, 5 * 60, 15 * 60]
+		},
+		// timeout each webhook after 5 seconds
+		timeoutMs: 5000,
+		// headers added to each webhook request
+		headers: {
+			// add a custom user-agent header
+			'user-agent': 'my-service-client/1.0.0'
+		}
+	},
+	// this function is called to obtain webhook URLs
+	// for a given set of PGMB subscription IDs. These
+	// subscription IDs may have 0 or more webhook URLs
+	// associated with them.
+	async getWebhookInfo(subIds) {
+		// need to have a table that maps pgmb_sub_id to
+		// webhook URL & a unique identifier for the webhook
+		// subscription.
+		// The PGMB subscription ID can map to multiple webhook
+		// subscriptions.
+		// This is just an example, adapt as per your schema.
+		const { rows } = await pgmb.client.query(
+			`SELECT id, url, pgmb_sub_id as "subId"
+			FROM webhook_subscriptions
+			WHERE pgmb_sub_id = ANY($1)`,
+			[subIds]
+		)
+		return rows.reduce((acc, row) => {
+			acc[row.subId] ||= []
+			acc[row.subId].push({ url: row.url })
+			return acc
+		}, {} as Record<string, WebhookInfo[]>)
+	}
+})
+await pgmb.init()
+
+// creating a webhook subscription,
+// just as a more advanced example, we're inserting 
+// the subscription & webhook in a single transaction
+const cl = await pool.connect()
+await cl.query('BEGIN')
+
+// create a webhook subscription for all "order-placed" events
+// (of course any other conditions can be used here too)
+const sub = await pgmb.assertSubscription(
+	createTopicalSubscriptionParams({
+		topics: ['order-placed']
+	}),
+	cl
+)
+
+// insert a webhook for this subscription
+await cl.query(
+	`INSERT INTO webhook_subscriptions (pgmb_sub_id, url)
+	VALUES ($1, $2)`,
+	[sub.id, 'https://webhook.site/12345']
+)
+
+await cl.query('END')
+cl.release()
+```
+
+The above setup will ensure that any webhooks associated with a subscription are called whenever events are published to that subscription. In case of failures, the webhooks will be retried based on the provided retry options.
+Each webhook request is further paired with a `idempotency-key` header, which remains constant across retries for the same event. This allows webhook handlers to be idempotent, and safely handle retries without worrying about duplicate processing.
+
+If you need to override the serialisation of webhook payloads, you can provide a custom function while creating the `PgmbClient`:
+
+``` ts
+const pgmb = new PgmbClient({
+	webhookHandlerOpts: {
+		serialiseEvent(ev) {
+			return {
+				body: JSON.stringify(ev),
+				contentType: 'application/json'
+			}
+		},
+		...
+	},
+	...
+})
+```
+
+## General Notes
+
+- **Does the client automatically reconnect on errors & temporary network issues?**
+	- If using a `pg.Pool` as the client, yes -- the pool will automatically handle reconnections.
+	- If using a single `pg.Client`, then no -- you'll have to handle reconnections on your own.
+- **What happens if we accidentally start multiple instances of the same PGMB client with the same `groupId`?**
+	PGMB uses advisory locks to ensure that only a single instance of a subscription is active. If multiple instances are started with the same `groupId`, only one will be active, and the others will wait for the lock to be released. This ensures that there are no duplicate deliveries of events.

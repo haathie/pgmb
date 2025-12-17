@@ -75,7 +75,7 @@ function createSimpleSerialiser(
 	return ev => ({
 		body: jsonifier.stringify({
 			items: ev.items
-				.map(({ id, payload, topic }) => ({ id, payload, topic	}))
+				.map(({ id, payload, topic }) => ({ id, payload, topic }))
 		}),
 		contentType: 'application/json'
 	})

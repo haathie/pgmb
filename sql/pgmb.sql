@@ -18,7 +18,7 @@ SET search_path TO pgmb, public;
 CREATE TYPE config_type AS ENUM(
 	'plugin_version',
 	'partition_retention_period',
-	'future_partitions_to_create',
+	'future_intervals_to_create',
 	'partition_interval',
 	'poll_chunk_size'
 );
@@ -39,7 +39,7 @@ INSERT INTO config(id, value)
 	VALUES
 		('plugin_version', '0.2.0'),
 		('partition_retention_period', '60 minutes'),
-		('future_partitions_to_create', '12'),
+		('future_intervals_to_create', '120 minutes'),
 		('partition_interval', '30 minutes'),
 		('poll_chunk_size', '10000');
 
@@ -87,6 +87,16 @@ RETURNS event_id AS $$
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
  SET search_path TO pgmb, public;
 
+ -- fn to extract the date from a message ID.
+CREATE OR REPLACE FUNCTION pgmb.extract_date_from_event_id(id event_id)
+RETURNS TIMESTAMPTZ AS $$
+BEGIN
+-- convert it to a timestamp
+RETURN to_timestamp(('0x' || substr(id, 3, 13))::numeric / 1000000);
+END
+$$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE SECURITY INVOKER
+ SET search_path TO pgmb, public;
+
 CREATE TABLE IF NOT EXISTS events(
 	id event_id PRIMARY KEY DEFAULT create_event_id_default(),
 	topic VARCHAR(255) NOT NULL,
@@ -125,6 +135,45 @@ CREATE OR REPLACE FUNCTION get_time_partition_name(
 	SELECT table_id || '_' || to_char(ts, 'YYYYMMDDHH24MI')
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 
+-- finds the series of contiguous partitions and their bounds
+CREATE OR REPLACE FUNCTION get_partitions_and_bounds(
+	table_id regclass
+) RETURNS TABLE(
+	lower_bound event_id,
+	upper_bound event_id,
+	partition_ids oid[]
+) AS $$
+	WITH partitions AS (
+		select
+			pc.oid,
+			REGEXP_MATCH(
+				pg_get_expr(pc.relpartbound, pc.oid),
+				'^FOR VALUES FROM \(''(.*)''\) TO \(''(.*)''\)$'
+			) AS bounds
+		from pg_inherits pts
+		inner join pg_class pc on pc.oid = pts.inhrelid
+		where pts.inhparent = table_id
+	),
+	-- from: https://dba.stackexchange.com/a/101010
+	ordered_intervals AS (
+		SELECT
+			*,
+			(LAG(bounds[2]) OVER (ORDER BY bounds[1]) < bounds[1] OR NULL) as step
+		FROM partitions
+	),
+	grouped_intervals AS (
+		select *, count(step) over (order by bounds[1]) as grp
+		from ordered_intervals
+	)
+	select
+		MIN(bounds[1]),
+		MAX(bounds[2]),
+		array_agg(oid)
+	FROM grouped_intervals
+	GROUP BY grp;
+$$ LANGUAGE sql STABLE PARALLEL SAFE SECURITY INVOKER
+ SET search_path TO pgmb;
+
 -- Partition maintenance function for events table. Creates partitions for
 -- the current and next interval. Deletes partitions that are older than the
 -- configured time interval.
@@ -133,7 +182,7 @@ $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 CREATE OR REPLACE FUNCTION maintain_time_partitions_using_event_id(
 	table_id regclass,
 	partition_interval INTERVAL,
-	future_partitions_to_create INT,
+	future_interval INTERVAL,
 	retention_period INTERVAL,
 	additional_sql TEXT DEFAULT NULL,
 	current_ts timestamptz DEFAULT NOW()
@@ -141,45 +190,71 @@ CREATE OR REPLACE FUNCTION maintain_time_partitions_using_event_id(
 RETURNS void AS $$
 DECLARE
 	ts_trunc timestamptz := date_bin(partition_interval, current_ts, '2000-1-1');
-	oldest_partition_name text := pgmb
+	oldest_pt_to_keep text := pgmb
 		.get_time_partition_name(table_id, ts_trunc - retention_period);
 	p_info RECORD;
 	lock_key CONSTANT BIGINT :=
 		hashtext('pgmb.maintain_tp.' || table_id::text);
+	ranges_to_create tstzrange[];
+	cur_range tstzrange;
 BEGIN
+	ASSERT partition_interval >= interval '1 minute',
+		'partition_interval must be at least 1 minute';
+	ASSERT future_interval >= partition_interval,
+		'future_interval must be at least as large as partition_interval';
+
 	IF NOT pg_try_advisory_xact_lock(lock_key) THEN
 		-- another process is already maintaining partitions for this table
 		RETURN;
 	END IF;
 
-	-- Ensure current and next hour partitions exist
-	FOR i IN 0..(future_partitions_to_create-1) LOOP
+	-- find all intervals we need to create partitions for
+	WITH existing_part_ranges AS (
+		SELECT
+			tstzrange(
+	  		extract_date_from_event_id(lower_bound),
+	     	extract_date_from_event_id(upper_bound),
+	      '[]'
+	    ) as range
+    FROM pgmb.get_partitions_and_bounds(table_id)
+	),
+	future_tzs AS (
+		SELECT
+			tstzrange(dt, dt + partition_interval, '[]') AS range
+		FROM generate_series(
+			ts_trunc,
+			ts_trunc + future_interval,
+			partition_interval
+		) AS gs(dt)
+	),
+	diffs AS (
+		SELECT
+			CASE WHEN epr.range IS NOT NULL
+			THEN (ftz.range::tstzmultirange - epr.range::tstzmultirange)
+			ELSE ftz.range::tstzmultirange
+			END AS ranges
+		FROM future_tzs ftz
+		LEFT JOIN existing_part_ranges epr ON ftz.range && epr.range
+	)
+	select ARRAY_AGG(u.range) FROM diffs
+	CROSS JOIN LATERAL unnest(diffs.ranges) AS u(range)
+	INTO ranges_to_create;
+
+	ranges_to_create := COALESCE(ranges_to_create, ARRAY[]::tstzrange[]);
+
+	-- go from now to future_interval
+	FOREACH cur_range IN ARRAY ranges_to_create LOOP
 		DECLARE
-			target_ts timestamptz := ts_trunc + (i * partition_interval);
-			pt_name TEXT := pgmb.get_time_partition_name(table_id, target_ts);
+			start_ev_id event_id := pgmb.create_event_id(lower(cur_range), 0);
+			end_ev_id event_id := pgmb.create_event_id(upper(cur_range), 0);
+			pt_name TEXT := pgmb.get_time_partition_name(table_id, lower(cur_range));
 		BEGIN
-			IF pt_name < oldest_partition_name THEN
-				RAISE EXCEPTION 'pt_name(%) < op(%); rp=%, ts=%', pt_name, oldest_partition_name, (ts_trunc - retention_period), target_ts;
-			END IF;
-			-- check if partition already exists
-			IF EXISTS (
-				SELECT 1
-				FROM pg_catalog.pg_inherits
-				WHERE inhparent = table_id
-					AND inhrelid::regclass::text = pt_name
-			) THEN
-				CONTINUE;
-			END IF;
+			RAISE NOTICE 'creating partition "%". start: %, end: %',
+				pt_name, lower(cur_range), upper(cur_range);
 
-			RAISE NOTICE 'creating partition %', pt_name;
-
-			EXECUTE format(
+			EXECUTE FORMAT(
 				'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
-				pt_name,
-				table_id,
-				pgmb.create_event_id(target_ts, 0),
-				-- fill with max possible tx id
-				pgmb.create_event_id(target_ts + partition_interval, 0)
+				pt_name, table_id, start_ev_id, end_ev_id
 			);
 
 			IF additional_sql IS NOT NULL THEN
@@ -193,7 +268,7 @@ BEGIN
 		SELECT inhrelid::regclass AS child
 		FROM pg_catalog.pg_inherits
 		WHERE inhparent = table_id
-			AND inhrelid::regclass::text < oldest_partition_name
+			AND inhrelid::regclass::text < oldest_pt_to_keep
 	) LOOP
 		EXECUTE format('DROP TABLE %I', p_info.child);
 	END LOOP;
@@ -545,7 +620,8 @@ SET search_path TO pgmb, public;
 CREATE OR REPLACE FUNCTION read_next_events(
 	gid VARCHAR(48),
 	cursor event_id DEFAULT NULL,
-	chunk_size INT DEFAULT get_config_value('poll_chunk_size')::INT
+	chunk_size INT DEFAULT get_config_value('poll_chunk_size')::INT,
+	peek BOOLEAN DEFAULT FALSE
 ) RETURNS TABLE(
 	id event_id,
 	topic VARCHAR(255),
@@ -561,7 +637,7 @@ BEGIN
 	-- provide a lock for the group, so that if we temporarily
 	-- or accidentally have multiple readers for the same group,
 	-- they don't interfere with each other.
-	IF NOT pg_try_advisory_lock(lock_key) THEN
+	IF NOT pg_try_advisory_lock(lock_key) AND NOT peek THEN
 		RETURN;
 	END IF;
 	-- fetch the cursor to read from
@@ -704,14 +780,14 @@ CREATE OR REPLACE FUNCTION maintain_events_table(
 )
 RETURNS VOID AS $$
 DECLARE
-	pi INTERVAL := get_config_value('partition_interval')::INTERVAL;
-	fpc INT := get_config_value('future_partitions_to_create')::INT;
-	rp INTERVAL := get_config_value('partition_retention_period')::INTERVAL;
+	pi INTERVAL := get_config_value('partition_interval');
+	fic INTERVAL := get_config_value('future_intervals_to_create');
+	rp INTERVAL := get_config_value('partition_retention_period');
 BEGIN
 	PERFORM maintain_time_partitions_using_event_id(
 		'pgmb.events'::regclass,
 		partition_interval := pi,
-		future_partitions_to_create := fpc,
+		future_interval := fic,
 		retention_period := rp,
 		-- turn off autovacuum on the events table, since we're not
 		-- going to be updating/deleting rows from it.
@@ -727,7 +803,7 @@ BEGIN
 	PERFORM maintain_time_partitions_using_event_id(
 		'pgmb.subscription_events'::regclass,
 		partition_interval := pi,
-		future_partitions_to_create := fpc,
+		future_interval := fic,
 		retention_period := rp,
 		-- turn off autovacuum on the events table, since we're not
 		-- going to be updating/deleting rows from it.

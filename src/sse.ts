@@ -15,7 +15,7 @@ export function createSSERequestHandler<T extends IEventData>(
 		jsonifier = JSON
 	}: SSERequestHandlerOpts,
 ) {
-
+	const replayEnabled = maxReplayEvents > 0
 	return handleSSERequest.bind(this)
 
 	async function handleSSERequest(
@@ -34,7 +34,7 @@ export function createSSERequestHandler<T extends IEventData>(
 			// validate last-event-id header
 			const fromEventId = req.headers['last-event-id']
 			if(fromEventId) {
-				assert(maxReplayEvents > 0, 'replay disabled on server')
+				assert(replayEnabled, 'replay disabled on server')
 				assert(typeof fromEventId === 'string', 'invalid last-event-id header')
 				const fromDt = getDateFromMessageId(fromEventId)
 				assert(fromDt, 'invalid last-event-id header value')
@@ -136,7 +136,7 @@ export function createSSERequestHandler<T extends IEventData>(
 	function writeSseEvents(res: ServerResponse, items: IEvent<T>[]) {
 		for(const { id, payload, topic } of items) {
 			const data = jsonifier.stringify(payload)
-			if(!maxReplayEvents) {
+			if(!replayEnabled) {
 				// if replay is disabled, do not send an id field
 				res.write(`event: ${topic}\ndata: ${data}\n\n`)
 				continue

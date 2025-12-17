@@ -173,6 +173,8 @@ export type SSERequestHandlerOpts = {
 	maxReplayIntervalMs?: number
 	/**
 	 * Max number of events to replay for an SSE subscription.
+	 * Set to 0 to disable replaying events.
+	 * @default 1000
 	 */
 	maxReplayEvents?: number
 

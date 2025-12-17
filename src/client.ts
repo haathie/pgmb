@@ -182,6 +182,17 @@ export class PgmbClient<T extends IEventData = IEventData>
 		)
 	}
 
+	async assertSubscription(
+		opts: RegisterSubscriptionParams,
+		client = this.client
+	) {
+		const [rslt] = await assertSubscription
+			.run({ ...opts, groupId: this.groupId }, client)
+
+		this.logger.debug({ ...opts, ...rslt }, 'asserted subscription')
+		return rslt
+	}
+
 	/**
 	 * Registers a fire-and-forget subscription, returning an async iterator
 	 * that yields events as they arrive. The client does not wait for event
@@ -190,12 +201,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 	 * (eg. http SSE, websockets).
 	 */
 	async registerFireAndForgetSubscription(opts: RegisterSubscriptionParams) {
-		const [{ id: subId }] = await assertSubscription
-			.run({ ...opts, groupId: this.groupId }, this.client)
-
-		this.logger
-			.debug({ subId, ...opts }, 'asserted subscription')
-
+		const { id: subId } = await this.assertSubscription(opts)
 		return this.#listenForEvents(subId)
 	}
 
@@ -203,10 +209,8 @@ export class PgmbClient<T extends IEventData = IEventData>
 		opts: RegisterSubscriptionParams,
 		handler: IEventHandler<T>
 	) {
-		const [{ id: subId }] = await assertSubscription
-			.run({ ...opts, groupId: this.groupId }, this.client)
-		this.logger
-			.debug({ subId, ...opts }, 'asserted subscription')
+		const { id: subId } = await this.assertSubscription(opts)
+
 		this.listeners[subId] ||= { values: {} }
 		const lid = createListenerId()
 		this.listeners[subId].values[lid] = { type: 'reliable', handler, queue: [] }
