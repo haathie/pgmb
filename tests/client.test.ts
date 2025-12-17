@@ -67,6 +67,8 @@ describe('PGMB Client Tests', () => {
 
 		const sql = await readFile('./sql/pgmb.sql', 'utf-8')
 		await pool.query(sql)
+		// swallow errors
+		pool.on('error', () => {})
 	})
 
 	after(async() => {

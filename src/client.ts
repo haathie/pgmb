@@ -163,7 +163,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			this.#tableMaintainTask
 		])
 
-		await this.#releaseReadClient()
+		await this.#unlockAndReleaseReadClient()
 		this.#readTask = undefined
 		this.#pollTask = undefined
 		this.#subMaintainTask = undefined
@@ -297,7 +297,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		)
 			.catch(async err => {
 				if(err instanceof Error && err.message.includes('connection error')) {
-					await this.#releaseReadClient()
+					await this.#unlockAndReleaseReadClient()
 				}
 
 				throw err
@@ -306,7 +306,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			// if nothing is happening and there are no active checkpoints,
 			// we can just let the read client go
 			if(!this.#activeCheckpoints.length) {
-				await this.#releaseReadClient()
+				await this.#unlockAndReleaseReadClient()
 			}
 
 			return 0
@@ -506,8 +506,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			// over, if & when we start reading again, we read from the DB cursor
 			if(releaseLock) {
 				this.#inMemoryCursor = null
-				this.#readClient?.release()
-				this.#readClient = undefined
+				this.#releaseReadClient()
 			}
 		} catch(err) {
 			this.logger
@@ -515,7 +514,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 	}
 
-	async #releaseReadClient() {
+	async #unlockAndReleaseReadClient() {
 		if(!this.#readClient) {
 			return
 		}
@@ -526,8 +525,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		} catch(err) {
 			this.logger.error({ err }, 'error releasing read client')
 		} finally {
-			this.#readClient?.release()
-			this.#readClient = undefined
+			this.#releaseReadClient()
 		}
 	}
 
@@ -552,7 +550,13 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 		this.logger
 			.info('dedicated read client disconnected, may have dup event processing')
-		this.#readClient?.release()
+	}
+
+	#releaseReadClient() {
+		try {
+			this.#readClient?.release()
+		} catch{}
+
 		this.#readClient = undefined
 	}
 
