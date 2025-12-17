@@ -773,6 +773,7 @@ describe('PGMB Client Tests', () => {
 	it('should only update cursor after reliable handlers are done', async() => {
 		const EVENT_COUNT = 150
 		let handled = 0
+		let eventsPublished = 0
 
 		const subs = await Promise.all(
 			Array.from({ length: 3 }).map((_, i) => {
@@ -810,6 +811,10 @@ describe('PGMB Client Tests', () => {
 			await setTimeout(100)
 		}
 
+		while(handled < eventsPublished) {
+			await setTimeout(100)
+		}
+
 		await setTimeout(1_500)
 
 		// verify cursor correctly stored
@@ -829,6 +834,7 @@ describe('PGMB Client Tests', () => {
 		assert(ephRecv.flatMap((e) => e.items).length >= EVENT_COUNT)
 
 		async function pushEvents(count: number) {
+			eventsPublished += count
 			for(let i = 0; i < count; i++) {
 				await client
 					.publish([{ topic: 'test-topic', payload: { data: i % 3 } }])
