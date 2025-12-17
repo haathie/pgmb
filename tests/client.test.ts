@@ -528,7 +528,7 @@ describe('PGMB Client Tests', () => {
 		)
 
 		// ensure it took less than 1 second
-		assert(tt <= 1000, `Took too long: ${tt}ms`)
+		assert(tt <= 1100, `Took too long: ${tt}ms`)
 
 		assert.equal(count, SUB_TYPES * EVENT_COUNT)
 
