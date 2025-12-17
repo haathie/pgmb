@@ -410,6 +410,30 @@ CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events(
 CREATE INDEX IF NOT EXISTS subscription_events_group_idx
 	ON subscription_events(group_id, id);
 
+-- Create a role with minimal access to the database. As we deal with
+-- custom SQL quite often, we don't want an accidentally malicious or bad
+-- SQL to have too much access to the database.
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_roles WHERE rolname = 'pgmb_reader'
+	) THEN
+		CREATE ROLE pgmb_reader NOLOGIN NOSUPERUSER NOCREATEDB
+	 	NOCREATEROLE NOINHERIT NOREPLICATION;
+	END IF;
+END
+$$;
+
+-- Give schema usage access
+GRANT USAGE, CREATE ON SCHEMA pgmb TO pgmb_reader;
+GRANT SELECT ON TABLE events TO pgmb_reader;
+GRANT SELECT ON TABLE config TO pgmb_reader;
+GRANT SELECT ON TABLE subscriptions TO pgmb_reader;
+GRANT SELECT, UPDATE, DELETE ON TABLE unread_events TO pgmb_reader;
+-- Grant insert-only access to "subscription_events"
+GRANT UPDATE, INSERT ON TABLE subscription_events TO pgmb_reader;
+
+SET ROLE pgmb_reader;
 -- we'll also validate the conditions_sql on insert/update
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
 RETURNS TRIGGER AS $$
@@ -420,8 +444,9 @@ BEGIN
 	RETURN NEW;
 END;
 $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
-	SET search_path TO pgmb, public
-	SECURITY INVOKER;
+	SET search_path TO pgmb
+	SECURITY DEFINER;
+RESET ROLE;
 
 CREATE TRIGGER validate_subscription_conditions_sql_trigger
 BEFORE INSERT OR UPDATE ON subscriptions
@@ -447,7 +472,6 @@ BEGIN
 		FROM unread_events td
 		WHERE td.event_id < create_event_id(NOW(), 0)
 		FOR UPDATE SKIP LOCKED
-		-- ORDER BY td.event_id
 		LIMIT chunk_size
 	),
 	deleted AS (
@@ -503,7 +527,7 @@ BEGIN
 END;
 $body$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
 SET search_path TO pgmb, public
-SECURITY INVOKER;
+SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION prepare_poll_for_events_fn(
 	sql_statements TEXT[]
@@ -548,11 +572,13 @@ BEGIN
 	proc_src := REPLACE(proc_src, tmpl_proc_placeholder, condition_sql);
 	proc_src := REPLACE(proc_src, tmpl_proc_name, 'poll_for_events');
 
+	SET ROLE pgmb_reader;
 	EXECUTE proc_src;
+	RESET ROLE;
 END;
 $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
 SET search_path TO pgmb, public
-SECURITY DEFINER;
+SECURITY INVOKER;
 
 SELECT prepare_poll_for_events_fn(ARRAY['true']);
 
