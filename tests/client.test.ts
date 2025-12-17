@@ -298,6 +298,8 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should handle partition interval changes', async() => {
+		await client.end()
+
 		const initialPartCount = await getEventsPartitionCount()
 		await pool.query(
 			"UPDATE pgmb.config SET value = '1 minute' WHERE id = 'partition_interval';"
