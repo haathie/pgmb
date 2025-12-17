@@ -8,7 +8,7 @@
   },
   "repository": "https://github.com/haathie/pgmb",
   "scripts": {
-    "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test --test",
+    "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test --test tests/*.test.ts",
     "prepare": "tsc",
     "build": "tsc",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
