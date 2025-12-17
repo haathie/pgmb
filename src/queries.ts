@@ -540,39 +540,6 @@ const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activ
 export const removeExpiredSubscriptions = new PreparedQuery<IRemoveExpiredSubscriptionsParams,IRemoveExpiredSubscriptionsResult>(removeExpiredSubscriptionsIR);
 
 
-/** 'ReenqueueEventsForSubscription' parameters type */
-export interface IReenqueueEventsForSubscriptionParams {
-  eventIds: stringArray;
-  offsetInterval: DateOrString;
-  subscriptionId: string;
-}
-
-/** 'ReenqueueEventsForSubscription' return type */
-export interface IReenqueueEventsForSubscriptionResult {
-  reenqueuedEventIds: string;
-}
-
-/** 'ReenqueueEventsForSubscription' query type */
-export interface IReenqueueEventsForSubscriptionQuery {
-  params: IReenqueueEventsForSubscriptionParams;
-  result: IReenqueueEventsForSubscriptionResult;
-}
-
-const reenqueueEventsForSubscriptionIR: any = {"usedParamSet":{"eventIds":true,"subscriptionId":true,"offsetInterval":true},"params":[{"name":"eventIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":48,"b":57}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":69,"b":84}]},{"name":"offsetInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":88,"b":103}]}],"statement":"SELECT pgmb.reenqueue_events_for_subscription(\n\t:eventIds!::text[],\n\t:subscriptionId!,\n\t:offsetInterval!::INTERVAL\n) AS \"reenqueuedEventIds!\""};
-
-/**
- * Query generated from SQL:
- * ```
- * SELECT pgmb.reenqueue_events_for_subscription(
- * 	:eventIds!::text[],
- * 	:subscriptionId!,
- * 	:offsetInterval!::INTERVAL
- * ) AS "reenqueuedEventIds!"
- * ```
- */
-export const reenqueueEventsForSubscription = new PreparedQuery<IReenqueueEventsForSubscriptionParams,IReenqueueEventsForSubscriptionResult>(reenqueueEventsForSubscriptionIR);
-
-
 /** 'MaintainEventsTable' parameters type */
 export type IMaintainEventsTableParams = void;
 

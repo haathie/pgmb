@@ -751,30 +751,6 @@ END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb, public;
 
--- Function to re-enqueue events for a specific subscription
-CREATE OR REPLACE FUNCTION reenqueue_events_for_subscription(
-	event_ids event_id[],
-	sub_id VARCHAR(48),
-	_offset INTERVAL DEFAULT '1 second'
-) RETURNS SETOF event_id AS $$
-	INSERT INTO events(id, topic, payload, metadata, subscription_id)
-	SELECT
-		create_event_id(NOW() + _offset, create_random_bigint()),
-		e.topic,
-		e.payload,
-		e.metadata || jsonb_build_object(
-			'reenqueued_at', NOW(),
-			'retries', COALESCE((e.metadata->>'retries')::int, 0) + 1,
-			'original_event_id', COALESCE(e.metadata->>'original_event_id', e.id)
-		),
-		sub_id
-	FROM events e
-	INNER JOIN unnest(event_ids) AS u(eid) ON e.id = u.eid
-	RETURNING id;
-$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb, public
-SECURITY INVOKER;
-
 CREATE OR REPLACE FUNCTION maintain_events_table(
 	current_ts timestamptz DEFAULT NOW()
 )

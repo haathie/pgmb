@@ -148,12 +148,5 @@ WITH deleted AS (
 )
 SELECT COUNT(*) AS "deleted!" FROM deleted;
 
-/* @name reenqueueEventsForSubscription */
-SELECT pgmb.reenqueue_events_for_subscription(
-	:eventIds!::text[],
-	:subscriptionId!,
-	:offsetInterval!::INTERVAL
-) AS "reenqueuedEventIds!";
-
 /* @name maintainEventsTable */
 SELECT pgmb.maintain_events_table();

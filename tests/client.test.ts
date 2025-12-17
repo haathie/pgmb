@@ -31,8 +31,8 @@ import {
 import {
 	maintainEventsTable,
 	pollForEvents,
-	reenqueueEventsForSubscription,
 	removeExpiredSubscriptions,
+	scheduleEventRetry,
 	writeScheduledEvents,
 } from '../src/queries.ts'
 
@@ -602,11 +602,12 @@ describe('PGMB Client Tests', () => {
 
 		const now = Date.now()
 		const reSubId = sub1.id
-		await reenqueueEventsForSubscription.run(
+		await scheduleEventRetry.run(
 			{
-				eventIds: [value.items[0].id],
+				ids: [value.items[0].id],
+				retryNumber: 1,
 				subscriptionId: reSubId,
-				offsetInterval: '1 second',
+				delayInterval: '1 second',
 			},
 			pool,
 		)
