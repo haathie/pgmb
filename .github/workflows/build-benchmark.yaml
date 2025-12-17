@@ -6,12 +6,8 @@ on:
     branches:
       # change to main when merging to main
       - main
-    types: 
+    types:
       - completed
-  push:
-    branches:
-      # change to main when merging to main
-      - v2
 
 jobs:
   build:
