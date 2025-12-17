@@ -14,14 +14,14 @@ jobs:
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v2
-      
+
     - name: Run Dependencies
       run: docker compose -f docker/test.docker-compose.yaml up -d
 
     - name: Setup Node
       uses: actions/setup-node@v1
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: 24
 
     - name: Restore Node Cache
       uses: actions/cache/restore@v4
@@ -29,12 +29,12 @@ jobs:
       with:
         path: node_modules
         key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-          
+
     - name: Install Dependencies
       if: steps.cache-node-modules.outputs.cache-hit != 'true'
       id: npm-ci
       run: npm ci
-      
+
     - name: Save Node Cache
       # This step ensures the cache is saved even if subsequent steps fail
       uses: actions/cache/save@v4
