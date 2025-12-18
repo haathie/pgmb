@@ -123,7 +123,9 @@ SELECT
 		'ids',
 		:ids!::pgmb.event_id[],
 		'retryNumber',
-		:retryNumber!::int
+		:retryNumber!::int,
+		'handlerName',
+		:handlerName!::text
 	),
 	:subscriptionId!::pgmb.subscription_id
 RETURNING id AS "id!";

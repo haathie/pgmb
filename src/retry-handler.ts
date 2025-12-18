@@ -1,106 +1,122 @@
 import { RETRY_EVENT } from './consts.ts'
+import type { IReadNextEventsResult } from './queries.ts'
 import { findEvents, scheduleEventRetry } from './queries.ts'
-import type { IEvent, IEventData, IEventHandler, IRetryHandlerOpts, RetryEventPayload } from './types.ts'
-
-type IMaybeRetryEvent<T extends IEventData> = {
-	items: IEvent<T>[]
-	retryPayload?: RetryEventPayload
-}
+import type { PgClientLike } from './query-types.ts'
+import type { IEvent, IEventData, IEventHandler, IReadEvent, IRetryEventPayload, IRetryHandlerOpts } from './types.ts'
 
 export function createRetryHandler<T extends IEventData>(
-	{ retriesS }: IRetryHandlerOpts,
+	{ name, retriesS }: IRetryHandlerOpts,
 	handler: IEventHandler<T>,
 ): IEventHandler<T> {
 	return async(ev, ctx) => {
-		const { client, subscriptionId } = ctx
-		const evs: IMaybeRetryEvent<T>[] = []
-		const idsToLoad: string[] = []
+		const { client, subscriptionId, logger } = ctx
 
-		const items = [...ev.items]
+		try {
+			await handler(ev,	ctx)
+		} catch(err) {
+			const retryNumber = (ev.retry?.retryNumber ?? 0)
+			const nextRetryGapS = retriesS[retryNumber]
+			logger.error({ err, nextRetryGapS }, 'error in event handler')
 
-		for(let i = 0; i < items.length;) {
-			const { topic, payload: _p } = items[i]
-			if(topic !== RETRY_EVENT) {
+			if(!nextRetryGapS) {
+				return
+			}
+
+			await scheduleEventRetry.run(
+				{
+					subscriptionId,
+					ids: ev.items.map(i => i.id),
+					retryNumber: retryNumber + 1,
+					delayInterval: `${nextRetryGapS} seconds`,
+					handlerName: name,
+				},
+				client
+			)
+		}
+	}
+}
+
+export async function normaliseRetryEventsInReadEventMap<T extends IEventData>(
+	rows: IReadNextEventsResult[],
+	client: PgClientLike
+) {
+	const map: { [sid: string]: IReadEvent<T>[] } = {}
+	const evsToPopulate: IReadEvent<T>[] = []
+	const idsToLoad: string[] = []
+
+	// reverse the map, do subscriptionId -> events
+	const subToEventMap: { [sid: string]: IReadNextEventsResult[] } = {}
+	for(const row of rows) {
+		for(const subId of row.subscriptionIds) {
+			subToEventMap[subId] ||= []
+			subToEventMap[subId].push(row)
+		}
+	}
+
+	const subEventList = Object.entries(subToEventMap)
+	for(const [subscriptionId, items] of subEventList) {
+		for(let i = 0;i < items.length;i) {
+			const item = items[i]
+			if(item.topic !== RETRY_EVENT) {
 				i++
 				continue
 			}
 
-			const retryPayload = _p as RetryEventPayload
-			if(retryPayload.ids?.length) {
-				evs.push({ items: [], retryPayload })
-				idsToLoad.push(...retryPayload.ids)
+			const retry = item.payload as IRetryEventPayload
+			if(!retry.ids?.length) {
+				continue
 			}
 
+			idsToLoad.push(...retry.ids)
+
+			map[subscriptionId] ||= []
+
+			const ev: IReadEvent<T> = { items: [], retry }
+			map[subscriptionId].push(ev)
+			evsToPopulate.push(ev)
 			items.splice(i, 1)
 		}
 
-		if(items.length) {
-			evs.push({ items })
+		if(!items.length) {
+			continue
 		}
 
-		if(idsToLoad) {
-			const fetchedEvents = await findEvents.run({ ids: idsToLoad }, client)
-			const fetchedEventMap = fetchedEvents.reduce(
-				(map, ev) => {
-					map[ev.id] = ev as IEvent<T>
-					return map
-				},
-				{} as { [id: string]: IEvent<T> }
-			)
+		map[subscriptionId] ||= []
+		map[subscriptionId].push({ items: items as unknown as IEvent<T>[] })
+	}
 
-			ctx.logger.debug(
-				{
-					idsToLoad: idsToLoad.length,
-					fetchedCount: fetchedEvents.length
-				},
-				'loaded events for retry'
-			)
+	if(!idsToLoad.length) {
+		return { map, retryEvents: 0, retryItemCount: 0 }
+	}
 
-			// populate the events
-			for(const { items, retryPayload } of evs) {
-				if(!retryPayload) {
-					continue
-				}
+	const fetchedEvents = await findEvents.run({ ids: idsToLoad }, client)
+	const fetchedEventMap = fetchedEvents.reduce(
+		(map, ev) => {
+			map[ev.id] = ev as IEvent<T>
+			return map
+		},
+		{} as { [id: string]: IEvent<T> }
+	)
 
-				for(const id of retryPayload.ids) {
-					const ev = fetchedEventMap[id]
-					if(!ev) {
-						ctx.logger.warn({ id }, 'event to retry not found')
-						continue
-					}
+	// populate the events
+	for(const { items, retry } of evsToPopulate) {
+		if(!retry) {
+			continue
+		}
 
-					items.push(ev)
-				}
+		for(const id of retry.ids) {
+			const ev = fetchedEventMap[id]
+			if(!ev) {
+				continue
 			}
+
+			items.push(ev)
 		}
+	}
 
-		for(const ev of evs) {
-			const logger = ctx.logger.child({
-				retryNumber: ev.retryPayload?.retryNumber,
-				ids: ev.items.map(i => i.id)
-			})
-
-			try {
-				await handler(ev,	{ ...ctx, logger })
-			} catch(err) {
-				const retryNumber = (ev.retryPayload?.retryNumber ?? 0)
-				const nextRetryGapS = retriesS[retryNumber]
-				logger.error({ err, nextRetryGapS }, 'error in event handler')
-
-				if(!nextRetryGapS) {
-					return
-				}
-
-				await scheduleEventRetry.run(
-					{
-						subscriptionId,
-						ids: ev.items.map(i => i.id),
-						retryNumber: retryNumber + 1,
-						delayInterval: `${nextRetryGapS} seconds`
-					},
-					client
-				)
-			}
-		}
+	return {
+		map,
+		retryEvents: evsToPopulate.length,
+		retryItemCount: idsToLoad.length,
 	}
 }

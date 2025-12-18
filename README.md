@@ -106,11 +106,9 @@ Subscriptions can also be automatically expired after a certain period of inacti
 ## Building a Queue & Exchange system
 
 ``` ts
-import { createRetryHandler } from '@haathie/pgmb'
-
 // setup a reliable consumer. Should execute this on each boot of your
 // service that wants to consume messages.
-const consumer = await pgmb.registerReliableSubscription(
+await pgmb.registerReliableSubscription(
 	{
 		// we'll listen to "msg-created" and "msg-updated" events.
 		// note: this SQL leverages the GIN index on "params" column
@@ -120,24 +118,22 @@ const consumer = await pgmb.registerReliableSubscription(
 		// it'll be expired & removed. We'll put this here in case the conditions,
 		// or parameters change in the future, the stale subscription will be
 		// removed automatically.
-		expiryInterval: '15 minutes'
-	},
-	// ideally add a retry handler, this will ensure that
-	// any failures in processing are retried based on your
-	// provided configuration.
-	// Each retry will include the exact same set of events
-	// that were included in the original attempt.
-	createRetryHandler(
-		{
+		expiryInterval: '15 minutes',
+		// Each retry will include the exact same set of events
+		// that were included in the original attempt.
+		retryOpts: {
+			// give a unique name for this handler. It need only be unique
+			// within the same subscription parameters
+			name: 'log-data',
 			// will retry after 1 minute, then after 5 minutes
 			retriesS: [60, 5 * 60]
-		},
-		async({ items }, { logger }) => {
-			for(const item of items) {
-				logger.info('Received event', item.payload)
-			}
 		}
-	)
+	},
+	async({ items }, { logger }) => {
+		for(const item of items) {
+			logger.info('Received event', item.payload)
+		}
+	}
 )
 
 // let's publish an event

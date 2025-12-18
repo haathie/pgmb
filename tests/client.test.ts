@@ -22,7 +22,6 @@ import type {
 	IEventHandler,	ITableMutationEventData,
 	WebhookInfo } from '../src/index.ts'
 import {
-	createRetryHandler,
 	createSSERequestHandler,
 	createTopicalSubscriptionParams,
 	type IReadEvent,
@@ -32,7 +31,6 @@ import {
 	maintainEventsTable,
 	pollForEvents,
 	removeExpiredSubscriptions,
-	scheduleEventRetry,
 	writeScheduledEvents,
 } from '../src/queries.ts'
 
@@ -591,43 +589,6 @@ describe('PGMB Client Tests', () => {
 		)
 	})
 
-	it('should re-enqueue event for subscription', async() => {
-		const sub1 = await client.registerFireAndForgetSubscription({ conditionsSql: 'TRUE' })
-		// control subscription
-		const sub2 = await client.registerFireAndForgetSubscription({
-			conditionsSql: 'TRUE AND TRUE',
-		})
-
-		await insertEvent(pool)
-
-		const [{ done, value }] = await Promise.all([sub1.next(), sub2.next()])
-		assert(!done)
-		assert.equal(value.items.length, 1)
-
-		const now = Date.now()
-		const reSubId = sub1.id
-		await scheduleEventRetry.run(
-			{
-				ids: [value.items[0].id],
-				retryNumber: 1,
-				subscriptionId: reSubId,
-				delayInterval: '1 second',
-			},
-			pool,
-		)
-
-		const e2 = await Promise.race([sub1.next(), sub2.next()])
-		assert(!e2.done)
-
-		// shouldve come after at least 1 second
-		assert.ok(Date.now() - now >= 1000)
-
-		assert.equal(e2.value.items.length, 1)
-		assert.partialDeepStrictEqual(e2.value.items, [
-			{ subscriptionIds: [sub1.id] },
-		])
-	})
-
 	it('should match subscriptions', async() => {
 		const noSub = await client.registerFireAndForgetSubscription({
 			conditionsSql: "e.payload->>'non_exist' IS NOT NULL",
@@ -874,23 +835,33 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should retry failed handlers', async() => {
+		const c1Mock = mock.fn<IEventHandler<TestEventData>>(async() => { })
+		const c2Mock = mock.fn<IEventHandler<TestEventData>>(async() => { })
+
 		let failedEvents: ITestEvent[] | undefined
 		let doneEvents: ITestEvent[] | undefined
 		const { subscriptionId } = await client.registerReliableSubscription(
-			{},
-			createRetryHandler(
-				{ retriesS: [1] },
-				async({ items }) => {
-					if(!failedEvents) {
-						failedEvents = items
-						throw new Error('Simulated failure')
-					}
+			{
+				retryOpts: {
+					name: 's1',
+					retriesS: [1]
+				}
+			},
+			async({ items }) => {
+				if(!failedEvents) {
+					failedEvents = items
+					throw new Error('Simulated failure')
+				}
 
-					await setTimeout(100)
-					doneEvents = items
-				},
-			),
+				await setTimeout(100)
+				doneEvents = items
+			},
 		)
+
+		// control 1
+		await client.registerReliableSubscription({}, c1Mock)
+		// control 2 (w different sub)
+		await client.registerReliableSubscription({ params: { a: 1 } }, c2Mock)
 
 		await Promise.all([insertEvent(pool), insertEvent(pool)])
 
@@ -916,6 +887,10 @@ describe('PGMB Client Tests', () => {
 		)
 		// 2 events, 1 retry
 		assert.equal(count, '3')
+
+		// check the other subs didn't receive the retry event
+		assert.equal(c1Mock.mock.callCount(), 1)
+		assert.equal(c2Mock.mock.callCount(), 1)
 	})
 
 	it('should not reschedule after retries exhausted', async() => {
@@ -923,8 +898,8 @@ describe('PGMB Client Tests', () => {
 			throw new Error('Always fails')
 		})
 		const { subscriptionId } = await client.registerReliableSubscription(
-			{},
-			createRetryHandler({ retriesS: [1, 1] }, handler),
+			{ retryOpts: { name: 's1', retriesS: [1, 1] } },
+			handler
 		)
 
 		await insertEvent(pool)

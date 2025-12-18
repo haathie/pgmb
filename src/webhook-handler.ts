@@ -60,7 +60,7 @@ export function createWebhookHandler(
 		return handler
 	}
 
-	return createRetryHandler(retryOpts, handler)
+	return createRetryHandler({ name: 'webhook', ...retryOpts }, handler)
 }
 
 function getIdempotencyKeyHeader(ev: IReadEvent) {

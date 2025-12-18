@@ -5,7 +5,8 @@ import { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import { PGMBEventBatcher } from './batcher.ts'
 import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, releaseGroupLock, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
 import type { PgClientLike, PgReleasableClient } from './query-types.ts'
-import type { GetWebhookInfoFn, IEphemeralListener, IEvent, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterSubscriptionParams } from './types.ts'
+import { createRetryHandler, normaliseRetryEventsInReadEventMap } from './retry-handler.ts'
+import type { GetWebhookInfoFn, IEphemeralListener, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterReliableSubscriptionParams, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
 type IReliableListener<T extends IEventData> = {
@@ -57,7 +58,6 @@ export class PgmbClient<T extends IEventData = IEventData>
 	#readClient?: PgReleasableClient
 
 	#endAc = new AbortController()
-	eventsPublished = 0
 
 	readonly #shouldPoll: boolean
 	#readTask?: Promise<void>
@@ -169,7 +169,6 @@ export class PgmbClient<T extends IEventData = IEventData>
 		this.#pollTask = undefined
 		this.#subMaintainTask = undefined
 		this.#activeCheckpoints = []
-		this.eventsPublished = 0
 	}
 
 	publish(events: T[], client = this.client) {
@@ -207,13 +206,21 @@ export class PgmbClient<T extends IEventData = IEventData>
 	}
 
 	async registerReliableSubscription(
-		opts: RegisterSubscriptionParams,
+		{ retryOpts, ...opts }: RegisterReliableSubscriptionParams,
 		handler: IEventHandler<T>
 	) {
 		const { id: subId } = await this.assertSubscription(opts)
+		if(retryOpts) {
+			handler = createRetryHandler(retryOpts, handler)
+		}
 
-		this.listeners[subId] ||= { values: {} }
-		const lid = createListenerId()
+		const lts = (this.listeners[subId] ||= { values: {} })
+		const lid = retryOpts?.name || createListenerId()
+		assert(
+			!lts.values[lid],
+			`Handler with id ${lid} already registered for subscription ${subId}.`
+			+ ' Cancel the existing one or use a different id.'
+		)
 		this.listeners[subId].values[lid] = { type: 'reliable', handler, queue: [] }
 
 		return {
@@ -336,35 +343,38 @@ export class PgmbClient<T extends IEventData = IEventData>
 			}
 		}
 
-		// reverse the map, do subscriptionId -> events
-		const subToEventMap:
-			{ [subscriptionId: string]: IReadEvent<T> } = {}
-		for(const row of rows) {
-			for(const subId of row.subscriptionIds) {
-				subToEventMap[subId] ||= { items: [] }
-				subToEventMap[subId].items.push(row as unknown as IEvent<T>)
-			}
-
-			this.eventsPublished ++
-		}
+		const {
+			map: subToEventMap,
+			retryEvents,
+			retryItemCount
+		} = await normaliseRetryEventsInReadEventMap<T>(
+			rows,
+			this.client,
+		)
 
 		const subs = Object.entries(subToEventMap)
 		const checkpoint: Checkpoint
 			= { activeTasks: 0, nextCursor: rows[0].nextCursor }
-		for(const [subId, ev] of subs) {
+		for(const [subId, evs] of subs) {
 			const listeners = this.listeners[subId]?.values
 			if(!listeners) {
 				continue
 			}
 
-			for(const lid in listeners) {
-				const lt = listeners[lid]
-				if(lt.type === 'fire-and-forget') {
-					lt.stream.enqueue(ev)
-					continue
-				}
+			for(const ev of evs) {
+				for(const lid in listeners) {
+					if(ev.retry?.handlerName && lid !== ev.retry.handlerName) {
+						continue
+					}
 
-				this.#enqueueEventInReliableListener(subId, lid, ev, checkpoint)
+					const lt = listeners[lid]
+					if(lt.type === 'fire-and-forget') {
+						lt.stream.enqueue(ev)
+						continue
+					}
+
+					this.#enqueueEventInReliableListener(subId, lid, ev, checkpoint)
+				}
 			}
 		}
 
@@ -376,10 +386,11 @@ export class PgmbClient<T extends IEventData = IEventData>
 				rowsRead: rows.length,
 				subscriptions: subs.length,
 				durationMs: Date.now() - now,
-				totalEventsPublished: this.eventsPublished,
 				checkpoint,
 				activeCheckpoints: this.#activeCheckpoints.length,
-				webhookCount
+				webhookCount,
+				retryEvents,
+				retryItemCount
 			},
 			'read rows'
 		)
@@ -420,8 +431,12 @@ export class PgmbClient<T extends IEventData = IEventData>
 				continue
 			}
 
-			const logger = this.logger
-				.child({ subId, items: item.items.map(i => i.id), extra })
+			const logger = this.logger.child({
+				subId,
+				items: item.items.map(i => i.id),
+				extra,
+				retryNumber: item.retry?.retryNumber,
+			})
 
 			logger.trace(
 				{

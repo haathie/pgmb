@@ -30,7 +30,7 @@ export type PgmbWebhookOpts = {
 	 * Configure retry intervals in seconds for failed webhook requests.
 	 * If null, a failed handler will fail the event processor. Use carefully.
 	 */
-	retryOpts?: IRetryHandlerOpts | null
+	retryOpts?: Omit<IRetryHandlerOpts, 'name'> | null
 	jsonifier?: JSONifier
 	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
@@ -107,10 +107,15 @@ export type Pgmb2ClientOpts = {
 
 export type IReadEvent<T extends IEventData = IEventData> = {
 	items: IEvent<T>[]
+	retry?: IRetryEventPayload
 }
 
 export type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
+
+export type RegisterReliableSubscriptionParams = RegisterSubscriptionParams & {
+	retryOpts?: IRetryHandlerOpts
+}
 
 export type CreateTopicalSubscriptionOpts<T extends IEventData> = {
 	/**
@@ -150,13 +155,12 @@ export type IEventHandlerContext = {
 	extra?: unknown
 }
 
-export type IEventHandler<T extends IEventData = IEventData> = (
-	item: IReadEvent<T>,
-	ctx: IEventHandlerContext
-) => Promise<void>
+export type IEventHandler<T extends IEventData = IEventData>
+	= (item: IReadEvent<T>, ctx: IEventHandlerContext) => Promise<void>
 
-export type RetryEventPayload = {
+export type IRetryEventPayload = {
 	ids: string[]
+	handlerName: string
 	retryNumber: number
 }
 
@@ -182,6 +186,14 @@ export type SSERequestHandlerOpts = {
 }
 
 export type IRetryHandlerOpts = {
+	/**
+   * Name for the retry handler,
+   * used to ensure retries for a particular
+   * handler are not mixed with another handler.
+   * This name need only be unique for a particular
+   * subscription.
+  */
+	name: string
 	retriesS: number[]
 }
 
