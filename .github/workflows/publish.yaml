@@ -9,6 +9,7 @@ on:
       - main
 
 permissions:
+  id-token: write  # Required for OIDC
   contents: write
 
 jobs:
@@ -55,8 +56,6 @@ jobs:
 
       - name: Publish & Version Packages
         run: sh publish-pkgs.sh
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Commit and Push Version Changes
         run: |

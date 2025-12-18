@@ -1,7 +1,7 @@
 {
   "name": "@haathie/pgmb",
   "version": "0.2.0",
-  "description": "Postgres Message Broker",
+  "description": "PG message broker, with a type-safe typescript client with built-in webhook & SSE support.",
   "main": "lib/index.js",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
