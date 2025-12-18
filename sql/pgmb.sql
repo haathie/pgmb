@@ -8,16 +8,18 @@ SET auto_explain.log_min_duration = 0;
 SET client_min_messages TO log;
 */
 
--- DROP SCHEMA IF EXISTS pgmb CASCADE;
 CREATE SCHEMA IF NOT EXISTS "pgmb";
 
-SET search_path TO pgmb, public;
+SET search_path TO pgmb;
 
 -- create the configuration table for pgmb ----------------
 
 CREATE TYPE config_type AS ENUM(
 	'plugin_version',
+	-- how long to retain old partitions?
+	-- partitions older than this interval will be deleted
 	'partition_retention_period',
+	-- how far into the future to create partitions
 	'future_intervals_to_create',
 	'partition_interval',
 	'poll_chunk_size'
@@ -33,7 +35,7 @@ CREATE OR REPLACE FUNCTION get_config_value(
 	config_id config_type
 ) RETURNS TEXT AS $$
 	SELECT value FROM config WHERE id = config_id
-$$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb, public;
+$$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb;
 
 INSERT INTO config(id, value)
 	VALUES
@@ -61,13 +63,13 @@ $$ LANGUAGE plpgsql VOLATILE PARALLEL SAFE;
 
 -- Creates a timestamped event ID. It is a 24-character string
 -- that consists of:
--- 1. 'ps' prefix
+-- 1. 'pm' prefix
 -- 2. 13-character hex representation of the timestamp in microseconds
 -- 3. remaining random
 CREATE OR REPLACE FUNCTION create_event_id(ts timestamptz, rand bigint)
 RETURNS event_id AS $$
 SELECT substr(
-	-- ensure we're always 28 characters long by right-padding with '0's
+	-- ensure we're always 24 characters long by right-padding with '0's
 	'pm'
 	-- we'll give 13 hex characters for microsecond timestamp
 	|| lpad(to_hex((extract(epoch from ts) * 1000000)::bigint), 13,	'0')
@@ -77,23 +79,22 @@ SELECT substr(
 	24
 )
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb, public;
+ SET search_path TO pgmb;
 
 CREATE OR REPLACE FUNCTION create_event_id_default()
 RETURNS event_id AS $$
 	SELECT create_event_id(clock_timestamp(), create_random_bigint())
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb, public;
+ SET search_path TO pgmb;
 
  -- fn to extract the date from a message ID.
 CREATE OR REPLACE FUNCTION pgmb.extract_date_from_event_id(id event_id)
 RETURNS TIMESTAMPTZ AS $$
-BEGIN
--- convert it to a timestamp
-RETURN to_timestamp(('0x' || substr(id, 3, 13))::numeric / 1000000);
-END
-$$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE SECURITY INVOKER
- SET search_path TO pgmb, public;
+	SELECT to_timestamp(('0x' || substr(id, 3, 13))::numeric / 1000000)
+$$ LANGUAGE sql IMMUTABLE PARALLEL SAFE SECURITY INVOKER
+ SET search_path TO pgmb;
+
+CREATE DOMAIN subscription_id AS VARCHAR(24);
 
 CREATE TABLE IF NOT EXISTS events(
 	id event_id PRIMARY KEY DEFAULT create_event_id_default(),
@@ -102,14 +103,24 @@ CREATE TABLE IF NOT EXISTS events(
 	metadata JSONB,
 	-- if an event is directed to a specific subscription,
 	-- this field will be set to that subscription's ID
-	subscription_id VARCHAR(48)
+	subscription_id subscription_id
 ) PARTITION BY RANGE (id);
 
 CREATE UNLOGGED TABLE IF NOT EXISTS unread_events (
 	event_id event_id PRIMARY KEY
+) WITH (
+	-- tune autovacuum for high insert & delete rates
+  autovacuum_vacuum_scale_factor = 0.01,
+  autovacuum_vacuum_threshold = 5000,
+  autovacuum_analyze_scale_factor = 0.005,
+  autovacuum_analyze_threshold = 1000,
+  autovacuum_vacuum_cost_delay = 0
 );
 
--- statement level trigger to insert into unread_events table
+
+-- statement level trigger to insert new events into unread_events.
+-- The "poll_for_events" function will read from this table, and
+-- dispatch events to subscriptions.
 CREATE OR REPLACE FUNCTION mark_events_as_unread()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -118,7 +129,7 @@ BEGIN
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb, public;
+	SET search_path TO pgmb;
 
 CREATE TRIGGER mark_events_as_unread_trigger
 AFTER INSERT ON events
@@ -280,20 +291,14 @@ CREATE OR REPLACE FUNCTION get_current_partition(
 	SELECT inhrelid::regclass
 	FROM pg_catalog.pg_inherits
 	WHERE inhparent = table_id
-		AND inhrelid::regclass::text <= pgmb.get_time_partition_name(table_id, current_ts)
+		AND inhrelid::regclass::text
+			<= pgmb.get_time_partition_name(table_id, current_ts)
 	ORDER BY inhrelid DESC
 	LIMIT 1
 $$ LANGUAGE sql STABLE PARALLEL SAFE SECURITY DEFINER;
 
 -- subscriptions table and related functions ----------------
 
-CREATE TYPE subscription_type AS ENUM(
-	'http',
-	'webhook',
-	'custom'
-);
-
-CREATE DOMAIN subscription_id AS VARCHAR(24);
 CREATE DOMAIN group_id AS VARCHAR(48);
 
 CREATE OR REPLACE FUNCTION create_subscription_id()
@@ -303,16 +308,23 @@ RETURNS subscription_id AS $$
 		FROM 3
 	);
 $$ LANGUAGE sql VOLATILE STRICT PARALLEL SAFE SECURITY DEFINER
- SET search_path TO pgmb, public;
+ SET search_path TO pgmb;
 
 -- subscription, groups tables and functions will go here ----------------
+
+CREATE TABLE subscription_groups(
+	id group_id PRIMARY KEY,
+	created_at TIMESTAMPTZ DEFAULT NOW(),
+	last_read_event_id event_id DEFAULT create_event_id(NOW(), 0)
+);
 
 CREATE TABLE subscriptions (
 	-- unique identifier for the subscription
 	id subscription_id PRIMARY KEY DEFAULT create_subscription_id(),
 	-- define how the subscription is grouped. subscriptions belonging
-	-- to the same group can be read in one batch.
-	group_id group_id NOT NULL,
+	-- to the same group are read in one batch.
+	group_id group_id NOT NULL REFERENCES subscription_groups(id)
+		ON DELETE RESTRICT,
 	-- A SQL expression that will be used to filter events for this subscription.
 	-- The events table will be aliased as "e" in this expression. The subscription
 	-- table is available as "s".
@@ -333,14 +345,17 @@ CREATE TABLE subscriptions (
 	) STORED UNIQUE,
 	-- when was this subscription last active
 	last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	-- how long before this subscription expires since
+	-- its last_active_at time. NULL means it never expires.
 	expiry_interval INTERVAL
 );
 
+-- immutable fn to add interval to timestamptz
 CREATE FUNCTION add_interval_imm(tstz TIMESTAMPTZ, itvl INTERVAL)
 RETURNS TIMESTAMPTZ AS $$
 	SELECT tstz + itvl;
 $$ LANGUAGE sql IMMUTABLE PARALLEL SAFE
-	SET search_path TO pgmb, public;
+	SET search_path TO pgmb;
 
 -- note: index to quickly find expired subscriptions, not creating
 -- a column separately because there's some weird deadlock issue
@@ -378,6 +393,9 @@ BEGIN
 END
 $$;
 
+-- materialized view to hold distinct conditions_sql statements.
+-- We utilise changes in this view to determine when to prepare the
+-- "poll_for_events" function.
 CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 	SELECT DISTINCT conditions_sql FROM subscriptions
 	ORDER BY conditions_sql
@@ -386,18 +404,11 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS subscription_cond_sqls AS (
 CREATE UNIQUE INDEX IF NOT EXISTS
 	subscription_cond_sqls_idx ON subscription_cond_sqls(conditions_sql);
 
-CREATE TABLE subscription_groups(
-	id group_id PRIMARY KEY,
-	created_at TIMESTAMPTZ DEFAULT NOW(),
-	last_read_event_id event_id DEFAULT create_event_id(NOW(), 0)
-);
-
-ALTER TABLE subscriptions ADD CONSTRAINT fk_subscription_group
-	FOREIGN KEY (group_id)
-	REFERENCES subscription_groups(id)
-	ON DELETE RESTRICT
-	NOT VALID;
-
+-- subscription events holds the events dispatched to each subscription
+-- for each group. Like events, this is also an insert-only table. Groups
+-- move their cursors forward as they read events. We can implement very safe
+-- cursor movement as only a single writer (poll_for_events) writes to this table,
+-- and multiple readers read from it.
 CREATE TABLE IF NOT EXISTS subscription_events(
 	id event_id,
 	group_id group_id,
@@ -432,7 +443,7 @@ GRANT SELECT, UPDATE, DELETE ON TABLE unread_events TO pgmb_reader;
 GRANT UPDATE, INSERT ON TABLE subscription_events TO pgmb_reader;
 
 SET ROLE pgmb_reader;
--- we'll also validate the conditions_sql on insert/update
+-- This trigger puts the conditions_sql through a syntax check
 CREATE OR REPLACE FUNCTION validate_subscription_conditions_sql()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -451,6 +462,11 @@ BEFORE INSERT OR UPDATE ON subscriptions
 FOR EACH ROW
 EXECUTE FUNCTION validate_subscription_conditions_sql();
 
+-- poll_for_events function template. As we add/remove different subscriptions,
+-- we'll prepare a new version of the "poll_for_events" function with
+-- the updated "conditions_sql" statements.
+-- A template function is used so we get syntax highlighting and checking
+-- when editing this function.
 CREATE OR REPLACE FUNCTION poll_for_events_tmpl()
 RETURNS INT AS $body$
 DECLARE
@@ -529,7 +545,7 @@ BEGIN
 	RETURN inserted_rows;
 END;
 $body$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
-SET search_path TO pgmb, public
+SET search_path TO pgmb
 SECURITY DEFINER;
 
 CREATE OR REPLACE FUNCTION prepare_poll_for_events_fn(
@@ -547,7 +563,7 @@ BEGIN
 		-- no subscriptions, so just use 'FALSE' to avoid any matches
 		sql_statements := ARRAY['FALSE'];
 	END IF;
-
+	-- build the condition SQL
 	condition_sql := FORMAT(
 		'('
 		|| array_to_string(
@@ -575,33 +591,42 @@ BEGIN
 	proc_src := REPLACE(proc_src, tmpl_proc_placeholder, condition_sql);
 	proc_src := REPLACE(proc_src, tmpl_proc_name, 'poll_for_events');
 
+	-- the new poll_for_events function will be created with
+	-- the pgmb_reader role, to avoid a bad "conditions_sql"
+	-- from having any destructive access to the database.
 	SET ROLE pgmb_reader;
 	EXECUTE proc_src;
 	RESET ROLE;
 END;
 $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
-SET search_path TO pgmb, public
+SET search_path TO pgmb
 SECURITY INVOKER;
 
-SELECT prepare_poll_for_events_fn(ARRAY['true']);
+SELECT prepare_poll_for_events_fn('{}'::text[]);
 
--- we'll prepare the subscription read statement whenever subscriptions are created/updated/deleted
+-- we'll prepare the subscription read statement whenever subscriptions
+-- are created/updated/deleted
 CREATE OR REPLACE FUNCTION refresh_subscription_read_statements()
 RETURNS TRIGGER AS $$
 DECLARE
 	needs_refresh BOOLEAN := FALSE;
 	old_conditions_sql TEXT[];
 	conditions_sql TEXT[];
-
-	lk_name CONSTANT bigint :=
-		hashtext('pgmb.refresh_subscription_read_statements');
 BEGIN
-	old_conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
+	old_conditions_sql := ARRAY(
+		SELECT * FROM subscription_cond_sqls
+		ORDER BY conditions_sql
+	);
 
 	REFRESH MATERIALIZED VIEW CONCURRENTLY subscription_cond_sqls;
 
-	conditions_sql := ARRAY(SELECT * FROM subscription_cond_sqls);
+	conditions_sql := ARRAY(
+		SELECT * FROM subscription_cond_sqls
+		ORDER BY conditions_sql
+	);
 
+	-- conditions_sql hasn't changed, no need to refresh the
+	-- poll_for_events function
 	IF conditions_sql = old_conditions_sql THEN
 		RETURN NULL;
 	END IF;
@@ -610,7 +635,7 @@ BEGIN
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb, public
+	SET search_path TO pgmb
 	SECURITY INVOKER;
 
 CREATE TRIGGER refresh_subscription_read_statements_trigger
@@ -618,6 +643,9 @@ AFTER INSERT OR UPDATE OR DELETE ON subscriptions
 FOR EACH STATEMENT
 EXECUTE FUNCTION refresh_subscription_read_statements();
 
+-- Utility fn to read events by their IDs. This exists as postgres
+-- doesn't correctly filter which partitions to read from when using
+-- an IN/JOIN clause on a partitioned table.
 CREATE OR REPLACE FUNCTION read_events(
 	event_ids event_id[]
 ) RETURNS SETOF events AS $$
@@ -629,7 +657,7 @@ BEGIN
 		RETURN;
 	END IF;
 
-	-- get min and max ids
+	-- get min and max ids, allows PG to correctly prune partitions
 	SELECT
 		MAX(eid),
 		MIN(eid)
@@ -644,12 +672,15 @@ BEGIN
 		ORDER BY u.eid;
 END;
 $$ LANGUAGE plpgsql STRICT STABLE PARALLEL SAFE
-SET search_path TO pgmb, public;
+SET search_path TO pgmb;
 
+-- fn to read next events for a subscription group
 CREATE OR REPLACE FUNCTION read_next_events(
 	gid VARCHAR(48),
 	cursor event_id DEFAULT NULL,
 	chunk_size INT DEFAULT get_config_value('poll_chunk_size')::INT,
+	-- if peek is true, we do not require having to acquire the advisory
+	-- lock to read events. Useful to debug without blocking other readers.
 	peek BOOLEAN DEFAULT FALSE
 ) RETURNS TABLE(
 	id event_id,
@@ -713,7 +744,7 @@ BEGIN
 	INNER JOIN next_events_grp ne ON ne.event_id = e.id;
 END
 $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
-	SET search_path TO pgmb, public
+	SET search_path TO pgmb
 	SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION replay_events(
@@ -732,21 +763,23 @@ BEGIN
 		AND se.subscription_id = sid
 		AND se.event_id > from_event_id
 		AND se.event_id <= now_id
-		-- we can filter "id" by the same range too, because
-		-- the format of se.id and e.id are the same. And rows are
+		-- we filter "id" by the same range too, because
+		-- 1. the format of se.id and e.id are the same. And rows are
 		-- inserted into the se table after the corresponding e row is created,
 		-- so if we find rows > from_event_id in se.event_id, the corresponding
 		-- e.id will also be > from_event_id
+		-- 2. it helps postgres prune which partitions to read from
 		AND se.id <= now_id
 		AND se.id > from_event_id
 	LIMIT (max_events + 1);
 	IF array_length(event_ids, 1) > max_events THEN
-		RAISE EXCEPTION 'Too many events to replay. Please replay in smaller batches.';
+		RAISE EXCEPTION
+			'Too many events to replay. Please replay in smaller batches.';
 	END IF;
 
 	RETURN QUERY SELECT * FROM read_events(event_ids);
 END $$ LANGUAGE plpgsql STABLE PARALLEL SAFE
-	SET search_path TO pgmb, public
+	SET search_path TO pgmb
 	SECURITY INVOKER;
 
 CREATE OR REPLACE FUNCTION release_group_lock(gid VARCHAR(48))
@@ -758,11 +791,13 @@ BEGIN
 	PERFORM pg_advisory_unlock(lock_key);
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb, public;
+SET search_path TO pgmb;
 
+-- upsert the group's cursor
 CREATE OR REPLACE FUNCTION set_group_cursor(
 	gid VARCHAR(48),
 	new_cursor event_id,
+	-- if true, release any existing lock for this group
 	release_lock BOOLEAN
 ) RETURNS VOID AS $$
 BEGIN
@@ -778,7 +813,7 @@ BEGIN
 	END IF;
 END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb, public;
+SET search_path TO pgmb;
 
 CREATE OR REPLACE FUNCTION maintain_events_table(
 	current_ts timestamptz DEFAULT NOW()
@@ -822,8 +857,9 @@ BEGIN
 	);
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-SET search_path TO pgmb, public;
+SET search_path TO pgmb;
 
+-- create the initial partitions
 SELECT maintain_events_table();
 
 -- triggers to add events for specific tables ---------------------------
@@ -850,6 +886,11 @@ SELECT jsonb_object_agg(key, value) FROM (
 )
 $$ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
 
+-- Function to serialise a record for an event, and tell us
+-- whether to emit the event or not.
+-- Note: Regardless of whether to emit the event, the serialised
+-- JSONB is returned.
+-- By default, we always emit the event.
 CREATE OR REPLACE FUNCTION serialise_record_for_event(
 	tabl oid,
 	op TEXT,
@@ -917,7 +958,7 @@ BEGIN
 	RETURN NULL;
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb, public;
+	SET search_path TO pgmb;
 
 -- Pushes table mutations to the events table. I.e. makes the table subscribable.
 -- and creates triggers to push changes to the events table.
@@ -938,9 +979,8 @@ BEGIN
 				REFERENCING NEW TABLE AS NEW
 				FOR EACH STATEMENT
 				EXECUTE FUNCTION push_table_event();';
-		EXCEPTION
-			WHEN duplicate_object THEN
-				NULL;
+		EXCEPTION WHEN duplicate_object THEN
+			NULL;
 	  END;
 	END IF;
 
@@ -952,9 +992,8 @@ BEGIN
 				REFERENCING OLD TABLE AS OLD
 				FOR EACH STATEMENT
 				EXECUTE FUNCTION push_table_event();';
-		EXCEPTION
-			WHEN duplicate_object THEN
-				NULL;
+		EXCEPTION WHEN duplicate_object THEN
+			NULL;
 	  END;
 	END IF;
 
@@ -967,15 +1006,14 @@ BEGIN
 				NEW TABLE AS NEW
 				FOR EACH STATEMENT
 				EXECUTE FUNCTION push_table_event();';
-		EXCEPTION
-			WHEN duplicate_object THEN
-				NULL;
+		EXCEPTION WHEN duplicate_object THEN
+			NULL;
 	  END;
 	END IF;
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER
 	VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb, public;
+	SET search_path TO pgmb;
 
 -- Stops the table from being subscribable.
 -- I.e removes the triggers that push changes to the events table.
@@ -989,4 +1027,4 @@ BEGIN
 	EXECUTE 'DROP TRIGGER IF EXISTS post_update_event ON ' || tbl::varchar || ';';
 END
 $$ LANGUAGE plpgsql SECURITY DEFINER VOLATILE
-	SET search_path TO pgmb, public;
+	SET search_path TO pgmb;

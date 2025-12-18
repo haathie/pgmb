@@ -9,6 +9,10 @@ Using this package you can implement:
 4. HTTP SSE (Server Sent Events) for an arbitrary Postgres query, with resumption support via the standard `Last-Event-ID` header.
 5. Webhooks for events, again based on arbitrary Postgres queries, with retry logic.
 
+## Upgrade from 0.1.x to 0.2.x
+
+`0.2.x` is a completely new implementation of PGMB, with a different architecture & design. So when upgrading from `0.1.x` to `0.2.x`, code will need to be rewritten to use the new API. However, the new schema does not interfere with the old schema, so both versions can co-exist in the same database, allowing for a gradual migration.
+
 ## Benchmarks
 
 Here are benchmarks of PGMB, PGMQ and AMQP. The benchmarks were run on an EC2 server managed by AWS EKS. Each database being allocated `2 cores` and `4GB` of RAM with network mounted EBS volumes. The full details of the benchmarks can be found [here](/docs/k8s-benchmark.md).
