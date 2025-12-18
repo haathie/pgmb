@@ -5,11 +5,11 @@ import type { PgClientLike } from './query-types.ts'
 import type { IEvent, IEventData, IEventHandler, IReadEvent, IRetryEventPayload, IRetryHandlerOpts } from './types.ts'
 
 export function createRetryHandler<T extends IEventData>(
-	{ name, retriesS }: IRetryHandlerOpts,
+	{ retriesS }: IRetryHandlerOpts,
 	handler: IEventHandler<T>,
 ): IEventHandler<T> {
 	return async(ev, ctx) => {
-		const { client, subscriptionId, logger } = ctx
+		const { name, client, subscriptionId, logger } = ctx
 
 		try {
 			await handler(ev,	ctx)

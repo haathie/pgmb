@@ -116,12 +116,12 @@ await pgmb.registerReliableHandler(
 		// or parameters change in the future, the stale subscription will be
 		// removed automatically.
 		expiryInterval: '15 minutes',
+		// give a unique name for this handler. It need only be unique
+		// within the same subscription parameters
+		name: 'log-data',
 		// Each retry will include the exact same set of events
 		// that were included in the original attempt.
 		retryOpts: {
-			// give a unique name for this handler. It need only be unique
-			// within the same subscription parameters
-			name: 'log-data',
 			// will retry after 1 minute, then after 5 minutes
 			retriesS: [60, 5 * 60]
 		}
@@ -160,7 +160,8 @@ await pgmb.registerReliableHandler(
 			topics: ['msg-created', 'msg-updated'],
 			partition: workerNumber
 		},
-		expiryInterval: '15 minutes'
+		expiryInterval: '15 minutes',
+		...otherParams
 	},
 	handler
 )

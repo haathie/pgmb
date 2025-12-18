@@ -842,10 +842,8 @@ describe('PGMB Client Tests', () => {
 		let doneEvents: ITestEvent[] | undefined
 		const { subscriptionId } = await client.registerReliableHandler(
 			{
-				retryOpts: {
-					name: 's1',
-					retriesS: [1]
-				}
+				name: 's1',
+				retryOpts: { retriesS: [1] }
 			},
 			async({ items }) => {
 				if(!failedEvents) {
@@ -898,7 +896,7 @@ describe('PGMB Client Tests', () => {
 			throw new Error('Always fails')
 		})
 		const { subscriptionId } = await client.registerReliableHandler(
-			{ retryOpts: { name: 's1', retriesS: [1, 1] } },
+			{ name: 's1', retryOpts: { retriesS: [1, 1] } },
 			handler
 		)
 

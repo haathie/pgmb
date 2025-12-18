@@ -214,7 +214,11 @@ export class PgmbClient<T extends IEventData = IEventData>
 	 * with backoff, and without disrupting the overall event flow.
 	 */
 	async registerReliableHandler(
-		{ retryOpts, ...opts }: registerReliableHandlerParams,
+		{
+			retryOpts,
+			name = createListenerId(),
+			...opts
+		}: registerReliableHandlerParams,
 		handler: IEventHandler<T>
 	) {
 		const { id: subId } = await this.assertSubscription(opts)
@@ -223,17 +227,16 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 
 		const lts = (this.listeners[subId] ||= { values: {} })
-		const lid = retryOpts?.name || createListenerId()
 		assert(
-			!lts.values[lid],
-			`Handler with id ${lid} already registered for subscription ${subId}.`
+			!lts.values[name],
+			`Handler with id ${name} already registered for subscription ${subId}.`
 			+ ' Cancel the existing one or use a different id.'
 		)
-		this.listeners[subId].values[lid] = { type: 'reliable', handler, queue: [] }
+		this.listeners[subId].values[name] = { type: 'reliable', handler, queue: [] }
 
 		return {
 			subscriptionId: subId,
-			cancel: () => this.#removeListener(subId, lid)
+			cancel: () => this.#removeListener(subId, name)
 		}
 	}
 
@@ -462,6 +465,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 						logger,
 						subscriptionId: subId,
 						extra,
+						name: lid,
 					}
 				)
 

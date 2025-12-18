@@ -220,10 +220,10 @@ Thus, it's recommended that to avoid poison pills, wrap handlers in a try-catch 
 const l1 = await pgmb.registerReliableHandler(
 	{
 		...params,
-		retryOpts: { 
-			// unique name for the handler, in a subscription.
-			// Allows us to filter out retries meant for other handlers
-			name: 's1',
+		// unique name for the handler, in a subscription.
+		// Allows us to filter out retries meant for other handlers
+		name: 's1',
+		retryOpts: {
 			// retry after 1 minute, then after 5 minutes
 			retriesS: [1*60, 5*60] 
 		}

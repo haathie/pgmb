@@ -30,7 +30,7 @@ export type PgmbWebhookOpts = {
 	 * Configure retry intervals in seconds for failed webhook requests.
 	 * If null, a failed handler will fail the event processor. Use carefully.
 	 */
-	retryOpts?: Omit<IRetryHandlerOpts, 'name'> | null
+	retryOpts?: IRetryHandlerOpts | null
 	jsonifier?: JSONifier
 	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
@@ -122,6 +122,12 @@ export type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
 export type registerReliableHandlerParams = RegisterSubscriptionParams & {
+	/**
+	 * Name for the retry handler, used to ensure retries for a particular
+	 * handler are not mixed with another handler. This name need only be
+	 * unique for a particular subscription.
+	*/
+	name?: string
 	retryOpts?: IRetryHandlerOpts
 }
 
@@ -160,6 +166,8 @@ export type IEventHandlerContext = {
 	logger: Logger
 	client: PgClientLike
 	subscriptionId: string
+	/** registered name of the handler */
+	name: string
 	extra?: unknown
 }
 
@@ -194,14 +202,6 @@ export type SSERequestHandlerOpts = {
 }
 
 export type IRetryHandlerOpts = {
-	/**
-   * Name for the retry handler,
-   * used to ensure retries for a particular
-   * handler are not mixed with another handler.
-   * This name need only be unique for a particular
-   * subscription.
-  */
-	name: string
 	retriesS: number[]
 }
 
