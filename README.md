@@ -92,15 +92,15 @@ const pgmb = new PgmbClient<MyEventData>({ ... })
 
 ## Basic Concepts
 
-Full details about the architecture & design of PGMB can be found in the [docs](/docs/sql.md). At a high level, PGMB revolves around the concept of **events** & **subscriptions**, all features emerge from the interaction between these two concepts.
+Full details about the architecture, design & performance tricks of PGMB can be found in the [docs](/docs/arch.md). At a high level, PGMB revolves around the concept of **events** & **subscriptions**, all features emerge from the interaction between these two concepts.
 
-All events are stored in a table called `pgmb.events`. This table is an insert-only log of all events that have been published. It's automatically partitioned, and requires no autovacuumming -- to maximise throughput & compute utilisation. Each event is written only once to this table, and retreived via a join.
+All events are stored in a table called `pgmb.events`. This table is an insert-only log of all events that have been published.
 
-Subscriptions are stored in the `pgmb.subscriptions` table. Each subscription defines a set of conditions that determine which events it is interested in, this is specified by the "conditions_sql" and "params" columns. "conditions_sql" is a SQL expression that is evaluated for each event, and if it returns true, the event is considered to match the subscription. "params" is a JSONB object that can be used to parameterise the "conditions_sql". To make this operation efficient & not bloat to N^2 complexity, a GIN index is created on the "params" column, and the "conditions_sql" should be written in a way that can leverage this index.
+Subscriptions are stored in the `pgmb.subscriptions` table. Each subscription defines a set of conditions that determine which events it is interested in, by the "conditions_sql" and "params" columns. "conditions_sql" is a SQL expression that is evaluated for each event, and if it returns true, the event is considered to match the subscription. "params" is a JSONB object that can be used to parameterise the "conditions_sql".
 
-Subscriptions are grouped by a "group_id", a group owns a set of subscriptions, and each instance of a PGMB client should have a globally unique & persistent "group_id". This allows 
+Subscriptions are grouped by a "group_id", a group owns a set of subscriptions, and each instance of a PGMB client should have a globally unique & persistent "group_id".
 
-Too minimise the number of unique SQL queries that have to run to match events to subscriptions, PGMB automatically groups subscriptions that have the same "conditions_sql" together. This means that if you have multiple subscriptions with the same "conditions_sql", they will be evaluated together, reducing the number of matching operations required.
+To minimise the number of unique SQL queries that have to run to match events to subscriptions, PGMB automatically groups subscriptions that have the same "conditions_sql" together. This means to optimise, try to utilise the same SQL query to match events, and then utilise "params" to differentiate between different subscriptions.
 Furthermore, each subscription is uniquely stored on (group, conditions_sql, params). This means that if multiple consumers require listening to the same set of events, they share the same underlying subscription, thereby reducing duplication of work.
 
 Subscriptions can also be automatically expired after a certain period of inactivity (useful for temporary consumers like HTTP SSE connections).

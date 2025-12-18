@@ -147,7 +147,7 @@ SELECT pgmb.set_group_cursor(
 Retrying isnt native to PGMB's architecture, but easily emerges from it.
 Essentially if a handler of a subscription fails to process an event, it can re-insert the event IDs into a special retry event, which is then dispatched to the same subscription again.
 
-A keen eye may notice that all handlers of the subscription will receive the retried event, so to avoid this, the retry event can include an identifier for the handler that is retrying the event, so that other handlers can ignore it.
+A keen eye may notice that all handlers of the subscription will receive the retried event, so to avoid this, the retry event can include an identifier for the handler that is retrying the event, so that other handlers can ignore it. The typescript client implements this.
 
 Simple typescript example:
 ``` ts
@@ -193,13 +193,13 @@ const params = createTopicalSubscriptionParams({
 	topics: ['msg-created', 'msg-updated'],
 	expiryInterval: '15 minutes'
 })
-const l1 = await pgmb.registerReliableSubscription(
+const l1 = await pgmb.registerReliableHandler(
 	params,
 	async() => {
 		// Do some work
 	}
 )
-const l1 = await pgmb.registerReliableSubscription(
+const l1 = await pgmb.registerReliableHandler(
 	params,
 	async() => {
 		// Do some more work
@@ -208,24 +208,29 @@ const l1 = await pgmb.registerReliableSubscription(
 
 // let's also assume the same subscription's being listened
 // in a fire-and-forget manner
-const l3 = await pgmb.registerFireAndForgetSubscription(params)
+const l3 = await pgmb.registerFireAndForgetHandler(params)
 ```
 
 Now, whenever an event is published with topic `msg-created` or `msg-updated`, all three listeners will receive the event.
 2. `l3` is a fire-and-forget listener, so it just receives the event and processes it, we don't expect any contention from this. `l1` & `l2` are reliable listeners, so they need to ensure that the event is processed successfully, this may take multiple seconds too.
 3. The typescript client acquires a dedicated session, and calls in `read_next_events` for the group every specified interval. Once all handlers have processed the events successfully, the cursor is updated for all handlers in the group via the same session, releasing the acquired advisory lock on `read_next_events`.
 4. If `l1` fails, that entire batch is failed, we start reading events from the last cursor again, ensuring that no events are lost. This process will continue indefinitely until all events are processed successfully. Of course, this can lead to tons of duplicate events being sent to all handlers, and overall can be quite inefficient.
-Thus, it's recommended that to avoid poison pills, wrap handlers in a try-catch block or `createRetryHandler` is used. Eg.
+Thus, it's recommended that to avoid poison pills, wrap handlers in a try-catch block or provide `retryOpts` when registering a reliable sub. Eg.
 ``` ts
-const l1 = await pgmb.registerReliableSubscription(
-	params,
-	createRetryHandler(
-		// retry after 1 minute, then 5 minutes
-		{ retriesS: [1*60, 5*60] },
-		async({ items }) => {
-			// Do some work
+const l1 = await pgmb.registerReliableHandler(
+	{
+		...params,
+		retryOpts: { 
+			// unique name for the handler, in a subscription.
+			// Allows us to filter out retries meant for other handlers
+			name: 's1',
+			// retry after 1 minute, then after 5 minutes
+			retriesS: [1*60, 5*60] 
 		}
-	)
+	},
+	async({ items }) => {
+		// Do some work
+	}
 )
 ```
 5. Let's say `l2` succeeds, but `l1` is still processing. This will block the next batch of events from being processed by both `l2` & `l3`, as PGMB polls for events in a group & to ensure reliable processing, it waits for all handlers to finish processing before moving the cursor forward.
