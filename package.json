@@ -4,7 +4,8 @@
   "description": "Postgres Message Broker",
   "main": "lib/index.js",
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "repository": "https://github.com/haathie/pgmb",
   "scripts": {
