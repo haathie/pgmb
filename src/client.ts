@@ -30,6 +30,7 @@ type IListener<T extends IEventData> = IFireAndForgetListener<T>
 type Checkpoint = {
 	activeTasks: number
 	nextCursor: string
+	cancelled?: boolean
 }
 
 export type IListenerStore<T extends IEventData> = {
@@ -71,9 +72,9 @@ export class PgmbClient<T extends IEventData = IEventData>
 		client,
 		groupId,
 		logger = pino(),
-		sleepDurationMs = 500,
+		sleepDurationMs = 750,
 		readChunkSize = 1000,
-		maxActiveCheckpoints = 100,
+		maxActiveCheckpoints = 10,
 		poll,
 		subscriptionMaintenanceMs = 60 * 1000,
 		webhookHandlerOpts = {},
@@ -383,7 +384,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			'read rows'
 		)
 
-		if(!checkpoint.activeTasks) {
+		if(!checkpoint.activeTasks && this.#activeCheckpoints.length === 1) {
 			await this.#updateCursorFromCompletedCheckpoints()
 		}
 
@@ -414,6 +415,11 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 		while(queue.length) {
 			const { item, checkpoint } = queue[0]
+			if(checkpoint.cancelled) {
+				queue.shift()
+				continue
+			}
+
 			const logger = this.logger
 				.child({ subId, items: item.items.map(i => i.id), extra })
 
@@ -422,7 +428,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 					cpActiveTasks: checkpoint.activeTasks,
 					queue: queue.length,
 				},
-				'processing reliable event handler queue'
+				'processing handler queue'
 			)
 
 			try {
@@ -435,24 +441,30 @@ export class PgmbClient<T extends IEventData = IEventData>
 						extra,
 					}
 				)
-			} catch(err) {
-				logger.error({ err }, 'error in reliable event handler')
-			} finally {
+
 				checkpoint.activeTasks --
+				assert(checkpoint.activeTasks >= 0, 'internal: checkpoint.activeTasks < 0')
 				if(!checkpoint.activeTasks) {
 					await this.#updateCursorFromCompletedCheckpoints()
 				}
 
-				queue.shift()
 				logger.trace(
 					{
 						cpActiveTasks: checkpoint.activeTasks,
 						queue: queue.length,
 					},
-					'completed reliable event handler task'
+					'completed handler task'
 				)
-
-				assert(checkpoint.activeTasks >= 0, 'internal: checkpoint.activeTasks < 0')
+			} catch(err) {
+				logger.error(
+					{ err },
+					'error in handler,'
+					+ 'cancelling all active checkpoints'
+					+ '. Restarting from last known good cursor.'
+				)
+				this.#cancelAllActiveCheckpoints()
+			} finally {
+				queue.shift()
 			}
 		}
 
@@ -483,35 +495,39 @@ export class PgmbClient<T extends IEventData = IEventData>
 			return
 		}
 
-		try {
-			const releaseLock = !this.#activeCheckpoints.length
-			await setGroupCursor.run(
-				{
-					groupId: this.groupId,
-					cursor: latestMaxCursor,
-					releaseLock: releaseLock
-				},
-				this.#readClient || this.client
-			)
-			this.logger.debug(
-				{
-					cursor: latestMaxCursor,
-					activeCheckpoints: this.#activeCheckpoints.length
-				},
-				'set cursor'
-			)
+		const releaseLock = !this.#activeCheckpoints.length
+		await setGroupCursor.run(
+			{
+				groupId: this.groupId,
+				cursor: latestMaxCursor,
+				releaseLock: releaseLock
+			},
+			this.#readClient || this.client
+		)
+		this.logger.debug(
+			{
+				cursor: latestMaxCursor,
+				activeCheckpoints: this.#activeCheckpoints.length
+			},
+			'set cursor'
+		)
 
-			// if there are no more active checkpoints,
-			// clear in-memory cursor, so in case another process takes
-			// over, if & when we start reading again, we read from the DB cursor
-			if(releaseLock) {
-				this.#inMemoryCursor = null
-				this.#releaseReadClient()
-			}
-		} catch(err) {
-			this.logger
-				.error({ err, cursor: latestMaxCursor }, 'error setting cursor')
+		// if there are no more active checkpoints,
+		// clear in-memory cursor, so in case another process takes
+		// over, if & when we start reading again, we read from the DB cursor
+		if(releaseLock) {
+			this.#inMemoryCursor = null
+			this.#releaseReadClient()
 		}
+	}
+
+	#cancelAllActiveCheckpoints() {
+		for(const cp of this.#activeCheckpoints) {
+			cp.cancelled = true
+		}
+
+		this.#activeCheckpoints = []
+		this.#inMemoryCursor = null
 	}
 
 	async #unlockAndReleaseReadClient() {

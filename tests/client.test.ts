@@ -774,6 +774,33 @@ describe('PGMB Client Tests', () => {
 		assert.equal(sub2Fn.mock.callCount(), client.maxActiveCheckpoints + 1)
 	})
 
+	it('should replay full batch on reliable handler failure', async() => {
+		const sub2Fn = mock.fn<IEventHandler<TestEventData>>(async() => { })
+
+		let failed = false
+
+		await client.registerReliableSubscription(
+			{},
+			async() => {
+				if(!failed) {
+					failed = true
+					throw new Error('Simulated failure')
+				}
+			}
+		)
+		await client.registerReliableSubscription({ params: { a: 1 } }, sub2Fn)
+
+		const { id } = await insertEvent(pool)
+
+		await setTimeout(2000)
+
+		assert.equal(sub2Fn.mock.callCount(), 2)
+		assert.partialDeepStrictEqual(
+			sub2Fn.mock.calls.flatMap(c => c.arguments[0].items),
+			[{ id }, { id }]
+		)
+	})
+
 	it('should only update cursor after reliable handlers are done', async() => {
 		const EVENT_COUNT = 150
 		let handled = 0
