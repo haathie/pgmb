@@ -255,7 +255,7 @@ TODO
 2. Download [APGDiff](https://www.apgdiff.com/download.php)
 3. Run the following command to generate the upgrade SQL file:
    ```sh
-   java -jar apgdiff-2.4.jar sql/pgmb_0.1.0.sql sql/pgmb.sql > sql/upgrade--0.1.0--0.1.1.sql
+   java -jar apgdiff-2.4.jar sql/pgmb-0.1.0.sql sql/pgmb.sql > sql/upgrade--0.1.0--0.1.1.sql
    ```
 4. Review & push the generated file to the repository. 
   - Reinstall `pgmb` with the old version (`psql <pg-url> -f sql/pgmb_0.1.0.sql -1`)

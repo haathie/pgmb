@@ -1,15 +1,3 @@
-/*
-to explain inner fns: https://stackoverflow.com/a/30547418
-
--- Enable auto_explain for debugging
-LOAD 'auto_explain';
-SET auto_explain.log_nested_statements = 'on';
-SET auto_explain.log_min_duration = 0;
-SET client_min_messages TO log;
-*/
-
-CREATE SCHEMA IF NOT EXISTS "pgmb";
-
 SET search_path TO pgmb;
 
 -- create the configuration table for pgmb ----------------
