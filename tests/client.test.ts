@@ -100,9 +100,9 @@ describe('PGMB Client Tests', () => {
 	it('should receive events on multiple subs', async() => {
 		// we'll create 3 subs, 2 identical, 1 different
 		// to check if de-duping works correctly on same conditions & params
-		const sub1 = await client.registerFireAndForgetSubscription({})
-		const sub2 = await client.registerFireAndForgetSubscription({})
-		const sub3 = await client.registerFireAndForgetSubscription({ params: { a: 1 } })
+		const sub1 = await client.registerFireAndForgetHandler({})
+		const sub2 = await client.registerFireAndForgetHandler({})
+		const sub3 = await client.registerFireAndForgetHandler({ params: { a: 1 } })
 
 		// check de-duping happened correctly
 		assert.equal(sub1.id, sub2.id)
@@ -139,7 +139,7 @@ describe('PGMB Client Tests', () => {
 		assert.equal(sub3Recv.flatMap((s) => s.items).length, 2)
 
 		// check old events aren't replayed, on a new subscription
-		const sub4 = await client.registerFireAndForgetSubscription({ params: { a: 4 } })
+		const sub4 = await client.registerFireAndForgetHandler({ params: { a: 4 } })
 		const rslt = await Promise.race([sub4.next(), setTimeout(250)])
 		assert.equal(rslt, undefined)
 		sub4.return()
@@ -147,7 +147,7 @@ describe('PGMB Client Tests', () => {
 
 	it('should remove expired subs', async() => {
 		const sub = await client
-			.registerFireAndForgetSubscription({ expiryInterval: '1 second' })
+			.registerFireAndForgetHandler({ expiryInterval: '1 second' })
 		sub.return()
 
 		await setTimeout(1500)
@@ -162,7 +162,7 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should handle disconnections when reading changes', async() => {
-		const sub = await client.registerFireAndForgetSubscription({})
+		const sub = await client.registerFireAndForgetHandler({})
 		const evs = Array.fromAsync(sub)
 
 		await insertEvent(pool)
@@ -189,7 +189,7 @@ describe('PGMB Client Tests', () => {
 		await c1.query('BEGIN;')
 		const ins = await insertEvent(c1)
 
-		const sub = await client.registerFireAndForgetSubscription({})
+		const sub = await client.registerFireAndForgetHandler({})
 		const received: unknown[] = []
 		const readPromise = (async() => {
 			for await (const evs of sub) {
@@ -211,7 +211,7 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should handle concurrent subscription writes', async() => {
-		await client.registerFireAndForgetSubscription({})
+		await client.registerFireAndForgetHandler({})
 		await client.readChanges()
 		await insertEvent(pool)
 		const [changeCount1] = await Promise.all([
@@ -228,7 +228,7 @@ describe('PGMB Client Tests', () => {
 		await c1.query('BEGIN;')
 
 		const events: unknown[] = []
-		const sub = await client.registerFireAndForgetSubscription({})
+		const sub = await client.registerFireAndForgetHandler({})
 		const readPromise = (async() => {
 			for await (const evs of sub) {
 				events.push(...evs.items)
@@ -358,7 +358,7 @@ describe('PGMB Client Tests', () => {
 		let processed = 0
 		await Promise.all(
 			allClients.map((c) => (
-				c.registerReliableSubscription(
+				c.registerReliableHandler(
 					createTopicalSubscriptionParams<TestEventData>({
 						topics: ['test-topic-1']
 					}),
@@ -392,7 +392,7 @@ describe('PGMB Client Tests', () => {
 		const DELAY_MS = 1000
 
 		const topic = 'scheduled-event'
-		const sub = await client.registerFireAndForgetSubscription(
+		const sub = await client.registerFireAndForgetHandler(
 			createTopicalSubscriptionParams({ topics: [topic] })
 		)
 
@@ -425,7 +425,7 @@ describe('PGMB Client Tests', () => {
 		const eventsToWrite = writerCount * eventsPerWriter
 
 		const events: { payload: unknown }[] = []
-		const sub = await client.registerFireAndForgetSubscription({})
+		const sub = await client.registerFireAndForgetHandler({})
 		const readPromise = (async() => {
 			for await (const evs of sub) {
 				events.push(...evs.items)
@@ -542,14 +542,14 @@ describe('PGMB Client Tests', () => {
 	it('should update poll fn when conditions_sql uniquely changed', async() => {
 		const cond = "e.topic = s.params->>'topic'"
 		const fnData0 = await getPollFnData()
-		await client.registerFireAndForgetSubscription({
+		await client.registerFireAndForgetHandler({
 			conditionsSql: cond,
 			params: { topic: 'test1' },
 		})
 		const fnData1 = await getPollFnData()
 		assert.notEqual(fnData0.prosrc, fnData1.prosrc)
 
-		const sub2 = await client.registerFireAndForgetSubscription({
+		const sub2 = await client.registerFireAndForgetHandler({
 			conditionsSql: cond,
 			params: { topic: 'test2' },
 		})
@@ -571,7 +571,7 @@ describe('PGMB Client Tests', () => {
 		]
 		await Promise.all([
 			client.readChanges(),
-			...conds.map((cond) => client.registerFireAndForgetSubscription({ conditionsSql: cond }),
+			...conds.map((cond) => client.registerFireAndForgetHandler({ conditionsSql: cond }),
 			),
 		])
 
@@ -585,22 +585,22 @@ describe('PGMB Client Tests', () => {
 
 	it('should fail to create subscription with invalid conditions SQL', async() => {
 		await assert.rejects(
-			() => client.registerFireAndForgetSubscription({ conditionsSql: 'INVALID SQL' })
+			() => client.registerFireAndForgetHandler({ conditionsSql: 'INVALID SQL' })
 		)
 	})
 
 	it('should match subscriptions', async() => {
-		const noSub = await client.registerFireAndForgetSubscription({
+		const noSub = await client.registerFireAndForgetHandler({
 			conditionsSql: "e.payload->>'non_exist' IS NOT NULL",
 		})
 
 		const noSubItems = Array.fromAsync(noSub)
 
-		const sub1 = await client.registerFireAndForgetSubscription({
+		const sub1 = await client.registerFireAndForgetHandler({
 			conditionsSql: "e.payload->'data' > s.params->'min'",
 			params: { min: 0.5 },
 		})
-		const sub2 = await client.registerFireAndForgetSubscription({
+		const sub2 = await client.registerFireAndForgetHandler({
 			conditionsSql: "e.payload->'data' > s.params->'min'",
 			params: { min: 0 },
 		})
@@ -627,7 +627,7 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should create events from table mutations', async() => {
-		const sub = await client.registerFireAndForgetSubscription(
+		const sub = await client.registerFireAndForgetHandler(
 			createTopicalSubscriptionParams<TestEventData>({
 				topics: [
 					'public.test_table.delete',
@@ -696,7 +696,7 @@ describe('PGMB Client Tests', () => {
 
 		let resolveFirst: (() => void) | undefined
 
-		await client.registerReliableSubscription(
+		await client.registerReliableHandler(
 			{},
 			async() => {
 				if(!resolveFirst) {
@@ -707,7 +707,7 @@ describe('PGMB Client Tests', () => {
 			}
 		)
 
-		await client.registerReliableSubscription({}, sub2Fn)
+		await client.registerReliableHandler({}, sub2Fn)
 
 		for(let i = 0; i < client.maxActiveCheckpoints + 2;i++) {
 			await insertEvent(pool)
@@ -740,7 +740,7 @@ describe('PGMB Client Tests', () => {
 
 		let failed = false
 
-		await client.registerReliableSubscription(
+		await client.registerReliableHandler(
 			{},
 			async() => {
 				if(!failed) {
@@ -749,7 +749,7 @@ describe('PGMB Client Tests', () => {
 				}
 			}
 		)
-		await client.registerReliableSubscription({ params: { a: 1 } }, sub2Fn)
+		await client.registerReliableHandler({ params: { a: 1 } }, sub2Fn)
 
 		const { id } = await insertEvent(pool)
 
@@ -769,7 +769,7 @@ describe('PGMB Client Tests', () => {
 		const subs = await Promise.all(
 			Array.from({ length: 3 }).map((_, i) => {
 				let active = false
-				return client.registerReliableSubscription(
+				return client.registerReliableHandler(
 					{
 						params: { data: i },
 						conditionsSql: 's.params @> e.payload',
@@ -792,7 +792,7 @@ describe('PGMB Client Tests', () => {
 		)
 
 		// check eph sub gets all events
-		const ephSub = await client.registerFireAndForgetSubscription({})
+		const ephSub = await client.registerFireAndForgetHandler({})
 		const ephRecvTask = Array.fromAsync(ephSub)
 
 		await pushEvents(subs.length)
@@ -840,7 +840,7 @@ describe('PGMB Client Tests', () => {
 
 		let failedEvents: ITestEvent[] | undefined
 		let doneEvents: ITestEvent[] | undefined
-		const { subscriptionId } = await client.registerReliableSubscription(
+		const { subscriptionId } = await client.registerReliableHandler(
 			{
 				retryOpts: {
 					name: 's1',
@@ -859,9 +859,9 @@ describe('PGMB Client Tests', () => {
 		)
 
 		// control 1
-		await client.registerReliableSubscription({}, c1Mock)
+		await client.registerReliableHandler({}, c1Mock)
 		// control 2 (w different sub)
-		await client.registerReliableSubscription({ params: { a: 1 } }, c2Mock)
+		await client.registerReliableHandler({ params: { a: 1 } }, c2Mock)
 
 		await Promise.all([insertEvent(pool), insertEvent(pool)])
 
@@ -897,7 +897,7 @@ describe('PGMB Client Tests', () => {
 		const handler = mock.fn<(arg: IReadEvent) => Promise<void>>(() => {
 			throw new Error('Always fails')
 		})
-		const { subscriptionId } = await client.registerReliableSubscription(
+		const { subscriptionId } = await client.registerReliableHandler(
 			{ retryOpts: { name: 's1', retriesS: [1, 1] } },
 			handler
 		)
@@ -1010,7 +1010,7 @@ describe('PGMB Client Tests', () => {
 
 		it('should handle reconnection on pgmb destruction', async() => {
 			const { es } = await openEs()
-			await client.registerReliableSubscription({}, () => setTimeout(500))
+			await client.registerReliableHandler({}, () => setTimeout(500))
 
 			await insertEvent(pool)
 			await waitForESEvent(es)
@@ -1106,7 +1106,7 @@ describe('PGMB Client Tests', () => {
 
 		it('should create webhook subscription', async() => {
 			const { id: subId } = await client
-				.registerFireAndForgetSubscription({ })
+				.registerFireAndForgetHandler({ })
 			webhookInfos[subId] = [{ id: '1', url: webhookUrl }]
 			const ev = await insertEvent(pool)
 
@@ -1123,7 +1123,7 @@ describe('PGMB Client Tests', () => {
 
 		it('should retry failed webhooks', async() => {
 			const { id: subId } = await client
-				.registerFireAndForgetSubscription({ })
+				.registerFireAndForgetHandler({ })
 			webhookInfos[subId] = [{ id: '1', url: webhookUrl }]
 			await Promise.all([insertEvent(pool), insertEvent(pool)])
 

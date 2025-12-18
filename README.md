@@ -12,6 +12,7 @@ Using this package you can implement:
 ## Upgrade from 0.1.x to 0.2.x
 
 `0.2.x` is a completely new implementation of PGMB, with a different architecture & design. So when upgrading from `0.1.x` to `0.2.x`, code will need to be rewritten to use the new API. However, the new schema does not interfere with the old schema, so both versions can co-exist in the same database, allowing for a gradual migration.
+Practically all features from `0.1.x` can be achieved in `0.2.x`.
 
 ## Benchmarks
 
@@ -30,15 +31,16 @@ Note: I'm not super sure why the PGMQ benchmarks are much lower, but I suspect i
 
 First, let's ensure that PGMB is installed in your Postgres database. PGMB is just SQL code, so can be installed in limited environments where you may not have superuser access. PGMB is also compatible with [PGLite](https://pglite.dev).
 
-Once you've the repository cloned:
-```sh
-psql postgres://<user>:<pass>@<host>:<port>/<db> -f sql/pgmb.sql -1
-```
-
-Initial setup is now complete. You can now use the package in your Node.js project.
+Install PGMB by running the following command:
 
 ```sh
 npm install @haathie/pgmb
+```
+
+Before using PGMB, you'll need to run the setup script to create the required tables, functions & triggers in your database. You can do this by running:
+
+```sh
+psql postgres://<user>:<pass>@<host>:<port>/<db> -f node_modules/@haathie/pgmb/sql/pgmb.sql -1
 ```
 
 ``` ts
@@ -108,7 +110,7 @@ Subscriptions can also be automatically expired after a certain period of inacti
 ``` ts
 // setup a reliable consumer. Should execute this on each boot of your
 // service that wants to consume messages.
-await pgmb.registerReliableSubscription(
+await pgmb.registerReliableHandler(
 	{
 		// we'll listen to "msg-created" and "msg-updated" events.
 		// note: this SQL leverages the GIN index on "params" column
@@ -150,7 +152,7 @@ const pgmb = new PgmbClient({
 	...otherOpts
 })
 
-await pgmb.registerReliableSubscription(
+await pgmb.registerReliableHandler(
 	{
 		// we're partitioning by the event ID here, but it's just as
 		// easy to partition by any other attribute of the event.
@@ -174,7 +176,7 @@ As registering topical subscriptions is a common use case, PGMB provides a helpe
 ``` ts
 import { createTopicalSubscriptionParams } from '@haathie/pgmb'
 
-const sub = await pgmb.registerReliableSubscription(
+const sub = await pgmb.registerReliableHandler(
 	createTopicalSubscriptionParams({
 		topics: ['msg-created', 'msg-updated'],
 		partition: { current: workerNumber, total: 3 },
@@ -187,7 +189,7 @@ const sub = await pgmb.registerReliableSubscription(
 If your use case doesn't need reliable processing of messages, and you just want to "fire-and-forget" process messages as they arrive, PGMB also provides a simpler API for that:
 
 ``` ts
-const sub = await pgmb.registerFireAndForgetSubscription(
+const sub = await pgmb.registerFireAndForgetHandler(
 	createTopicalSubscriptionParams({
 		topics: ['msg-created', 'msg-updated'],
 		// can expire this much quicker, because there's no
@@ -301,7 +303,7 @@ type UserEventData = ITableMutationEventData<
 const pgmb = new PgmbClient<UserEventData>({ ... })
 
 // you can now consume events with proper typing:
-const sub = await pgmb.registerFireAndForgetSubscription({})
+const sub = await pgmb.registerFireAndForgetHandler({})
 for await(const { items } of sub) {
 	for(const item of items) {
 		if(item.topic === 'public.users.insert') {

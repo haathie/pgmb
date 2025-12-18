@@ -6,7 +6,7 @@ import { PGMBEventBatcher } from './batcher.ts'
 import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, releaseGroupLock, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
 import type { PgClientLike, PgReleasableClient } from './query-types.ts'
 import { createRetryHandler, normaliseRetryEventsInReadEventMap } from './retry-handler.ts'
-import type { GetWebhookInfoFn, IEphemeralListener, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, RegisterReliableSubscriptionParams, RegisterSubscriptionParams } from './types.ts'
+import type { GetWebhookInfoFn, IEphemeralListener, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, registerReliableHandlerParams, RegisterSubscriptionParams } from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
 type IReliableListener<T extends IEventData> = {
@@ -194,19 +194,27 @@ export class PgmbClient<T extends IEventData = IEventData>
 	}
 
 	/**
-	 * Registers a fire-and-forget subscription, returning an async iterator
+	 * Registers a fire-and-forget handler, returning an async iterator
 	 * that yields events as they arrive. The client does not wait for event
 	 * processing acknowledgements. Useful for cases where data is eventually
 	 * consistent, or when event delivery isn't critical
 	 * (eg. http SSE, websockets).
 	 */
-	async registerFireAndForgetSubscription(opts: RegisterSubscriptionParams) {
+	async registerFireAndForgetHandler(opts: RegisterSubscriptionParams) {
 		const { id: subId } = await this.assertSubscription(opts)
 		return this.#listenForEvents(subId)
 	}
 
-	async registerReliableSubscription(
-		{ retryOpts, ...opts }: RegisterReliableSubscriptionParams,
+	/**
+	 * Registers a reliable handler for the given subscription params.
+	 * If the handler throws an error, client will rollback to the last known
+	 * good cursor, and re-deliver events.
+	 * To avoid a full redelivery of a batch, a retry strategy can be provided
+	 * to retry failed events by the handler itself, allowing for delayed retries
+	 * with backoff, and without disrupting the overall event flow.
+	 */
+	async registerReliableHandler(
+		{ retryOpts, ...opts }: registerReliableHandlerParams,
 		handler: IEventHandler<T>
 	) {
 		const { id: subId } = await this.assertSubscription(opts)

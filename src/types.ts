@@ -70,6 +70,10 @@ export type PGMBEventBatcherOpts<T extends IEventData> = {
 
 export type Pgmb2ClientOpts = {
 	client: PgClientLike
+	/**
+	 * Globally unique identifier for this Pgmb2Client instance. All subs
+	 * registered with this client will use this groupId.
+	 */
 	groupId: string
 	logger?: Logger
 	/** How long to sleep between polls & read fn calls */
@@ -96,6 +100,10 @@ export type Pgmb2ClientOpts = {
 	 * @default 10
 	 */
 	maxActiveCheckpoints?: number
+	/**
+	 * Should this client poll for new events?
+	 * @default true
+	 */
 	poll?: boolean
 
 	webhookHandlerOpts?: Partial<PgmbWebhookOpts>
@@ -113,7 +121,7 @@ export type IReadEvent<T extends IEventData = IEventData> = {
 export type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
-export type RegisterReliableSubscriptionParams = RegisterSubscriptionParams & {
+export type registerReliableHandlerParams = RegisterSubscriptionParams & {
 	retryOpts?: IRetryHandlerOpts
 }
 
