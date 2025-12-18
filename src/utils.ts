@@ -1,20 +1,5 @@
-import type { PgEnqueueMsg, PgPublishMsg } from './types'
-
-export function getChannelNameForQueue(queueName: string) {
-	return `chn_${queueName}`
-}
-
-export function getQueueNameFromChannel(channelName: string) {
-	if(!channelName.startsWith('chn_')) {
-		return undefined
-	}
-
-	return channelName.slice(4)
-}
-
-export function delay(ms: number) {
-	return new Promise(resolve => setTimeout(resolve, ms))
-}
+import assert from 'node:assert'
+import type { CreateTopicalSubscriptionOpts, IEventData, RegisterSubscriptionParams } from './types'
 
 /**
  * Extract the date from a message ID, same as the PG function
@@ -34,41 +19,41 @@ export function getDateFromMessageId(messageId: string) {
 }
 
 /**
- * Serialise the messages into a SQL array of pgmb.msg_constructor
+ * Extract the date from a subscription ID
  */
-export function serialisePgMsgConstructorsIntoSql(
-	messages: (PgEnqueueMsg | PgPublishMsg)[],
-	params: unknown[] = []
-) {
-	const type = 'exchange' in messages[0] ? 'publish_msg' : 'enqueue_msg'
-	const queryComps = messages.map(({ message, headers, consumeAt, ...rt }) => {
-		let str = '('
-		if('exchange' in rt) {
-			params.push(rt.exchange)
-			str += `$${params.length}, `
-		}
+export function getCreateDateFromSubscriptionId(id: string) {
+	if(!id.startsWith('su')) {
+		return undefined
+	}
 
-		params.push(message)
-		str += `$${params.length}::bytea, `
-		if(headers) {
-			params.push(JSON.stringify(headers))
-			str += `$${params.length}::jsonb, `
-		} else {
-			str += 'NULL, '
-		}
+	return getDateFromMessageId('pm' + id.slice(2))
+}
 
-		if(consumeAt) {
-			params.push(consumeAt)
-			str += `$${params.length}::timestamptz)`
-		} else {
-			str += 'NULL)'
-		}
+/**
+ * Creates subscription params for a subscription that matches
+ * 1 or more topics. Also supports partitioning the subscription
+ * such that only a subset of messages are received.
+ */
+export function createTopicalSubscriptionParams<T extends IEventData>({
+	topics,
+	partition,
+	additionalFilters = {},
+	additionalParams = {},
+	...rest
+}: CreateTopicalSubscriptionOpts<T>): RegisterSubscriptionParams {
+	assert(topics.length > 0, 'At least one topic must be provided')
 
-		return str
-	})
+	const filters = { ...additionalFilters }
+	filters['topics'] ||= 'ARRAY[e.topic]'
+	if(partition) {
+		filters['partition'] = `hashtext(e.id) % ${partition.total}`
+	}
 
-	return [
-		`ARRAY[${queryComps.join(',')}]::pgmb.${type}[]`,
-		params
-	] as const
+	const strs = Object.entries(filters)
+		.map(([k, v]) => `'${k}',${v}`)
+	return {
+		conditionsSql: `s.params @> jsonb_build_object(${strs.join(',')})`,
+		params: { topics, partition: partition?.current, ...additionalParams },
+		...rest
+	}
 }

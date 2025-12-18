@@ -1,217 +1,59 @@
-import type { Pool, PoolConfig } from 'pg'
+import type { IncomingMessage } from 'node:http'
 import type { Logger } from 'pino'
+import type { HeaderRecord } from 'undici-types/header.js'
+import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
+import type { IAssertSubscriptionParams } from './queries.ts'
+import type { PgClientLike } from './query-types.ts'
 
-export type DefaultDataMap = { [_: string]: unknown }
-
-export type DefaultSerialisedMap = { [_: string]: Uint8Array | string }
-
-/**
- * Declare the options for the PGMBClient.
- *
- * Note: if you do not provide a serialiser, the client will
- * use no serialisation & your consumers will receive the raw
- * messages.
- *
- * @template QM - Map of queue names to message types.
- * @template EM - Map of exchange names to message types.
- */
-export type PGMBClientOpts<QM = DefaultDataMap, EM = DefaultDataMap>
-	= PGMBRawClientOpts<QM, EM> | PGMBTypedClientOpts<QM, EM>
-
-export type PGMBRawClientOpts<QM, EM> = PGMBBaseClientOpts<EM> & {
-	/**
-	 * Add consumers to the client. This will automatically
-	 * start consuming messages.
-	 */
-	consumers: PGMBConsumerOpts<keyof QM, DefaultSerialisedMap, Uint8Array>[]
-	serialiser?: undefined
+export type SerialisedEvent = {
+	body: Buffer | string
+	contentType: string
 }
 
-export type PGMBTypedClientOpts<QM, EM> = PGMBBaseClientOpts<EM> & {
-	/**
-	 * Add consumers to the client. This will automatically
-	 * start consuming messages.
-	 */
-	consumers: {
-		[Key in keyof QM]: PGMBConsumerOpts<Key, EM, QM[Key]>
-	}[keyof QM][]
-	serialiser: Serialiser
-}
-
-export type PGMBBaseClientOpts<EM> = {
-	/**
-	 * Provide a connection pool to use,
-	 * or options to create a new pool.
-	 */
-	pool: Pool | ({ create: true } & PoolConfig)
-
-	logger?: Logger
-	/**
-	 * Options for the event batcher. This can be used to queue messages
-	 * before publishing them all at once.
-	 */
-	batcher?: Omit<PGMBMakeEventBatcherOpts<EM>, 'publish' | 'logger'>
-}
-
-export type PGMBOnMessageOpts<Q, M, Default> = {
-	queueName: Q
-	msgs: PgTypedIncomingMessage<M, Default>[]
-
-	logger: Logger
-	/**
-	 * Mark the messages as processed.
-	 * This will be transmitted to the database, upon completion
-	 * of the `onMessage` function.
-	 * @param success - If true, the messages will be acked,
-	 * 	if false, they will be nacked.
-	 */
-	ack(success: boolean, ...msgs: string[]): void
-}
-
-export type PGMBConsumerOpts<Q, M, Default> = PGMBAssertQueueOpts<Q, keyof M> & {
-	/**
-	 * Number of replicas to create for this queue, this is useful to ensure that
-	 * if you have one long running batch, other replicas can still continue
-	 * consuming messages.
-	 * Ensure that you've enough connections in your pool to handle this.
-	 * @default 1
-	 */
-	replicas?: number
-	/**
-	 * Number of messages to consume at once.
-	 */
-	batchSize: number
-	/**
-	 * Number of milliseconds to wait after receiving a message
-	 * before processing the next batch. This is useful to
-	 * process messages in batches
-	 */
-	debounceIntervalMs?: number
-	/**
-	 * Process messages in the queue. Rejecting a message will
-	 * automatically nack it, resolving it will ack it.
-	 */
-	onMessage(opts: PGMBOnMessageOpts<Q, M, Default>): Promise<void> | void
-}
-
-export type PGMBMetadata<E = string> = {
-	/**
-	 * Specifys the number of times this message should be retried.
-	 * Each element in the array is a retry delay in seconds.
-	 * Eg. [5, 10, 15] will retry the message after 5 seconds,
-	 * then 10 seconds, then 15 seconds.
-	 */
-	retriesLeftS?: number[]
-	/**
-	 * If this message is a retried message, this will be the ID of the
-	 * original n-acked message.
-	 */
-	originalMessageId?: string
-	/**
-	 * The number of times this message has been retried.
-	 */
-	tries?: number
-	/**
-	 * The exchange this message came from
-	 */
-	exchange?: E
-	/**
-	 * type of the content
-	 */
-	contentType?: string
-}
-
-export type PGMBHeaders = PGMBMetadata & { [key: string]: any }
-
-export type PgTypedIncomingMessage<M, D> = {
-	[key in keyof M]: PgIncomingMessage<key, M[key], D>
-}[keyof M]
-
-type PgIncomingMessage<E = string, M = Uint8Array, D = Uint8Array> = {
+export type WebhookInfo = {
 	id: string
+	url: string | URL
+}
+
+export type GetWebhookInfoFn = (
+	subscriptionIds: string[]
+) => Promise<{ [id: string]: WebhookInfo[] }> | { [id: string]: WebhookInfo[] }
+
+export type PgmbWebhookOpts = {
 	/**
-	 * the raw serialised message
+	 * Maximum time to wait for webhook request to complete
+	 * @default 5 seconds
 	 */
-	rawMessage: Uint8Array
-	headers: PGMBHeaders
-} & (
-	{
-		exchange: E
-		message: M
-	} | {
-		message: D
-		exchange?: undefined
-	}
-)
-
-export type PgEnqueueMsg<M = Uint8Array | string> = {
-	message: M
-	headers?: PGMBHeaders
-	consumeAt?: Date
-}
-
-export type PgPublishMsg<M = DefaultSerialisedMap, E extends keyof M = keyof M> = {
-	[Key in E]: {
-		/**
-		 * Exchange name to send the message to.
-		 */
-		exchange: Key
-		message: M[Key]
-		headers?: PGMBHeaders
-		consumeAt?: Date
-	}
-}[E]
-
-export type PGMBNotificationData = { count: number }
-
-export type PGMBNotification = {
-	type: 'message'
-	queueName: string
-	data: PGMBNotificationData
-} | {
-	type: 'connection'
-}
-
-export type PGMBAssertQueueOpts<Q = string, B = string> = {
-	/***
-	 * Name of the queue to assert.
+	timeoutMs?: number
+	headers?: HeaderRecord
+	/**
+	 * Configure retry intervals in seconds for failed webhook requests.
+	 * If null, a failed handler will fail the event processor. Use carefully.
 	 */
-	name: Q
-	ackSetting?: 'archive' | 'delete'
-	defaultHeaders?: PGMBHeaders
-	type?: 'logged' | 'unlogged'
-	bindings?: B[]
+	retryOpts?: IRetryHandlerOpts | null
+	jsonifier?: JSONifier
+	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
 
-export type PGMBAssertExchangeOpts<T = string> = {
-	name: T
+export interface IEventData {
+	topic: string
+	payload: unknown
+	metadata?: unknown
 }
 
-export type PGSentMessage = { id: string }
+export type IEvent<T extends IEventData> = (T & { id: string })
 
-export type PGPublishedMessage = { id: string | null }
-
-export type PGMBMakeEventBatcherOpts<M> = {
+export type PGMBEventBatcherOpts<T extends IEventData> = {
 	/**
 	 * Whether a particular published message should be logged.
 	 * By default, all messages are logged -- in case of certain
 	 * failures, the logs can be used to replay the messages.
 	 */
-	shouldLog?(msg: PgPublishMsg<M>): boolean
+	shouldLog?(msg: T): boolean
 
-	publish(...msgs: PgPublishMsg<M>[]): Promise<PGPublishedMessage[]>
+	publish(...msgs: T[]): Promise<{ id: string }[]>
 
-	logger: Logger
-	/**
-	 * @param msg - The message to serialise
-	 */
-	serialise?(msg: unknown): Uint8Array | string
-	/**
-	 * Max message size allowed, prevents enqueuing messages
-	 * that are guaranteed to fail.
-	 * @default 10 * 1024 * 1024 (10mb)
-	 */
-	maxMessageSizeBytes?: number
+	logger?: Logger
 	/**
 	 * Automatically flush after this interval.
 	 * Set to undefined or 0 to disable. Will need to
@@ -226,17 +68,163 @@ export type PGMBMakeEventBatcherOpts<M> = {
 	maxBatchSize?: number
 }
 
-export type Serialiser = {
+export type Pgmb2ClientOpts = {
+	client: PgClientLike
 	/**
-	 * Arbitrary ID for the serialiser.
+	 * Globally unique identifier for this Pgmb2Client instance. All subs
+	 * registered with this client will use this groupId.
 	 */
+	groupId: string
+	logger?: Logger
+	/** How long to sleep between polls & read fn calls */
+	sleepDurationMs?: number
+	/**
+	 * How often to mark subscriptions as active,
+	 * and remove expired ones.
+	 * @default 1 minute
+	 */
+	subscriptionMaintenanceMs?: number
+	/** How often to maintain the events tables
+	 * (drop old partitions, create new ones, etc)
+	 * @default 5 minutes
+	 */
+	tableMaintainanceMs?: number
+
+	readChunkSize?: number
+	/**
+	 * As we process in batches, a single handler taking time to finish
+	 * can lead to buildup of unprocessed checkpoints. To avoid this,
+	 * we keep moving forward while handlers run in the background, but
+	 * to avoid an unbounded number of items being backlogged, we limit
+	 * how much further we can go ahead from the earliest uncompleted checkpoint.
+	 * @default 10
+	 */
+	maxActiveCheckpoints?: number
+	/**
+	 * Should this client poll for new events?
+	 * @default true
+	 */
+	poll?: boolean
+
+	webhookHandlerOpts?: Partial<PgmbWebhookOpts>
+	getWebhookInfo?: GetWebhookInfoFn
+} & Pick<
+	PGMBEventBatcherOpts<IEventData>,
+	'flushIntervalMs' | 'maxBatchSize' | 'shouldLog'
+>
+
+export type IReadEvent<T extends IEventData = IEventData> = {
+	items: IEvent<T>[]
+	retry?: IRetryEventPayload
+}
+
+export type RegisterSubscriptionParams
+	= Omit<IAssertSubscriptionParams, 'groupId'>
+
+export type registerReliableHandlerParams = RegisterSubscriptionParams & {
+	/**
+	 * Name for the retry handler, used to ensure retries for a particular
+	 * handler are not mixed with another handler. This name need only be
+	 * unique for a particular subscription.
+	*/
+	name?: string
+	retryOpts?: IRetryHandlerOpts
+}
+
+export type CreateTopicalSubscriptionOpts<T extends IEventData> = {
+	/**
+	 * The topics to subscribe to.
+	 */
+	topics: T['topic'][]
+	/**
+	 * To scale out processing, you can partition the subscriptions.
+	 * For example, with `current: 0, total: 3`, only messages
+	 * where `hashtext(e.id) % 3 == 0` will be received by this subscription.
+	 */
+	partition?: {
+		current: number
+		total: number
+	}
+	/**
+	 * Add any additional params to filter by.
+	 * i.e "s.params @> jsonb_build_object(...additionalFilters)"
+	 * The value should be a valid SQL snippet.
+	 */
+	additionalFilters?: Record<string, string>
+	/** JSON to populate params */
+	additionalParams?: Record<string, any>
+
+	expiryInterval?: RegisterSubscriptionParams['expiryInterval']
+}
+
+export interface IEphemeralListener<T extends IEventData>
+	extends AbortableAsyncIterator<IReadEvent<T>> {
 	id: string
+}
+
+export type IEventHandlerContext = {
+	logger: Logger
+	client: PgClientLike
+	subscriptionId: string
+	/** registered name of the handler */
+	name: string
+	extra?: unknown
+}
+
+export type IEventHandler<T extends IEventData = IEventData>
+	= (item: IReadEvent<T>, ctx: IEventHandlerContext) => Promise<void>
+
+export type IRetryEventPayload = {
+	ids: string[]
+	handlerName: string
+	retryNumber: number
+}
+
+type SSESubscriptionOpts
+	= Pick<RegisterSubscriptionParams, 'conditionsSql' | 'params'>
+
+export type SSERequestHandlerOpts = {
+	getSubscriptionOpts(req: IncomingMessage):
+		Promise<SSESubscriptionOpts> | SSESubscriptionOpts
 	/**
-	 * Content type of the serialised message, included in the headers
-	 * of the sent message.
-	 * @example 'application/json'
+	 * Maximum interval to replay events for an SSE subscription.
+	 * @default 5 minutes
 	 */
-	contentType: string | undefined
-	encode: (msg: unknown) => Uint8Array | string
-	decode: (msg: Uint8Array) => unknown
+	maxReplayIntervalMs?: number
+	/**
+	 * Max number of events to replay for an SSE subscription.
+	 * Set to 0 to disable replaying events.
+	 * @default 1000
+	 */
+	maxReplayEvents?: number
+
+	jsonifier?: JSONifier
+}
+
+export type IRetryHandlerOpts = {
+	retriesS: number[]
+}
+
+export interface JSONifier {
+	stringify(data: unknown): string
+	parse(data: string): unknown
+}
+
+export type ITableMutationEventData<T, N extends string> = {
+	topic: `${N}.insert`
+	payload: T
+	metadata: {}
+} | {
+	topic: `${N}.delete`
+	payload: T
+	metadata: {}
+} | {
+	topic: `${N}.update`
+	/**
+	 * The fields that were updated in the row
+	 */
+	payload: Partial<T>
+	metadata: {
+		old: T
+	}
 }

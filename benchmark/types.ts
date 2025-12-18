@@ -2,7 +2,7 @@ import type { Logger } from 'pino'
 
 export type BenchmarkConsumer = {
 	queueName: string
-	onMessage: (msgs: Uint8Array[]) => Promise<void>
+	onMessage: (msgs: unknown[]) => Promise<void>
 }
 
 export type BenchmarkClientOpts = {

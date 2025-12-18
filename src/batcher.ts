@@ -1,19 +1,19 @@
-import { PGMBMakeEventBatcherOpts, PgPublishMsg } from '../types'
+import type { IEventData, PGMBEventBatcherOpts } from './types.ts'
 
-type Batch<M> = {
-	messages: PgPublishMsg<M>[]
+type Batch<T> = {
+	messages: T[]
 }
 
-export class PGMBEventBatcher<M> {
+export class PGMBEventBatcher<T extends IEventData> {
 
-	#publish: PGMBMakeEventBatcherOpts<M>['publish']
+	#publish: PGMBEventBatcherOpts<T>['publish']
 	#flushIntervalMs: number | undefined
 	#maxBatchSize: number
-	#currentBatch: Batch<M> = { messages: [] }
+	#currentBatch: Batch<T> = { messages: [] }
 	#flushTimeout: NodeJS.Timeout | undefined
 	#flushTask: Promise<void> | undefined
-	#logger: PGMBMakeEventBatcherOpts<M>['logger']
-	#shouldLog: PGMBMakeEventBatcherOpts<M>['shouldLog'] | undefined
+	#logger: PGMBEventBatcherOpts<T>['logger']
+	#shouldLog?: PGMBEventBatcherOpts<T>['shouldLog']
 	#batch = 0
 
 	constructor({
@@ -22,7 +22,7 @@ export class PGMBEventBatcher<M> {
 		flushIntervalMs,
 		maxBatchSize = 2500,
 		logger
-	}: PGMBMakeEventBatcherOpts<M>) {
+	}: PGMBEventBatcherOpts<T>) {
 		this.#publish = publish
 		this.#flushIntervalMs = flushIntervalMs
 		this.#maxBatchSize = maxBatchSize
@@ -30,13 +30,17 @@ export class PGMBEventBatcher<M> {
 		this.#shouldLog = shouldLog
 	}
 
-	async close() {
+	async end() {
 		clearTimeout(this.#flushTimeout)
 		await this.#flushTask
 		await this.flush()
 	}
 
-	enqueue(msg: PgPublishMsg<M>) {
+	/**
+	 * Enqueue a message to be published, will be flushed to the database
+	 * when flush() is called (either manually or via interval)
+	 */
+	enqueue(msg: T) {
 		this.#currentBatch.messages.push(msg)
 		if(this.#currentBatch.messages.length >= this.#maxBatchSize) {
 			this.flush()
@@ -66,7 +70,7 @@ export class PGMBEventBatcher<M> {
 		return this.#flushTask
 	}
 
-	async #publishBatch({ messages }: Batch<M>) {
+	async #publishBatch({ messages }: Batch<T>) {
 		const batch = ++this.#batch
 		try {
 			const ids = await this.#publish(...messages)
@@ -75,16 +79,12 @@ export class PGMBEventBatcher<M> {
 					continue
 				}
 
-				this.#logger.info(
-					{ batch, id, message: messages[i] },
-					'published message'
-				)
+				this.#logger
+					?.info({ batch, id, message: messages[i] }, 'published message')
 			}
 		} catch(err) {
-			this.#logger.error(
-				{ batch, err, msgs: messages },
-				'failed to publish messages'
-			)
+			this.#logger
+				?.error({ batch, err, msgs: messages }, 'failed to publish messages')
 		}
 	}
 }

@@ -1,22 +1,26 @@
-import dotenv from 'dotenv'
-dotenv.config({ })
-
 import { threadId, Worker, workerData } from 'worker_threads'
-import makeAmqpBenchmarkClient from './amqp'
-import { benchmarkConsumption, benchmarkPublishing } from './base'
-import makePgmbBenchmarkClient, { install as installPgmb } from './pgmb'
-import makePgmqBenchmarkClient, { install as installPgmq } from './pgmq'
-import { MakeBenchmarkClient } from './types'
+import makeAmqpBenchmarkClient from './amqp.ts'
+import { benchmarkConsumption, benchmarkPublishing } from './base.ts'
+import makePgmbBenchmarkClient, { install as installPgmb } from './pgmb.ts'
+import makePgmb2BenchmarkClient, { install as installPgmb2 } from './pgmb.ts'
+import makePgmqBenchmarkClient, { install as installPgmq } from './pgmq.ts'
+import type { MakeBenchmarkClient } from './types.ts'
 
 type Client = {
 	make: MakeBenchmarkClient
-	install?: () => Promise<boolean>
+	install?: (fresh?: boolean) => Promise<boolean>
 }
+
+const FILENAME = process.argv[1]
 
 const CLIENTS: { [client: string]: Client } = {
 	'pgmb': {
 		make: makePgmbBenchmarkClient,
 		install: installPgmb
+	},
+	'pgmb': {
+		make: makePgmb2BenchmarkClient,
+		install: installPgmb2
 	},
 	'pgmq': {
 		make: makePgmqBenchmarkClient,
@@ -47,12 +51,12 @@ if(!workerData) {
 		throw new Error('Please specify --client <client>')
 	}
 
-	const method = getArg('consume')
+	const methodArg = getArg('consume')
 		? 'consume'
 		: (getArg('publish') ? 'publish' : null)
-	if(!method) {
-		throw new Error('Please specify --consume or --publish')
-	}
+	const methods = methodArg ? [methodArg] : ['consume', 'publish']
+
+	const fresh = !!getArg('fresh')
 
 	const batchSize = getArg('batch')
 
@@ -65,21 +69,27 @@ if(!workerData) {
 				.map(() => `test_queue_${i}`)
 		))
 	const runWorkers = () => (
-		testQueues.map(queueName => (
-			new Worker(__filename, {
-				workerData: {
-					queueName,
-					method,
-					clientId,
-					batchSize: batchSize ? Number(batchSize) : undefined,
-				}
-			})
+		testQueues.flatMap(queueName => (
+			methods.map(method => (
+				new Worker(FILENAME, {
+					workerData: {
+						queueName,
+						method,
+						clientId,
+						batchSize: batchSize ? Number(batchSize) : undefined,
+					}
+				})
+			))
 		))
 	)
 
 	const install = CLIENTS[clientId]?.install
 	if(install) {
-		install()
+		if(fresh) {
+			console.log(`Installing fresh client ${clientId}...`)
+		}
+
+		install(fresh)
 			.then(installed => {
 				console.log(
 					installed

@@ -1,35 +1,35 @@
 {
   "name": "@haathie/pgmb",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "description": "Postgres Message Broker",
   "main": "lib/index.js",
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
-  "repository":"https://github.com/haathie/pgmb",
+  "repository": "https://github.com/haathie/pgmb",
   "scripts": {
-    "test": "TZ=UTC NODE_ENV=test jest",
+    "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test --test tests/*.test.ts",
     "prepare": "tsc",
     "build": "tsc",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
     "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx",
-    "benchmark:tsc": "node -r @swc-node/register src/benchmark/run.ts"
+    "benchmark": "TZ=utc node --env-file ./.env.test src/benchmark/run.ts",
+    "gen:pgtyped": "pgtyped --config ./pgtyped.config.json"
   },
   "devDependencies": {
     "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",
-    "@swc-node/register": "^1.10.10",
-    "@swc/core": "^1.11.24",
-    "@swc/jest": "^0.2.38",
+    "@pgtyped/cli": "^2.4.3",
     "@types/amqplib": "^0.10.0",
     "@types/chance": "^1.1.6",
     "@types/jest": "^27.0.0",
-    "@types/node": "^14.14.35",
+    "@types/node": "^24.0.0",
     "@types/pg": "^8.11.14",
     "amqplib": "^0.10.7",
     "chance": "^1.1.12",
-    "dotenv": "^16.0.1",
     "eslint": "^8.19.0",
-    "jest": "^27.0.0",
+    "eventsource": "^4.1.0",
+    "pg": "^8.16.3",
     "typescript": "^5.0.0"
   },
   "files": [
@@ -45,10 +45,8 @@
   ],
   "author": "Adhiraj Singh",
   "license": "MIT",
-  "peerDependencies": {
-    "pg": "^8.0.0"
-  },
   "dependencies": {
-    "pino": "^8.4.1"
+    "@pgtyped/runtime": "^2.4.2",
+    "pino": "^9.0.0"
   }
 }

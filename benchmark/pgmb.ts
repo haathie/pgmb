@@ -1,7 +1,7 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { PGMBClient } from '../client'
-import { MakeBenchmarkClient } from './types'
+import { PGMBClient } from '../client/index.ts'
+import type { MakeBenchmarkClient } from './types.ts'
 
 const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 	batchSize,
@@ -34,6 +34,7 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 
 	for(const name of assertQueues) {
 		await client.assertQueue({ name })
+			.catch(() => {})
 	}
 
 	await client.listen()
@@ -54,7 +55,7 @@ const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
 	}
 }
 
-export async function install() {
+export async function install(fresh?: boolean) {
 	const uri = process.env.PG_URI
 	if(!uri) {
 		throw new Error('PG_URI is not set')
@@ -66,7 +67,11 @@ export async function install() {
 		'SELECT schema_name FROM information_schema.schemata'
 		+ " WHERE schema_name = 'pgmb'"
 	)
-	if(rowCount) {
+
+	if(fresh && rowCount) {
+		console.log('Dropping existing pgmb schema...')
+		await conn.query('SELECT pgmb.uninstall()')
+	} else if(rowCount) {
 		console.log('pgmb schema already exists')
 		await conn.end()
 		return false

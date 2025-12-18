@@ -2,7 +2,9 @@
   "extends": "./tsconfig.json",
   "include": [
     "src/*.ts", 
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "benchmark/*.ts",
+    "tests/*.ts"
   ],
   "exclude": [
     "node_modules", 

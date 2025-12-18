@@ -1,0 +1,74 @@
+name: Publish Packages
+
+on:
+  workflow_run:
+    workflows: ["Test"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          scope: "@haathie"
+
+      - name: Cache node modules
+        uses: actions/cache/restore@v4
+        id: cache-node-modules
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install Dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        id: npm-ci
+        run: npm ci
+
+      - name: Save Cache
+        # This step ensures the cache is saved even if subsequent steps fail
+        uses: actions/cache/save@v4
+        if: steps.npm-ci.outcome != 'skipped' && always()
+        with:
+          path: node_modules
+          key: ${{ steps.cache-node-modules.outputs.cache-primary-key }}
+
+      - name: Build Package
+        run: |
+          npm run build
+
+      - name: Publish & Version Packages
+        run: sh publish-pkgs.sh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commit and Push Version Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check for changes in package.json files
+          if git diff --quiet --exit-code package.json; then
+            echo "No version changes to commit."
+          else
+            git add package.json
+            git commit -m "chore(release): bump package versions"
+            git push
+            echo "Committed and pushed version changes."
+          fi

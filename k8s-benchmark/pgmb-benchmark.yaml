@@ -42,13 +42,19 @@ data:
 
     # Enable asynchronous commits for better throughput
     synchronous_commit = off 
+    checkpoint_timeout = 5min
+    commit_delay = 500
+    # Background writer
+    bgwriter_lru_maxpages = 1000
+    bgwriter_lru_multiplier = 5.0
     # For high-turnover message tables
     # See: https://www.tembo.io/blog/optimizing-postgres-auto-vacuum
     autovacuum = on
-    autovacuum_max_workers = 2
+    autovacuum_max_workers = 1
     autovacuum_work_mem = 1GB
     autovacuum_naptime = 10s
     autovacuum_vacuum_scale_factor = 0.05    # Vacuum when 5% of table changes
+    autovacuum_analyze_scale_factor = 0.05
     autovacuum_vacuum_cost_delay = 0         # Remove autovacuum throttling
     autovacuum_vacuum_cost_limit = 10000
     autovacuum_vacuum_threshold = 100
@@ -81,9 +87,12 @@ spec:
       labels:
         app: postgres
     spec:
+      securityContext:
+        fsGroup: 26
+        runAsUser: 26
       containers:
       - name: postgres
-        image: postgres:17-bullseye
+        image: ghcr.io/haathie/postgres:17
         ports:
         - containerPort: 5432
           name: postgres
@@ -145,80 +154,31 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: consumer
+  name: benchmark-runner
   namespace: pgmb-benchmark
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: consumer
+      app: benchmark-runner
   template:
     metadata:
       labels:
-        app: consumer
+        app: benchmark-runner
     spec:
       containers:
-        - name: consumer
-          image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
+        - name: benchmark-runner
+          image: ghcr.io/haathie/pgmb:e24f88597f4339adf5057916a825cbdddafc6cfd
           command:
             [
               "npm",
               "run",
-              "benchmark:tsc",
+              "benchmark",
               "--",
-              "--consume",
-              "--batch",
-              "500",
-              "--replicas",
+              "--fresh",
               "1",
               # change to pgmq when wanting to benchmark pgmq
               "--client",
-              "pgmb"
-            ]
-          envFrom:
-            - configMapRef:
-                name: benchmark-config
-          resources:
-            limits:
-              cpu: "1"
-              memory: "2048Mi"
-            requests:
-              cpu: "1"
-              memory: "1024Mi"
-
----
-# Publisher Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: publisher
-  namespace: pgmb-benchmark
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: publisher
-  template:
-    metadata:
-      labels:
-        app: publisher
-    spec:
-      containers:
-        - name: publisher
-          image: ghcr.io/haathie/pgmb:f3c7c0cda07ea9314fecb6878969e51d2e17df64
-          command:
-            [
-              "npm",
-              "run",
-              "benchmark:tsc",
-              "--",
-              "--publish",
-              "--replicas",
-              "1",
-              "--batch",
-              "100",
-              "--client",
-              # change to pgmq when wanting to benchmark pgmq
               "pgmb",
             ]
           envFrom:
@@ -226,8 +186,8 @@ spec:
                 name: benchmark-config
           resources:
             limits:
-              cpu: "1"
-              memory: "2048Mi"
+              cpu: "2"
+              memory: "1536Mi"
             requests:
-              cpu: "1"
-              memory: "1024Mi"
+              cpu: "2"
+              memory: "1536Mi"

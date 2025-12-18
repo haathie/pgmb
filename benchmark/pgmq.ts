@@ -2,8 +2,8 @@ import { exec as execCallback } from 'child_process'
 import { stat, writeFile } from 'fs/promises'
 import { Client, Pool } from 'pg'
 import { promisify } from 'util'
-import { delay } from '../utils'
-import { BenchmarkConsumer, MakeBenchmarkClient } from './types'
+import { delay } from '../utils.ts'
+import type { BenchmarkConsumer, MakeBenchmarkClient } from './types.ts'
 
 const exec = promisify(execCallback)
 
