@@ -11,7 +11,10 @@ export function createWebhookHandler(
 	{
 		timeoutMs = 5_000,
 		headers,
-		retryOpts = { retriesS: [1 * 60, 10 * 60] },
+		retryOpts = {
+			// retry after 5 minutes, then after 30 minutes
+			retriesS: [5 * 60, 30 * 60]
+		},
 		jsonifier = JSON,
 		serialiseEvent = createSimpleSerialiser(jsonifier)
 	}: Partial<PgmbWebhookOpts>
@@ -29,7 +32,7 @@ export function createWebhookHandler(
 		)
 		const { url } = extra
 		const { body, contentType } = serialiseEvent(ev)
-		const { status, body: res } = await fetch(url, {
+		const { status, statusText, body: res } = await fetch(url, {
 			method: 'POST',
 			headers: {
 				'content-type': contentType,
@@ -49,7 +52,7 @@ export function createWebhookHandler(
 		}
 
 		if(status < 200 || status >= 300) {
-			throw new Error(`Non-2xx response: ${status}`)
+			throw new Error(`Non-2xx response: ${status} (${statusText})`)
 		}
 	}
 
