@@ -71,8 +71,6 @@ SELECT substr(
 	'pm'
 	-- we'll give 13 hex characters for microsecond timestamp
 	|| lpad(to_hex((extract(epoch from ts) * 1000000)::bigint), 13,	'0')
-	-- xids are 32 bits, so 8 hex characters
-	-- || lpad(to_hex(tx_id), 8, '0')
 	-- fill remaining with randomness
 	|| rpad(to_hex(rand), 9, '0'),
 	1,
@@ -400,7 +398,7 @@ ALTER TABLE subscriptions ADD CONSTRAINT fk_subscription_group
 	ON DELETE RESTRICT
 	NOT VALID;
 
-CREATE UNLOGGED TABLE IF NOT EXISTS subscription_events(
+CREATE TABLE IF NOT EXISTS subscription_events(
 	id event_id,
 	group_id group_id,
 	event_id event_id,
@@ -466,7 +464,15 @@ DECLARE
 
 	start_num BIGINT := create_random_bigint();
 	write_start TIMESTAMPTZ;
+
+	lock_key CONSTANT BIGINT :=
+		hashtext('pgmb.poll_for_events');
 BEGIN
+	IF NOT pg_try_advisory_xact_lock(lock_key) THEN
+		-- another process is already polling for events
+		RETURN 0;
+	END IF;
+
 	WITH to_delete AS (
 		SELECT td.event_id
 		FROM unread_events td
@@ -490,9 +496,6 @@ BEGIN
 		RETURN 0;
 	END IF;
 
-	-- fully lock table to avoid race conditions when reading from subscription_events
-	-- todo: use advisory lock at the end instead?
-	LOCK TABLE subscription_events IN ACCESS EXCLUSIVE MODE;
 	write_start := clock_timestamp();
 
 	WITH read_events AS (
