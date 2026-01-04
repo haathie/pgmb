@@ -124,6 +124,19 @@ await pgmb.registerReliableHandler(
 		retryOpts: {
 			// will retry after 1 minute, then after 5 minutes
 			retriesS: [60, 5 * 60]
+		},
+		// optionally provide a splitBy function to split
+		// event to be processed differently based on some attribute.
+		splitBy(ev) {
+			return Object.values(
+				// group events by their topic
+				ev.items.reduce((acc, item) => {
+					const key = item.topic
+					acc[key] ||= { items: [] }
+					acc[key].items.push(item)
+					return acc
+				}, {})
+			)
 		}
 	},
 	async({ items }, { logger }) => {

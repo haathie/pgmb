@@ -28,6 +28,7 @@ import type {
 	IEventHandler,
 	IReadEvent,
 	IReadNextEventsFn,
+	ISplitFn,
 	Pgmb2ClientOpts,
 	registerReliableHandlerParams,
 	RegisterSubscriptionParams,
@@ -35,13 +36,14 @@ import type {
 import { createWebhookHandler } from './webhook-handler.ts'
 
 type IReliableListener<T extends IEventData> = {
-	type: 'reliable'
-	handler: IEventHandler<T>
-	removeOnEmpty?: boolean
-	extra?: unknown
-	queue: {
-		item: IReadEvent<T>
-		checkpoint: Checkpoint
+ 	type: 'reliable'
+ 	handler: IEventHandler<T>
+ 	removeOnEmpty?: boolean
+ 	extra?: unknown
+ 	splitBy?: ISplitFn<T>
+ 	queue: {
+ 		item: IReadEvent<T>
+ 		checkpoint: Checkpoint
 	}[]
 };
 
@@ -78,9 +80,11 @@ export class PgmbClient<
 	readonly readNextEvents: IReadNextEventsFn
 
 	readonly getWebhookInfo: GetWebhookInfoFn
-	readonly webhookHandler: IEventHandler
+	readonly webhookHandler: IEventHandler<T>
 
 	readonly listeners: { [subId: string]: IListenerStore<T> } = {}
+
+	readonly #webhookHandlerOpts: Partial<{ splitBy?: ISplitFn<T> }>
 
 	#readClient?: PgReleasableClient
 
@@ -104,12 +108,15 @@ export class PgmbClient<
 		maxActiveCheckpoints = 10,
 		poll,
 		subscriptionMaintenanceMs = 60 * 1000,
-		webhookHandlerOpts = {},
+		webhookHandlerOpts: {
+			splitBy: whSplitBy,
+			...whHandlerOpts
+		} = {},
 		getWebhookInfo = () => ({}),
 		tableMaintainanceMs = 5 * 60 * 1000,
 		readNextEvents = defaultReadNextEvents.run.bind(defaultReadNextEvents),
 		...batcherOpts
-	}: Pgmb2ClientOpts) {
+	}: Pgmb2ClientOpts<T>) {
 		super({
 			...batcherOpts,
 			logger,
@@ -123,7 +130,8 @@ export class PgmbClient<
 		this.#shouldPoll = !!poll
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 		this.maxActiveCheckpoints = maxActiveCheckpoints
-		this.webhookHandler = createWebhookHandler(webhookHandlerOpts)
+		this.webhookHandler = createWebhookHandler<T>(whHandlerOpts)
+		this.#webhookHandlerOpts = { splitBy: whSplitBy }
 		this.getWebhookInfo = getWebhookInfo
 		this.tableMaintenanceMs = tableMaintainanceMs
 		this.readNextEvents = readNextEvents
@@ -255,8 +263,9 @@ export class PgmbClient<
 		{
 			retryOpts,
 			name = createListenerId(),
+			splitBy,
 			...opts
-		}: registerReliableHandlerParams,
+		}: registerReliableHandlerParams<T>,
 		handler: IEventHandler<T>,
 	) {
 		const { id: subId } = await this.assertSubscription(opts)
@@ -273,6 +282,7 @@ export class PgmbClient<
 		this.listeners[subId].values[name] = {
 			type: 'reliable',
 			handler,
+			splitBy,
 			queue: [],
 		}
 
@@ -392,6 +402,7 @@ export class PgmbClient<
 					extra: wh,
 					removeOnEmpty: true,
 					handler: this.webhookHandler,
+					...this.#webhookHandlerOpts
 				}
 
 				webhookCount++
@@ -470,7 +481,10 @@ export class PgmbClient<
 		const lt = this.listeners[subId]?.values?.[lid]
 		assert(lt?.type === 'reliable', 'invalid listener type: ' + lt.type)
 
-		const { handler, queue, removeOnEmpty, extra } = lt
+		const {
+			handler, queue, removeOnEmpty, extra,
+			splitBy = defaultSplitBy
+		} = lt
 
 		queue.push({ item, checkpoint })
 		checkpoint.activeTasks++
@@ -501,13 +515,20 @@ export class PgmbClient<
 			)
 
 			try {
-				await handler(item, {
-					client: this.client,
-					logger,
-					subscriptionId: subId,
-					extra,
-					name: lid,
-				})
+				for(const batch of splitBy(item)) {
+					await handler(batch, {
+						client: this.client,
+						logger: this.logger.child({
+							subId,
+							items: batch.items.map(i => i.id),
+							extra,
+							retryNumber: item.retry?.retryNumber,
+						}),
+						subscriptionId: subId,
+						extra,
+						name: lid,
+					})
+				}
 
 				checkpoint.activeTasks--
 				assert(
@@ -665,4 +686,8 @@ export class PgmbClient<
 
 function createListenerId() {
 	return Math.random().toString(16).slice(2, 10)
+}
+
+function defaultSplitBy<T extends IEventData>(e: IReadEvent<T>) {
+	return [e]
 }

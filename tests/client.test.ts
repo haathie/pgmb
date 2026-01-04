@@ -108,8 +108,22 @@ describe('PGMB Client Tests', () => {
 		assert.equal(sub1.id, sub2.id)
 		assert.notEqual(sub1.id, sub3.id)
 
-		const sub2RecvTask = Array.fromAsync(sub2)
-		const sub3RecvTask = Array.fromAsync(sub3)
+		const sub2RecvTask = (async() => {
+			const items: IReadEvent<TestEventData>[] = []
+			for await (const item of sub2) {
+				items.push(item)
+			}
+
+			return items
+		})()
+		const sub3RecvTask = (async() => {
+			const items: IReadEvent<TestEventData>[] = []
+			for await (const item of sub3) {
+				items.push(item)
+			}
+
+			return items
+		})()
 
 		const inserted = await insertEvent(pool)
 
@@ -921,6 +935,41 @@ describe('PGMB Client Tests', () => {
 
 		const evs = handler.mock.calls.map((c) => c.arguments[0])
 		assert.deepEqual(evs[0].items.map(i => i.id), evs[2].items.map(i => i.id))
+	})
+
+	it('should split handler by user provided fn', async() => {
+		const handler = mock.fn<IEventHandler<TestEventData>>(async() => { })
+		await client.registerReliableHandler(
+			{
+				retryOpts: { retriesS: [1] },
+				// split by event
+				splitBy: (ev) => Object.values(
+					ev.items.reduce((acc, item) => {
+						const key = item.topic
+						acc[key] ||= { items: [] }
+						acc[key].items.push(item)
+						return acc
+					}, {} as { [key: string]: IReadEvent<TestEventData> })
+				)
+			},
+			handler,
+		)
+		handler.mock.mockImplementationOnce(async() => {
+			throw new Error('Simulated failure')
+		})
+
+		await client.publish([
+			{ topic: 'test-topic-1', payload: { key: 'a' } },
+			{ topic: 'test-topic', payload: { data: 1 } },
+			{ topic: 'test-topic-1', payload: { key: 'a' } },
+		])
+
+		// wait for initial + retry
+		// as we fail once, we expect 3 calls
+		// (2 for initial split, 1 for retry of 1 failed split)
+		await setTimeout(2_500)
+
+		assert.equal(handler.mock.callCount(), 3)
 	})
 
 	describe('SSE', () => {

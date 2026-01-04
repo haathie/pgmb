@@ -1,13 +1,13 @@
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
 import { createRetryHandler } from './retry-handler.ts'
-import type { IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types.ts'
+import type { IEventData, IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types.ts'
 
 /**
  * Create a handler that sends events to a webhook URL via HTTP POST.
  * @param url Where to send the webhook requests
  */
-export function createWebhookHandler(
+export function createWebhookHandler<T extends IEventData>(
 	{
 		timeoutMs = 5_000,
 		headers,
@@ -17,7 +17,7 @@ export function createWebhookHandler(
 		},
 		jsonifier = JSON,
 		serialiseEvent = createSimpleSerialiser(jsonifier)
-	}: Partial<PgmbWebhookOpts>
+	}: Partial<PgmbWebhookOpts<T>>
 ) {
 	const handler: IEventHandler = async(ev, { logger, extra }) => {
 		assert(

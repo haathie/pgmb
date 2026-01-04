@@ -6,6 +6,9 @@ import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import type { IAssertSubscriptionParams, IReadNextEventsParams, IReadNextEventsResult } from './queries.ts'
 import type { PgClientLike } from './query-types.ts'
 
+export type ISplitFn<T extends IEventData>
+	= (event: IReadEvent<T>) => IReadEvent<T>[]
+
 export type SerialisedEvent = {
 	body: Buffer | string
 	contentType: string
@@ -20,7 +23,7 @@ export type GetWebhookInfoFn = (
 	subscriptionIds: string[]
 ) => Promise<{ [id: string]: WebhookInfo[] }> | { [id: string]: WebhookInfo[] }
 
-export type PgmbWebhookOpts = {
+export type PgmbWebhookOpts<T extends IEventData> = {
 	/**
 	 * Maximum time to wait for webhook request to complete
 	 * @default 5 seconds
@@ -32,6 +35,7 @@ export type PgmbWebhookOpts = {
 	 * If null, a failed handler will fail the event processor. Use carefully.
 	 */
 	retryOpts?: IRetryHandlerOpts | null
+	splitBy?: ISplitFn<T>
 	jsonifier?: JSONifier
 	serialiseEvent?(ev: IReadEvent): SerialisedEvent
 }
@@ -72,7 +76,7 @@ export type PGMBEventBatcherOpts<T extends IEventData> = {
 export type IReadNextEventsFn = (parmas: IReadNextEventsParams, db: IDatabaseConnection)
 	=> Promise<IReadNextEventsResult[]>
 
-export type Pgmb2ClientOpts = {
+export type Pgmb2ClientOpts<T extends IEventData> = {
 	client: PgClientLike
 	/**
 	 * Globally unique identifier for this Pgmb2Client instance. All subs
@@ -110,7 +114,7 @@ export type Pgmb2ClientOpts = {
 	 */
 	poll?: boolean
 
-	webhookHandlerOpts?: Partial<PgmbWebhookOpts>
+	webhookHandlerOpts?: Partial<PgmbWebhookOpts<T>>
 	getWebhookInfo?: GetWebhookInfoFn
 	/**
 	 * Override the default readNextEvents implementation
@@ -129,7 +133,7 @@ export type IReadEvent<T extends IEventData = IEventData> = {
 export type RegisterSubscriptionParams
 	= Omit<IAssertSubscriptionParams, 'groupId'>
 
-export type registerReliableHandlerParams = RegisterSubscriptionParams & {
+export type registerReliableHandlerParams<T extends IEventData = IEventData> = RegisterSubscriptionParams & {
 	/**
 	 * Name for the retry handler, used to ensure retries for a particular
 	 * handler are not mixed with another handler. This name need only be
@@ -137,6 +141,11 @@ export type registerReliableHandlerParams = RegisterSubscriptionParams & {
 	 */
 	name?: string
 	retryOpts?: IRetryHandlerOpts
+	/**
+	 * If provided, will split an incoming event into multiple events
+	 * as determined by the function.
+	 */
+	splitBy?: ISplitFn<T>
 }
 
 export type CreateTopicalSubscriptionOpts<T extends IEventData> = {
