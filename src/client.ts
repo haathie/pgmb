@@ -3,10 +3,35 @@ import { type Logger, pino } from 'pino'
 import { setTimeout } from 'timers/promises'
 import { AbortableAsyncIterator } from './abortable-async-iterator.ts'
 import { PGMBEventBatcher } from './batcher.ts'
-import { assertGroup, assertSubscription, deleteSubscriptions, maintainEventsTable, markSubscriptionsActive, pollForEvents, readNextEvents, releaseGroupLock, removeExpiredSubscriptions, setGroupCursor, writeEvents } from './queries.ts'
+import {
+	assertGroup,
+	assertSubscription,
+	deleteSubscriptions,
+	maintainEventsTable,
+	markSubscriptionsActive,
+	pollForEvents,
+	readNextEvents as defaultReadNextEvents,
+	releaseGroupLock,
+	removeExpiredSubscriptions,
+	setGroupCursor,
+	writeEvents,
+} from './queries.ts'
 import type { PgClientLike, PgReleasableClient } from './query-types.ts'
-import { createRetryHandler, normaliseRetryEventsInReadEventMap } from './retry-handler.ts'
-import type { GetWebhookInfoFn, IEphemeralListener, IEventData, IEventHandler, IReadEvent, Pgmb2ClientOpts, registerReliableHandlerParams, RegisterSubscriptionParams } from './types.ts'
+import {
+	createRetryHandler,
+	normaliseRetryEventsInReadEventMap,
+} from './retry-handler.ts'
+import type {
+	GetWebhookInfoFn,
+	IEphemeralListener,
+	IEventData,
+	IEventHandler,
+	IReadEvent,
+	IReadNextEventsFn,
+	Pgmb2ClientOpts,
+	registerReliableHandlerParams,
+	RegisterSubscriptionParams,
+} from './types.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
 type IReliableListener<T extends IEventData> = {
@@ -18,29 +43,30 @@ type IReliableListener<T extends IEventData> = {
 		item: IReadEvent<T>
 		checkpoint: Checkpoint
 	}[]
-}
+};
 
 type IFireAndForgetListener<T extends IEventData> = {
 	type: 'fire-and-forget'
 	stream: IEphemeralListener<T>
-}
+};
 
-type IListener<T extends IEventData> = IFireAndForgetListener<T>
-	| IReliableListener<T>
+type IListener<T extends IEventData> =
+	| IFireAndForgetListener<T>
+	| IReliableListener<T>;
 
 type Checkpoint = {
 	activeTasks: number
 	nextCursor: string
 	cancelled?: boolean
-}
+};
 
 export type IListenerStore<T extends IEventData> = {
 	values: { [id: string]: IListener<T> }
-}
+};
 
-export class PgmbClient<T extends IEventData = IEventData>
-	extends PGMBEventBatcher<T> {
-
+export class PgmbClient<
+	T extends IEventData = IEventData,
+> extends PGMBEventBatcher<T> {
 	readonly client: PgClientLike
 	readonly logger: Logger
 	readonly groupId: string
@@ -49,6 +75,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 	readonly subscriptionMaintenanceMs: number
 	readonly tableMaintenanceMs: number
 	readonly maxActiveCheckpoints: number
+	readonly readNextEvents: IReadNextEventsFn
 
 	readonly getWebhookInfo: GetWebhookInfoFn
 	readonly webhookHandler: IEventHandler
@@ -80,12 +107,13 @@ export class PgmbClient<T extends IEventData = IEventData>
 		webhookHandlerOpts = {},
 		getWebhookInfo = () => ({}),
 		tableMaintainanceMs = 5 * 60 * 1000,
+		readNextEvents = defaultReadNextEvents.run.bind(defaultReadNextEvents),
 		...batcherOpts
 	}: Pgmb2ClientOpts) {
 		super({
 			...batcherOpts,
 			logger,
-			publish: (...e) => this.publish(e)
+			publish: (...e) => this.publish(e),
 		})
 		this.client = client
 		this.logger = logger
@@ -98,6 +126,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		this.webhookHandler = createWebhookHandler(webhookHandlerOpts)
 		this.getWebhookInfo = getWebhookInfo
 		this.tableMaintenanceMs = tableMaintainanceMs
+		this.readNextEvents = readNextEvents
 	}
 
 	async init() {
@@ -114,32 +143,39 @@ export class PgmbClient<T extends IEventData = IEventData>
 		await assertGroup.run({ id: this.groupId }, this.client)
 		this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
 		// clean up expired subscriptions on start
-		const [{ deleted }] = await removeExpiredSubscriptions
-			.run({ groupId: this.groupId, activeIds: [] }, this.client)
+		const [{ deleted }] = await removeExpiredSubscriptions.run(
+			{ groupId: this.groupId, activeIds: [] },
+			this.client,
+		)
 		this.logger.debug({ deleted }, 'removed expired subscriptions')
 
-		this.#readTask
-			= this.#startLoop(this.readChanges.bind(this), this.sleepDurationMs)
+		this.#readTask = this.#startLoop(
+			this.readChanges.bind(this),
+			this.sleepDurationMs,
+		)
 
 		if(this.#shouldPoll) {
 			this.#pollTask = this.#startLoop(
 				pollForEvents.run.bind(pollForEvents, undefined, this.client),
-				this.sleepDurationMs
+				this.sleepDurationMs,
 			)
 		}
 
 		if(this.subscriptionMaintenanceMs) {
 			this.#subMaintainTask = this.#startLoop(
 				this.#maintainSubscriptions,
-				this.subscriptionMaintenanceMs
+				this.subscriptionMaintenanceMs,
 			)
 		}
 
 		if(this.tableMaintenanceMs) {
 			this.#tableMaintainTask = this.#startLoop(
-				maintainEventsTable.run
-					.bind(maintainEventsTable, undefined, this.client),
-				this.tableMaintenanceMs
+				maintainEventsTable.run.bind(
+					maintainEventsTable,
+					undefined,
+					this.client,
+				),
+				this.tableMaintenanceMs,
 			)
 		}
 	}
@@ -161,7 +197,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			this.#readTask,
 			this.#pollTask,
 			this.#subMaintainTask,
-			this.#tableMaintainTask
+			this.#tableMaintainTask,
 		])
 
 		await this.#unlockAndReleaseReadClient()
@@ -174,20 +210,22 @@ export class PgmbClient<T extends IEventData = IEventData>
 	publish(events: T[], client = this.client) {
 		return writeEvents.run(
 			{
-				topics: events.map(e => e.topic),
-				payloads: events.map(e => e.payload),
-				metadatas: events.map(e => e.metadata || null),
+				topics: events.map((e) => e.topic),
+				payloads: events.map((e) => e.payload),
+				metadatas: events.map((e) => e.metadata || null),
 			},
-			client
+			client,
 		)
 	}
 
 	async assertSubscription(
 		opts: RegisterSubscriptionParams,
-		client = this.client
+		client = this.client,
 	) {
-		const [rslt] = await assertSubscription
-			.run({ ...opts, groupId: this.groupId }, client)
+		const [rslt] = await assertSubscription.run(
+			{ ...opts, groupId: this.groupId },
+			client,
+		)
 
 		this.logger.debug({ ...opts, ...rslt }, 'asserted subscription')
 		return rslt
@@ -219,7 +257,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 			name = createListenerId(),
 			...opts
 		}: registerReliableHandlerParams,
-		handler: IEventHandler<T>
+		handler: IEventHandler<T>,
 	) {
 		const { id: subId } = await this.assertSubscription(opts)
 		if(retryOpts) {
@@ -229,14 +267,18 @@ export class PgmbClient<T extends IEventData = IEventData>
 		const lts = (this.listeners[subId] ||= { values: {} })
 		assert(
 			!lts.values[name],
-			`Handler with id ${name} already registered for subscription ${subId}.`
-			+ ' Cancel the existing one or use a different id.'
+			`Handler with id ${name} already registered for subscription ${subId}.` +
+				' Cancel the existing one or use a different id.',
 		)
-		this.listeners[subId].values[name] = { type: 'reliable', handler, queue: [] }
+		this.listeners[subId].values[name] = {
+			type: 'reliable',
+			handler,
+			queue: [],
+		}
 
 		return {
 			subscriptionId: subId,
-			cancel: () => this.#removeListener(subId, name)
+			cancel: () => this.#removeListener(subId, name),
 		}
 	}
 
@@ -251,10 +293,10 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 
 		await Promise.allSettled(
-			Object.values(existingSubs).map(e => (
-				e.type === 'fire-and-forget'
-				&& e.stream.throw(new Error('subscription removed'))
-			))
+			Object.values(existingSubs).map(
+				(e) => e.type === 'fire-and-forget' &&
+					e.stream.throw(new Error('subscription removed')),
+			),
 		)
 	}
 
@@ -262,7 +304,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		const lid = createListenerId()
 		const iterator = new AbortableAsyncIterator<IReadEvent<T>>(
 			this.#endAc.signal,
-			() => this.#removeListener(subId, lid)
+			() => this.#removeListener(subId, lid),
 		)
 
 		const stream = iterator as IEphemeralListener<T>
@@ -291,11 +333,13 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 		this.logger.trace(
 			{ activeSubscriptions: activeIds.length },
-			'marked subscriptions as active'
+			'marked subscriptions as active',
 		)
 
-		const [{ deleted }] = await removeExpiredSubscriptions
-			.run({ groupId: this.groupId, activeIds }, this.client)
+		const [{ deleted }] = await removeExpiredSubscriptions.run(
+			{ groupId: this.groupId, activeIds },
+			this.client,
+		)
 		this.logger.trace({ deleted }, 'removed expired subscriptions')
 	}
 
@@ -306,15 +350,15 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 		const now = Date.now()
 		await this.#connectReadClient()
-		const rows = await readNextEvents.run(
+		const rows = await this.readNextEvents(
 			{
 				groupId: this.groupId,
 				cursor: this.#inMemoryCursor,
-				chunkSize: this.readChunkSize
+				chunkSize: this.readChunkSize,
 			},
-			this.#readClient || this.client
+			this.#readClient || this.client,
 		)
-			.catch(async err => {
+			.catch(async(err) => {
 				if(err instanceof Error && err.message.includes('connection error')) {
 					await this.#unlockAndReleaseReadClient()
 				}
@@ -332,7 +376,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 
 		const uqSubIds = Array.from(
-			new Set(rows.flatMap(r => r.subscriptionIds))
+			new Set(rows.flatMap((r) => r.subscriptionIds)),
 		)
 		const webhookSubs = await this.getWebhookInfo(uqSubIds)
 		let webhookCount = 0
@@ -347,7 +391,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 					queue: [],
 					extra: wh,
 					removeOnEmpty: true,
-					handler: this.webhookHandler
+					handler: this.webhookHandler,
 				}
 
 				webhookCount++
@@ -357,15 +401,14 @@ export class PgmbClient<T extends IEventData = IEventData>
 		const {
 			map: subToEventMap,
 			retryEvents,
-			retryItemCount
-		} = await normaliseRetryEventsInReadEventMap<T>(
-			rows,
-			this.client,
-		)
+			retryItemCount,
+		} = await normaliseRetryEventsInReadEventMap<T>(rows, this.client)
 
 		const subs = Object.entries(subToEventMap)
-		const checkpoint: Checkpoint
-			= { activeTasks: 0, nextCursor: rows[0].nextCursor }
+		const checkpoint: Checkpoint = {
+			activeTasks: 0,
+			nextCursor: rows[0].nextCursor,
+		}
 		for(const [subId, evs] of subs) {
 			const listeners = this.listeners[subId]?.values
 			if(!listeners) {
@@ -401,9 +444,9 @@ export class PgmbClient<T extends IEventData = IEventData>
 				activeCheckpoints: this.#activeCheckpoints.length,
 				webhookCount,
 				retryEvents,
-				retryItemCount
+				retryItemCount,
 			},
-			'read rows'
+			'read rows',
 		)
 
 		if(!checkpoint.activeTasks && this.#activeCheckpoints.length === 1) {
@@ -422,7 +465,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		subId: string,
 		lid: string,
 		item: IReadEvent<T>,
-		checkpoint: Checkpoint
+		checkpoint: Checkpoint,
 	) {
 		const lt = this.listeners[subId]?.values?.[lid]
 		assert(lt?.type === 'reliable', 'invalid listener type: ' + lt.type)
@@ -430,7 +473,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		const { handler, queue, removeOnEmpty, extra } = lt
 
 		queue.push({ item, checkpoint })
-		checkpoint.activeTasks ++
+		checkpoint.activeTasks++
 		if(queue.length > 1) {
 			return
 		}
@@ -444,7 +487,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 
 			const logger = this.logger.child({
 				subId,
-				items: item.items.map(i => i.id),
+				items: item.items.map((i) => i.id),
 				extra,
 				retryNumber: item.retry?.retryNumber,
 			})
@@ -454,23 +497,23 @@ export class PgmbClient<T extends IEventData = IEventData>
 					cpActiveTasks: checkpoint.activeTasks,
 					queue: queue.length,
 				},
-				'processing handler queue'
+				'processing handler queue',
 			)
 
 			try {
-				await handler(
-					item,
-					{
-						client: this.client,
-						logger,
-						subscriptionId: subId,
-						extra,
-						name: lid,
-					}
-				)
+				await handler(item, {
+					client: this.client,
+					logger,
+					subscriptionId: subId,
+					extra,
+					name: lid,
+				})
 
-				checkpoint.activeTasks --
-				assert(checkpoint.activeTasks >= 0, 'internal: checkpoint.activeTasks < 0')
+				checkpoint.activeTasks--
+				assert(
+					checkpoint.activeTasks >= 0,
+					'internal: checkpoint.activeTasks < 0',
+				)
 				if(!checkpoint.activeTasks) {
 					await this.#updateCursorFromCompletedCheckpoints()
 				}
@@ -480,14 +523,14 @@ export class PgmbClient<T extends IEventData = IEventData>
 						cpActiveTasks: checkpoint.activeTasks,
 						queue: queue.length,
 					},
-					'completed handler task'
+					'completed handler task',
 				)
 			} catch(err) {
 				logger.error(
 					{ err },
-					'error in handler,'
-					+ 'cancelling all active checkpoints'
-					+ '. Restarting from last known good cursor.'
+					'error in handler,' +
+						'cancelling all active checkpoints' +
+						'. Restarting from last known good cursor.',
 				)
 				this.#cancelAllActiveCheckpoints()
 			} finally {
@@ -527,16 +570,16 @@ export class PgmbClient<T extends IEventData = IEventData>
 			{
 				groupId: this.groupId,
 				cursor: latestMaxCursor,
-				releaseLock: releaseLock
+				releaseLock: releaseLock,
 			},
-			this.#readClient || this.client
+			this.#readClient || this.client,
 		)
 		this.logger.debug(
 			{
 				cursor: latestMaxCursor,
-				activeCheckpoints: this.#activeCheckpoints.length
+				activeCheckpoints: this.#activeCheckpoints.length,
 			},
-			'set cursor'
+			'set cursor',
 		)
 
 		// if there are no more active checkpoints,
@@ -563,8 +606,7 @@ export class PgmbClient<T extends IEventData = IEventData>
 		}
 
 		try {
-			await releaseGroupLock
-				.run({ groupId: this.groupId }, this.#readClient)
+			await releaseGroupLock.run({ groupId: this.groupId }, this.#readClient)
 		} catch(err) {
 			this.logger.error({ err }, 'error releasing read client')
 		} finally {
@@ -591,8 +633,9 @@ export class PgmbClient<T extends IEventData = IEventData>
 			return
 		}
 
-		this.logger
-			.info('dedicated read client disconnected, may have dup event processing')
+		this.logger.info(
+			'dedicated read client disconnected, may have dup event processing',
+		)
 	}
 
 	#releaseReadClient() {

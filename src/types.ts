@@ -1,8 +1,9 @@
+import type { IDatabaseConnection } from '@pgtyped/runtime'
 import type { IncomingMessage } from 'node:http'
 import type { Logger } from 'pino'
 import type { HeaderRecord } from 'undici-types/header.js'
 import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
-import type { IAssertSubscriptionParams } from './queries.ts'
+import type { IAssertSubscriptionParams, IReadNextEventsParams, IReadNextEventsResult } from './queries.ts'
 import type { PgClientLike } from './query-types.ts'
 
 export type SerialisedEvent = {
@@ -68,6 +69,9 @@ export type PGMBEventBatcherOpts<T extends IEventData> = {
 	maxBatchSize?: number
 }
 
+export type IReadNextEventsFn = (parmas: IReadNextEventsParams, db: IDatabaseConnection)
+	=> Promise<IReadNextEventsResult[]>
+
 export type Pgmb2ClientOpts = {
 	client: PgClientLike
 	/**
@@ -108,6 +112,10 @@ export type Pgmb2ClientOpts = {
 
 	webhookHandlerOpts?: Partial<PgmbWebhookOpts>
 	getWebhookInfo?: GetWebhookInfoFn
+	/**
+	 * Override the default readNextEvents implementation
+	 */
+	readNextEvents?: IReadNextEventsFn
 } & Pick<
 	PGMBEventBatcherOpts<IEventData>,
 	'flushIntervalMs' | 'maxBatchSize' | 'shouldLog'
@@ -126,7 +134,7 @@ export type registerReliableHandlerParams = RegisterSubscriptionParams & {
 	 * Name for the retry handler, used to ensure retries for a particular
 	 * handler are not mixed with another handler. This name need only be
 	 * unique for a particular subscription.
-	*/
+	 */
 	name?: string
 	retryOpts?: IRetryHandlerOpts
 }
@@ -140,6 +148,9 @@ export type CreateTopicalSubscriptionOpts<T extends IEventData> = {
 	 * To scale out processing, you can partition the subscriptions.
 	 * For example, with `current: 0, total: 3`, only messages
 	 * where `hashtext(e.id) % 3 == 0` will be received by this subscription.
+	 * This will result in an approximate even split for all processors, the only
+	 * caveat being it requires knowing the number of event processors on this
+	 * subscription beforehand.
 	 */
 	partition?: {
 		current: number
