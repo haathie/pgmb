@@ -903,8 +903,7 @@ BEGIN
 	emit := TRUE;
 	RETURN;
 END
-$$ LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE
-	SECURITY INVOKER;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE SECURITY INVOKER;
 
 -- Trigger that pushes changes to the events table
 CREATE OR REPLACE FUNCTION push_table_event()
@@ -938,7 +937,7 @@ BEGIN
 		SELECT
 			create_event_id(clock_timestamp(), rand := start_num + n.rn),
 			create_topic(TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP),
-			jsonb_strip_nulls(jsonb_diff(n.data, o.data)),
+			jsonb_diff(n.data, o.data),
 			jsonb_build_object('old', jsonb_strip_nulls(o.data))
 		FROM (
 			SELECT s.data, s.emit, row_number() OVER () AS rn
@@ -952,7 +951,7 @@ BEGIN
 				serialise_record_for_event(TG_RELID, TG_OP, o) AS s(data, emit)
 		) AS o ON n.rn = o.rn
 		-- ignore rows where data didn't change
-		WHERE n.data IS DISTINCT FROM o.data AND n.emit;
+		WHERE jsonb_diff(n.data, o.data) is not null AND n.emit;
 	END IF;
 
 	RETURN NULL;
