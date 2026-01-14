@@ -12,16 +12,7 @@ services:
     command: -c config_file=/etc/postgresql.conf
     volumes:
       - ../dev/pg.conf:/etc/postgresql.conf
-      - ../dev/pg_data:/var/lib/postgresql/data
       - ../scripts:/scripts
       - ../sql:/sql
     post_start:
       - command: sh /scripts/install-pgmb.sh postgres://postgres@localhost:5432/test
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4096m
-        reservations:
-          cpus: '0.1'
-          memory: 256m
