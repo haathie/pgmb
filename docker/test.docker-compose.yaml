@@ -2,7 +2,7 @@ name: pgmb_test
 
 services:
   pg:
-    image: postgres:17-bullseye
+    image: postgres:18-bookworm
     environment:
       POSTGRES_PASSWORD: ''
       POSTGRES_HOST_AUTH_METHOD: trust
@@ -25,4 +25,3 @@ services:
         reservations:
           cpus: '0.1'
           memory: 256m
-      
