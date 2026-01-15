@@ -31,12 +31,16 @@ export function createWebhookHandler<T extends IEventData>(
 			'webhook handler requires extra.url parameter'
 		)
 		const { url } = extra
-		const { body, contentType } = serialiseEvent(ev)
+		const idempotencyKey = getIdempotencyKeyHeader(ev)
+		logger = logger.child({ idempotencyKey })
+
+		const { body, contentType } = serialiseEvent(ev, logger)
+
 		const { status, statusText, body: res } = await fetch(url, {
 			method: 'POST',
 			headers: {
 				'content-type': contentType,
-				'idempotency-key': getIdempotencyKeyHeader(ev),
+				'idempotency-key': idempotencyKey,
 				...headers
 			},
 			body,
@@ -54,6 +58,8 @@ export function createWebhookHandler<T extends IEventData>(
 		if(status < 200 || status >= 300) {
 			throw new Error(`Non-2xx response: ${status} (${statusText})`)
 		}
+
+		logger.info({ status }, 'webhook sent successfully')
 	}
 
 	if(!retryOpts) {

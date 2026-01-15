@@ -37,7 +37,7 @@ export type PgmbWebhookOpts<T extends IEventData> = {
 	retryOpts?: IRetryHandlerOpts | null
 	splitBy?: ISplitFn<T>
 	jsonifier?: JSONifier
-	serialiseEvent?(ev: IReadEvent): SerialisedEvent
+	serialiseEvent?(ev: IReadEvent, logger: Logger): SerialisedEvent
 }
 
 export interface IEventData {
