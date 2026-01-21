@@ -26,6 +26,7 @@ import type {
 	IEphemeralListener,
 	IEventData,
 	IEventHandler,
+	IFindEventsFn,
 	IReadEvent,
 	IReadNextEventsFn,
 	ISplitFn,
@@ -78,6 +79,7 @@ export class PgmbClient<
 	readonly tableMaintenanceMs: number
 	readonly maxActiveCheckpoints: number
 	readonly readNextEvents: IReadNextEventsFn
+	readonly findEvents?: IFindEventsFn
 
 	readonly getWebhookInfo: GetWebhookInfoFn
 	readonly webhookHandler: IEventHandler<T>
@@ -115,6 +117,7 @@ export class PgmbClient<
 		getWebhookInfo = () => ({}),
 		tableMaintainanceMs = 5 * 60 * 1000,
 		readNextEvents = defaultReadNextEvents.run.bind(defaultReadNextEvents),
+		findEvents,
 		...batcherOpts
 	}: Pgmb2ClientOpts<T>) {
 		super({
@@ -135,6 +138,7 @@ export class PgmbClient<
 		this.getWebhookInfo = getWebhookInfo
 		this.tableMaintenanceMs = tableMaintainanceMs
 		this.readNextEvents = readNextEvents
+		this.findEvents = findEvents
 	}
 
 	async init() {
@@ -409,11 +413,10 @@ export class PgmbClient<
 			}
 		}
 
-		const {
-			map: subToEventMap,
-			retryEvents,
-			retryItemCount,
-		} = await normaliseRetryEventsInReadEventMap<T>(rows, this.client)
+		const { map: subToEventMap, retryEvents, retryItemCount }
+			= await normaliseRetryEventsInReadEventMap<T>(
+				rows, this.client, this.findEvents
+			)
 
 		const subs = Object.entries(subToEventMap)
 		const checkpoint: Checkpoint = {

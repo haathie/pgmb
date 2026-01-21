@@ -2,7 +2,9 @@ import { RETRY_EVENT } from './consts.ts'
 import type { IReadNextEventsResult } from './queries.ts'
 import { findEvents, scheduleEventRetry } from './queries.ts'
 import type { PgClientLike } from './query-types.ts'
-import type { IEvent, IEventData, IEventHandler, IReadEvent, IRetryEventPayload, IRetryHandlerOpts } from './types.ts'
+import type { IEvent, IEventData, IEventHandler, IFindEventsFn, IReadEvent, IRetryEventPayload, IRetryHandlerOpts } from './types.ts'
+
+const defaultFindEvents = findEvents.run.bind(findEvents)
 
 export function createRetryHandler<T extends IEventData>(
 	{ retriesS }: IRetryHandlerOpts,
@@ -38,7 +40,8 @@ export function createRetryHandler<T extends IEventData>(
 
 export async function normaliseRetryEventsInReadEventMap<T extends IEventData>(
 	rows: IReadNextEventsResult[],
-	client: PgClientLike
+	client: PgClientLike,
+	findEvents: IFindEventsFn = defaultFindEvents,
 ) {
 	const map: { [sid: string]: IReadEvent<T>[] } = {}
 	const evsToPopulate: IReadEvent<T>[] = []
@@ -89,7 +92,7 @@ export async function normaliseRetryEventsInReadEventMap<T extends IEventData>(
 		return { map, retryEvents: 0, retryItemCount: 0 }
 	}
 
-	const fetchedEvents = await findEvents.run({ ids: idsToLoad }, client)
+	const fetchedEvents = await findEvents({ ids: idsToLoad }, client)
 	const fetchedEventMap = fetchedEvents.reduce(
 		(map, ev) => {
 			map[ev.id] = ev as IEvent<T>
