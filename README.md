@@ -494,6 +494,34 @@ const pgmb = new PgmbClient({
 })
 ```
 
+## Configuring Knobs
+
+PGMB provides a number of configuration options to tune its behaviour (eg. how often to poll for events, read events, expire subscriptions, etc.). These can be configured via relevant env vars too, the names for which can be found [here](src/client.ts#L105)
+``` ts
+// poll every 500ms
+process.env.PGMB_READ_EVENTS_INTERVAL_MS = '500' // default: 1000
+const pgmb = new PgmbClient(opts)
+```
+
+## Production Considerations
+
+PGMB relies on 2 functions that need to be run periodically & only once globally to ensure smooth operation, i.e.
+1. `poll_for_events()` -- finds unread events & assigns them to relevant subscriptions.
+	It's okay if this runs simultaneously in multiple processes, but that can create unnecessary contention on the `unread_events` table, which can bubble up to other tables.
+2. `maintain_events_table()` -- removes old partitions & creates new partitions for the events table. It's also okay if this runs simultaneously in multiple processes, as it has advisory locks to ensure only a single process is maintaining the events table at any time, but running this too frequently can cause unnecessary overhead.
+
+If you're only running a single instance of your service, you can simply run these functions in the same process as your PGMB client (default behaviour).
+However, for larger deployments with multiple instances of your service, it's recommended to run these functions in a separate process to avoid contention, and disable polling & table maintainence:
+``` ts
+const pgmb = new PgmbClient({
+	pollEventsIntervalMs: 0,
+	tableMaintainanceMs: 0,
+	...otherOpts
+})
+```
+
+Something like [pg_cron](https://github.com/citusdata/pg_cron) is a good option.
+
 ## General Notes
 
 - **Does the client automatically reconnect on errors & temporary network issues?**
