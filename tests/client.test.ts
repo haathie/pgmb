@@ -79,9 +79,9 @@ describe('PGMB Client Tests', () => {
 		client = new PgmbClient({
 			client: pool,
 			logger: LOGGER,
-			poll: true,
 			groupId,
-			sleepDurationMs: 250,
+			readEventsIntervalMs: 250,
+			pollEventsIntervalMs: 250,
 			subscriptionMaintenanceMs: 1000,
 			maxActiveCheckpoints: 3,
 			getWebhookInfo: () => webhookInfos,
@@ -360,8 +360,8 @@ describe('PGMB Client Tests', () => {
 					groupId: client.groupId,
 					logger: LOGGER.child({ dup: i + 1 }),
 					client: pool,
-					poll: true,
-					sleepDurationMs: 100
+					pollEventsIntervalMs: 100,
+					readEventsIntervalMs: 100
 				})
 				await pgmb.init()
 				return pgmb
@@ -725,7 +725,7 @@ describe('PGMB Client Tests', () => {
 
 		for(let i = 0; i < client.maxActiveCheckpoints + 2;i++) {
 			await insertEvent(pool)
-			await setTimeout(client.sleepDurationMs)
+			await setTimeout(client.pollEventsIntervalMs)
 		}
 
 		const cursor1 = await getGroupCursor()
@@ -1071,7 +1071,6 @@ describe('PGMB Client Tests', () => {
 				client: pool,
 				logger: LOGGER.child({ r: 1 }),
 				groupId: groupId,
-				poll: true,
 			})
 			await client.init()
 
