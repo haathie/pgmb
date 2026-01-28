@@ -7,6 +7,7 @@ import {
 	assertGroup,
 	assertSubscription,
 	deleteSubscriptions,
+	getConfigValue,
 	maintainEventsTable,
 	markSubscriptionsActive,
 	pollForEvents,
@@ -151,9 +152,29 @@ export class PgmbClient<
 			this.client.on('remove', this.#onPoolClientRemoved)
 		}
 
-		// maintain event table
-		await maintainEventsTable.run(undefined, this.client)
-		this.logger.debug('maintained events table')
+		const [pgCronRslt] = await getConfigValue
+			.run({ key: 'use_pg_cron' }, this.client)
+		const isPgCronEnabled = pgCronRslt?.value === 'true'
+		if(!isPgCronEnabled) {
+			// maintain event table
+			await maintainEventsTable.run(undefined, this.client)
+			this.logger.debug('maintained events table')
+
+			if(this.pollEventsIntervalMs) {
+				this.#pollTask = this.#startLoop(
+					pollForEvents.run.bind(pollForEvents, undefined, this.client),
+					this.pollEventsIntervalMs,
+				)
+			}
+
+			if(this.tableMaintenanceMs) {
+				this.#tableMaintainTask = this.#startLoop(
+					maintainEventsTable.run
+						.bind(maintainEventsTable, undefined, this.client),
+					this.tableMaintenanceMs,
+				)
+			}
+		}
 
 		await assertGroup.run({ id: this.groupId }, this.client)
 		this.logger.debug({ groupId: this.groupId }, 'asserted group exists')
@@ -169,13 +190,6 @@ export class PgmbClient<
 			this.readEventsIntervalMs,
 		)
 
-		if(this.pollEventsIntervalMs) {
-			this.#pollTask = this.#startLoop(
-				pollForEvents.run.bind(pollForEvents, undefined, this.client),
-				this.pollEventsIntervalMs,
-			)
-		}
-
 		if(this.subscriptionMaintenanceMs) {
 			this.#subMaintainTask = this.#startLoop(
 				this.#maintainSubscriptions,
@@ -183,16 +197,7 @@ export class PgmbClient<
 			)
 		}
 
-		if(this.tableMaintenanceMs) {
-			this.#tableMaintainTask = this.#startLoop(
-				maintainEventsTable.run.bind(
-					maintainEventsTable,
-					undefined,
-					this.client,
-				),
-				this.tableMaintenanceMs,
-			)
-		}
+		this.logger.info({ isPgCronEnabled }, 'pgmb client initialised')
 	}
 
 	async end() {

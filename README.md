@@ -513,17 +513,13 @@ PGMB relies on 2 functions that need to be run periodically & only once globally
 	It's okay if this runs simultaneously in multiple processes, but that can create unnecessary contention on the `unread_events` table, which can bubble up to other tables.
 2. `maintain_events_table()` -- removes old partitions & creates new partitions for the events table. It's also okay if this runs simultaneously in multiple processes, as it has advisory locks to ensure only a single process is maintaining the events table at any time, but running this too frequently can cause unnecessary overhead.
 
-If you're only running a single instance of your service, you can simply run these functions in the same process as your PGMB client (default behaviour).
-However, for larger deployments with multiple instances of your service, it's recommended to run these functions in a separate process to avoid contention, and disable polling & table maintainence:
-``` ts
-const pgmb = new PgmbClient({
-	pollEventsIntervalMs: 0,
-	tableMaintainanceMs: 0,
-	...otherOpts
-})
-```
+If you have the `pg_cron` extension installed, `pgmb` will automatically setup these functions to run periodically via `pg_cron` on initialization. The default intervals are:
+- `poll_for_events()` -- every `1 second`
+- `maintain_events_table()` -- on every `30th minute`
 
-Something like [pg_cron](https://github.com/citusdata/pg_cron) is a good option.
+These can be easily configured by changing the values in the `config` table in the `pgmb` schema. Changes automatically get applied to the underlying cron jobs via triggers.
+
+If you do not have `pg_cron` installed, PGMB will run these functions in the same process as the client itself, at the above intervals. This is okay for development & small deployments.
 
 ## General Notes
 

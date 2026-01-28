@@ -150,5 +150,14 @@ WITH deleted AS (
 )
 SELECT COUNT(*) AS "deleted!" FROM deleted;
 
+/* @name getConfigValue */
+SELECT pgmb.get_config_value(:key!::pgmb.config_type) AS "value";
+
+/* @name updateConfigValue */
+UPDATE pgmb.config
+SET value = :value!::TEXT
+WHERE id = :key!::pgmb.config_type
+RETURNING 1 AS "updated!";
+
 /* @name maintainEventsTable */
 SELECT pgmb.maintain_events_table();

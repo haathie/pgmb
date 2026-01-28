@@ -22,7 +22,10 @@ CREATE TYPE config_type AS ENUM(
 	-- how far into the future to create partitions
 	'future_intervals_to_create',
 	'partition_interval',
-	'poll_chunk_size'
+	'poll_chunk_size',
+	'use_pg_cron',
+	'pg_cron_poll_for_events_cron',
+	'pg_cron_partition_maintenance_cron'
 );
 
 CREATE TABLE IF NOT EXISTS config(
@@ -37,13 +40,15 @@ CREATE OR REPLACE FUNCTION get_config_value(
 	SELECT value FROM config WHERE id = config_id
 $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb;
 
-INSERT INTO config(id, value)
-	VALUES
-		('plugin_version', '0.2.0'),
-		('partition_retention_period', '60 minutes'),
-		('future_intervals_to_create', '120 minutes'),
-		('partition_interval', '30 minutes'),
-		('poll_chunk_size', '10000');
+INSERT INTO config(id, value) VALUES
+('plugin_version', '0.2.0'),
+('partition_retention_period', '60 minutes'),
+('future_intervals_to_create', '120 minutes'),
+('partition_interval', '30 minutes'),
+('poll_chunk_size', '10000'),
+('pg_cron_poll_for_events_cron', '1 second'),
+-- every 30 minutes
+('pg_cron_partition_maintenance_cron', '*/30 * * * *');
 
 -- we'll create the events table next & its functions ---------------
 
@@ -365,33 +370,11 @@ CREATE INDEX ON subscriptions(
 	add_interval_imm(last_active_at, expiry_interval)
 ) WHERE expiry_interval IS NOT NULL;
 
-DO $$
-DECLARE
-	has_btree_gin BOOLEAN;
-BEGIN
-	has_btree_gin := (
-		SELECT EXISTS (
-			SELECT 1
-			FROM pg_available_extensions
-			WHERE name = 'btree_gin'
-		)
-	);
-	-- create btree_gin extension if not exists, if the extension
-	-- is not available, we create a simpler regular GIN index instead.
-	IF has_btree_gin THEN
-		CREATE EXTENSION IF NOT EXISTS btree_gin;
-		-- fastupdate=false, slows down subscription creation, but ensures the costlier
-		-- "poll_for_events" function is executed faster.
-		CREATE INDEX "sub_gin" ON subscriptions USING GIN(conditions_sql, params)
-			WITH (fastupdate = false);
-	ELSE
-		RAISE NOTICE 'btree_gin extension is not available, using
-			regular GIN index for subscriptions.params';
-		CREATE INDEX "sub_gin" ON subscriptions USING GIN(params)
-			WITH (fastupdate = false);
-	END IF;
-END
-$$;
+-- fastupdate=false, slows down subscription creation, but ensures the costlier
+-- "poll_for_events" function is executed faster.
+CREATE EXTENSION IF NOT EXISTS btree_gin;
+CREATE INDEX "sub_gin" ON subscriptions
+USING GIN(conditions_sql, params) WITH (fastupdate = false);
 
 -- materialized view to hold distinct conditions_sql statements.
 -- We utilise changes in this view to determine when to prepare the
@@ -862,6 +845,78 @@ SET search_path TO pgmb;
 
 -- create the initial partitions
 SELECT maintain_events_table();
+
+-- setup pg_cron if it's available ----------------
+
+CREATE OR REPLACE FUNCTION manage_cron_jobs_trigger_fn()
+RETURNS TRIGGER AS $$
+DECLARE
+	poll_job_name CONSTANT TEXT := 'pgmb_poll';
+	maintain_job_name CONSTANT TEXT := 'pgmb_maintain_table_partitions';
+BEGIN
+	IF get_config_value('use_pg_cron') = 'true' THEN
+		-- Schedule/update event polling job
+		PERFORM cron.schedule(
+			poll_job_name,
+			get_config_value('pg_cron_poll_for_events_cron'),
+			$CMD$
+				-- ensure we don't accidentally run for too long
+				SET SESSION statement_timeout = '10s';
+				SELECT pgmb.poll_for_events();
+			$CMD$
+		);
+		RAISE LOG 'Scheduled pgmb polling job: %', poll_job_name;
+
+		-- Schedule/update partition maintenance job
+		PERFORM cron.schedule(
+			'pgmb_maintain_table_partitions',
+			get_config_value('pg_cron_partition_maintenance_cron'),
+			$CMD$ SELECT pgmb.maintain_events_table(); $CMD$
+		);
+
+		RAISE LOG 'Scheduled pgmb partition maintenance job: %',
+			maintain_job_name;
+	ELSIF (SELECT 1 FROM pg_namespace WHERE nspname = 'cron') THEN
+		RAISE LOG 'Unscheduling pgmb cron jobs.';
+		-- Unschedule jobs. cron.unschedule does not fail if job does not exist.
+		PERFORM cron.unschedule(poll_job_name);
+		PERFORM cron.unschedule(maintain_job_name);
+	END IF;
+
+	RETURN NULL;
+END;
+$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
+SET search_path TO pgmb;
+
+CREATE TRIGGER manage_cron_jobs_trigger
+AFTER INSERT OR UPDATE OF value ON config
+FOR EACH ROW
+WHEN (
+	NEW.id IN (
+		'use_pg_cron',
+		'pg_cron_poll_for_events_cron',
+		'pg_cron_partition_maintenance_cron'
+	)
+)
+EXECUTE FUNCTION manage_cron_jobs_trigger_fn();
+
+DO $$
+BEGIN
+	IF (
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_available_extensions
+			WHERE name = 'pg_cron'
+		)
+	) THEN
+		CREATE EXTENSION IF NOT EXISTS pg_cron;
+		INSERT INTO config(id, value) VALUES ('use_pg_cron', 'true');
+	ELSE
+		RAISE LOG 'pg_cron extension not available. Skipping pg_cron setup.';
+		INSERT INTO config(id, value) VALUES ('use_pg_cron', 'false');
+	END IF;
+END
+$$;
 
 -- triggers to add events for specific tables ---------------------------
 

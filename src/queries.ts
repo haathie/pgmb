@@ -1,6 +1,8 @@
 /** Types generated for queries found in "sql/queries.sql" */
 import { PreparedQuery } from '@pgtyped/runtime';
 
+export type config_type = 'future_intervals_to_create' | 'partition_interval' | 'partition_retention_period' | 'pg_cron_partition_maintenance_cron' | 'pg_cron_poll_for_events_cron' | 'plugin_version' | 'poll_chunk_size' | 'use_pg_cron';
+
 export type DateOrString = Date | string;
 
 export type DateOrStringArray = (DateOrString)[];
@@ -541,6 +543,64 @@ const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activ
  * ```
  */
 export const removeExpiredSubscriptions = new PreparedQuery<IRemoveExpiredSubscriptionsParams,IRemoveExpiredSubscriptionsResult>(removeExpiredSubscriptionsIR);
+
+
+/** 'GetConfigValue' parameters type */
+export interface IGetConfigValueParams {
+  key: config_type;
+}
+
+/** 'GetConfigValue' return type */
+export interface IGetConfigValueResult {
+  value: string | null;
+}
+
+/** 'GetConfigValue' query type */
+export interface IGetConfigValueQuery {
+  params: IGetConfigValueParams;
+  result: IGetConfigValueResult;
+}
+
+const getConfigValueIR: any = {"usedParamSet":{"key":true},"params":[{"name":"key","required":true,"transform":{"type":"scalar"},"locs":[{"a":29,"b":33}]}],"statement":"SELECT pgmb.get_config_value(:key!::pgmb.config_type) AS \"value\""};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT pgmb.get_config_value(:key!::pgmb.config_type) AS "value"
+ * ```
+ */
+export const getConfigValue = new PreparedQuery<IGetConfigValueParams,IGetConfigValueResult>(getConfigValueIR);
+
+
+/** 'UpdateConfigValue' parameters type */
+export interface IUpdateConfigValueParams {
+  key: config_type;
+  value: string;
+}
+
+/** 'UpdateConfigValue' return type */
+export interface IUpdateConfigValueResult {
+  updated: number;
+}
+
+/** 'UpdateConfigValue' query type */
+export interface IUpdateConfigValueQuery {
+  params: IUpdateConfigValueParams;
+  result: IUpdateConfigValueResult;
+}
+
+const updateConfigValueIR: any = {"usedParamSet":{"value":true,"key":true},"params":[{"name":"value","required":true,"transform":{"type":"scalar"},"locs":[{"a":31,"b":37}]},{"name":"key","required":true,"transform":{"type":"scalar"},"locs":[{"a":56,"b":60}]}],"statement":"UPDATE pgmb.config\nSET value = :value!::TEXT\nWHERE id = :key!::pgmb.config_type\nRETURNING 1 AS \"updated!\""};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * UPDATE pgmb.config
+ * SET value = :value!::TEXT
+ * WHERE id = :key!::pgmb.config_type
+ * RETURNING 1 AS "updated!"
+ * ```
+ */
+export const updateConfigValue = new PreparedQuery<IUpdateConfigValueParams,IUpdateConfigValueResult>(updateConfigValueIR);
 
 
 /** 'MaintainEventsTable' parameters type */

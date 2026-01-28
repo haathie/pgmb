@@ -1,6 +1,6 @@
 {
   "name": "@haathie/pgmb",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "PG message broker, with a type-safe typescript client with built-in webhook & SSE support.",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -21,7 +21,7 @@
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
     "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx",
     "benchmark": "TZ=utc node --env-file ./.env.test src/benchmark/run.ts",
-    "gen:pgtyped": "pgtyped --config ./pgtyped.config.json"
+    "pg:typegen": "pgtyped --config ./pgtyped.config.json"
   },
   "devDependencies": {
     "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",

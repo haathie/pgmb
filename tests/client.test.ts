@@ -31,6 +31,7 @@ import {
 	maintainEventsTable,
 	pollForEvents,
 	removeExpiredSubscriptions,
+	updateConfigValue,
 	writeScheduledEvents,
 } from '../src/queries.ts'
 
@@ -81,7 +82,6 @@ describe('PGMB Client Tests', () => {
 			logger: LOGGER,
 			groupId,
 			readEventsIntervalMs: 250,
-			pollEventsIntervalMs: 250,
 			subscriptionMaintenanceMs: 1000,
 			maxActiveCheckpoints: 3,
 			getWebhookInfo: () => webhookInfos,
@@ -157,6 +157,52 @@ describe('PGMB Client Tests', () => {
 		const rslt = await Promise.race([sub4.next(), setTimeout(250)])
 		assert.equal(rslt, undefined)
 		sub4.return()
+	})
+
+	it('should update cron options', async() => {
+		await updateConfigValue.run(
+			{
+				key: 'pg_cron_poll_for_events_cron',
+				value: '2 seconds',
+			},
+			pool,
+		)
+		await updateConfigValue.run(
+			{
+				key: 'pg_cron_partition_maintenance_cron',
+				value: '*/20 * * * *',
+			},
+			pool,
+		)
+
+		// check cron job updated
+		const { rows } = await pool
+			.query<{ jobname: string, schedule: string }>('select * from cron.job')
+		assert.partialDeepStrictEqual(
+			rows.find(r => r.jobname === 'pgmb_poll'),
+			{
+				schedule: '2 seconds'
+			}
+		)
+
+		// disable cron and see
+		await updateConfigValue.run(
+			{ key: 'use_pg_cron', value: 'false' },
+			pool
+		)
+
+		const { rows: rows2 } = await pool
+			.query<{ jobname: string, schedule: string }>('select * from cron.job')
+		assert.equal(
+			rows2.find(r => r.jobname === 'pgmb_poll'),
+			undefined
+		)
+
+		// re-enable
+		await updateConfigValue
+			.run({ key: 'use_pg_cron', value: 'true' }, pool)
+		await updateConfigValue
+			.run({ key: 'pg_cron_poll_for_events_cron', value: '1 second' }, pool)
 	})
 
 	it('should remove expired subs', async() => {
@@ -725,7 +771,8 @@ describe('PGMB Client Tests', () => {
 
 		for(let i = 0; i < client.maxActiveCheckpoints + 2;i++) {
 			await insertEvent(pool)
-			await setTimeout(client.pollEventsIntervalMs)
+			// ensure one event per poll cycle
+			await setTimeout(client.pollEventsIntervalMs + 100)
 		}
 
 		const cursor1 = await getGroupCursor()
@@ -967,7 +1014,7 @@ describe('PGMB Client Tests', () => {
 		// wait for initial + retry
 		// as we fail once, we expect 3 calls
 		// (2 for initial split, 1 for retry of 1 failed split)
-		await setTimeout(2_500)
+		await setTimeout(client.pollEventsIntervalMs * 4)
 
 		assert.equal(handler.mock.callCount(), 3)
 	})
