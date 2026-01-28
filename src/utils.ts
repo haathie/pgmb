@@ -57,3 +57,15 @@ export function createTopicalSubscriptionParams<T extends IEventData>({
 		...rest
 	}
 }
+
+/**
+ * Get an environment variable as a number
+ */
+export function getEnvNumber(key: string, defaultValue = 0) {
+	const num = +(process.env[key] || defaultValue)
+	if(isNaN(num) || !isFinite(num)) {
+		return defaultValue
+	}
+
+	return num
+}

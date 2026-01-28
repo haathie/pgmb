@@ -87,16 +87,32 @@ export type Pgmb2ClientOpts<T extends IEventData> = {
 	 */
 	groupId: string
 	logger?: Logger
-	/** How long to sleep between polls & read fn calls */
-	sleepDurationMs?: number
+	/**
+	 * How long to sleep between polling for new events from
+	 * the global events table.
+	 * Only one global call is required across all clients.
+	 * Set to 0 to disable polling.
+	 *
+	 * @default 1 second
+	 * */
+	pollEventsIntervalMs?: number
+	/**
+	 * Group level configuration for how often to read new events
+	 * relevant to the group's subscriptions.
+	 * @default 1 second
+	 */
+	readEventsIntervalMs?: number
 	/**
 	 * How often to mark subscriptions as active,
 	 * and remove expired ones.
 	 * @default 1 minute
 	 */
 	subscriptionMaintenanceMs?: number
-	/** How often to maintain the events tables
+	/**
+	 * How often to maintain the events tables
 	 * (drop old partitions, create new ones, etc)
+	 * Set to 0 to disable automatic maintenance.
+	 *
 	 * @default 5 minutes
 	 */
 	tableMaintainanceMs?: number
@@ -111,12 +127,6 @@ export type Pgmb2ClientOpts<T extends IEventData> = {
 	 * @default 10
 	 */
 	maxActiveCheckpoints?: number
-	/**
-	 * Should this client poll for new events?
-	 * @default true
-	 */
-	poll?: boolean
-
 	webhookHandlerOpts?: Partial<PgmbWebhookOpts<T>>
 	getWebhookInfo?: GetWebhookInfoFn
 	/**

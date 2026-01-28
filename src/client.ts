@@ -34,6 +34,7 @@ import type {
 	registerReliableHandlerParams,
 	RegisterSubscriptionParams,
 } from './types.ts'
+import { getEnvNumber } from './utils.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
 type IReliableListener<T extends IEventData> = {
@@ -73,7 +74,8 @@ export class PgmbClient<
 	readonly client: PgClientLike
 	readonly logger: Logger
 	readonly groupId: string
-	readonly sleepDurationMs: number
+	readonly readEventsIntervalMs: number
+	readonly pollEventsIntervalMs: number
 	readonly readChunkSize: number
 	readonly subscriptionMaintenanceMs: number
 	readonly tableMaintenanceMs: number
@@ -92,7 +94,6 @@ export class PgmbClient<
 
 	#endAc = new AbortController()
 
-	readonly #shouldPoll: boolean
 	#readTask?: Promise<void>
 	#pollTask?: Promise<void>
 	#subMaintainTask?: Promise<void>
@@ -105,17 +106,19 @@ export class PgmbClient<
 		client,
 		groupId,
 		logger = pino(),
-		sleepDurationMs = 750,
-		readChunkSize = 1000,
-		maxActiveCheckpoints = 10,
-		poll,
-		subscriptionMaintenanceMs = 60 * 1000,
+		readEventsIntervalMs = getEnvNumber('PGMB_READ_EVENTS_INTERVAL_MS', 1000),
+		readChunkSize = getEnvNumber('PGMB_READ_CHUNK_SIZE', 1000),
+		maxActiveCheckpoints = getEnvNumber('PGMB_MAX_ACTIVE_CHECKPOINTS', 10),
+		pollEventsIntervalMs = getEnvNumber('PGMB_POLL_EVENTS_INTERVAL_MS', 1000),
+		subscriptionMaintenanceMs
+		= getEnvNumber('PGMB_SUBSCRIPTION_MAINTENANCE_S', 60) * 1000,
+		tableMaintainanceMs
+		= getEnvNumber('PGMB_TABLE_MAINTENANCE_M', 15) * 60 * 1000,
 		webhookHandlerOpts: {
 			splitBy: whSplitBy,
 			...whHandlerOpts
 		} = {},
 		getWebhookInfo = () => ({}),
-		tableMaintainanceMs = 5 * 60 * 1000,
 		readNextEvents = defaultReadNextEvents.run.bind(defaultReadNextEvents),
 		findEvents,
 		...batcherOpts
@@ -128,9 +131,9 @@ export class PgmbClient<
 		this.client = client
 		this.logger = logger
 		this.groupId = groupId
-		this.sleepDurationMs = sleepDurationMs
+		this.readEventsIntervalMs = readEventsIntervalMs
 		this.readChunkSize = readChunkSize
-		this.#shouldPoll = !!poll
+		this.pollEventsIntervalMs = pollEventsIntervalMs
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 		this.maxActiveCheckpoints = maxActiveCheckpoints
 		this.webhookHandler = createWebhookHandler<T>(whHandlerOpts)
@@ -163,13 +166,13 @@ export class PgmbClient<
 
 		this.#readTask = this.#startLoop(
 			this.readChanges.bind(this),
-			this.sleepDurationMs,
+			this.readEventsIntervalMs,
 		)
 
-		if(this.#shouldPoll) {
+		if(this.pollEventsIntervalMs) {
 			this.#pollTask = this.#startLoop(
 				pollForEvents.run.bind(pollForEvents, undefined, this.client),
-				this.sleepDurationMs,
+				this.pollEventsIntervalMs,
 			)
 		}
 
