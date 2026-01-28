@@ -11,7 +11,7 @@
     "allowJs": true,
     "baseUrl": ".",
     "paths": {},
-    "declaration": true,
+    "declaration": false,
     "resolveJsonModule": true
   },
   "include": [
