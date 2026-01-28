@@ -10,8 +10,8 @@
   "repository": "https://github.com/haathie/pgmb",
   "scripts": {
     "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test --test tests/*.test.ts",
-    "prepare": "tsc",
-    "build": "tsc",
+    "prepare": "npm run build",
+    "build": "tsc -p tsconfig.build.json",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
     "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx",
     "benchmark": "TZ=utc node --env-file ./.env.test src/benchmark/run.ts",
@@ -27,7 +27,7 @@
     "@types/pg": "^8.11.14",
     "amqplib": "^0.10.7",
     "chance": "^1.1.12",
-    "eslint": "^8.19.0",
+    "eslint": "^9.0.0",
     "eventsource": "^4.1.0",
     "pg": "^8.16.3",
     "typescript": "^5.0.0"
