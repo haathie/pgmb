@@ -903,11 +903,13 @@ EXECUTE FUNCTION manage_cron_jobs_trigger_fn();
 DO $$
 BEGIN
 	IF (
-		SELECT EXISTS (
-			SELECT 1
-			FROM pg_available_extensions
-			WHERE name = 'pg_cron'
-		)
+		SELECT 1
+		FROM pg_available_extensions
+		WHERE name = 'pg_cron'
+	) AND (
+		-- ensure the current database is where pg_cron can be installed
+		current_database()
+		= coalesce(current_setting('cron.database_name', true), 'postgres')
 	) THEN
 		CREATE EXTENSION IF NOT EXISTS pg_cron;
 		INSERT INTO config(id, value) VALUES ('use_pg_cron', 'true');
