@@ -904,6 +904,7 @@ describe('PGMB Client Tests', () => {
 		const { subscriptionId } = await client.registerReliableHandler(
 			{
 				name: 's1',
+				params: { a: 0 },
 				retryOpts: { retriesS: [1] }
 			},
 			async({ items }) => {
@@ -924,7 +925,7 @@ describe('PGMB Client Tests', () => {
 
 		await Promise.all([insertEvent(pool), insertEvent(pool)])
 
-		await setTimeout(750)
+		await setTimeout(client.pollEventsIntervalMs * 1.5)
 
 		assert.ok(failedEvents)
 		// ensure we've not yet completed, retry didn't get scheduled
