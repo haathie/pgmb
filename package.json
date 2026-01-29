@@ -6,13 +6,8 @@
     "registry": "https://registry.npmjs.org",
     "access": "public"
   },
-  "exports": {
-    ".": {
-      "import": "./src/index.ts",
-      "types": "./src/index.ts",
-      "require": "./lib/index.js"
-    }
-  },
+  "type": "module",
+  "main": "lib/index.js",
   "repository": "https://github.com/haathie/pgmb",
   "scripts": {
     "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test --test tests/*.test.ts",
@@ -40,7 +35,6 @@
   },
   "files": [
     "lib",
-    "src",
     "sql"
   ],
   "keywords": [

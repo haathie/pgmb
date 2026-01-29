@@ -32,8 +32,7 @@ Install PGMB by running the following command:
 npm install @haathie/pgmb
 ```
 
-Note: PGMB directly exports typescript files, so if you're using a bundler -- ensure it can handle typescript files. NodeJs (v22+), Deno, Bun can all run typescript files natively -- so about time we utilised this!
-For commonjs compatibility, the compiled JS files are also exported.
+Note: PGMB is an ESM module.
 
 Before using PGMB, you'll need to run the setup script to create the required tables, functions & triggers in your database. You can do this by running:
 

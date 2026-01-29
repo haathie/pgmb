@@ -1,5 +1,5 @@
 import assert from 'node:assert'
-import type { CreateTopicalSubscriptionOpts, IEventData, RegisterSubscriptionParams } from './types'
+import type { CreateTopicalSubscriptionOpts, IEventData, RegisterSubscriptionParams } from './types.ts'
 
 /**
  * Extract the date from a message ID, same as the PG function
