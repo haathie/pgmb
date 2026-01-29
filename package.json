@@ -1,6 +1,6 @@
 {
   "name": "@haathie/pgmb",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "PG message broker, with a type-safe typescript client with built-in webhook & SSE support.",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
