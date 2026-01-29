@@ -2,7 +2,7 @@ name: pgmb_test
 
 services:
   pg:
-    image: postgres:18-bookworm
+    image: ghcr.io/haathie/postgres:18
     environment:
       POSTGRES_PASSWORD: ''
       POSTGRES_HOST_AUTH_METHOD: trust
