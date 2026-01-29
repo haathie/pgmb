@@ -5,7 +5,6 @@ ALTER TYPE config_type ADD VALUE 'pg_cron_poll_for_events_cron';
 ALTER TYPE config_type ADD VALUE 'pg_cron_partition_maintenance_cron';
 
 INSERT INTO config(id, value) VALUES
-('poll_chunk_size', '10000'),
 ('pg_cron_poll_for_events_cron', '1 second'),
 -- every 30 minutes
 ('pg_cron_partition_maintenance_cron', '*/30 * * * *');
