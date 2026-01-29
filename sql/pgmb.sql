@@ -903,7 +903,7 @@ EXECUTE FUNCTION manage_cron_jobs_trigger_fn();
 DO $$
 BEGIN
 	IF (
-		SELECT 1
+		SELECT true
 		FROM pg_available_extensions
 		WHERE name = 'pg_cron'
 	) AND (
