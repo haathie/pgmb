@@ -422,7 +422,10 @@ const pgmb = new PgmbClient({
 		headers: {
 			// add a custom user-agent header
 			'user-agent': 'my-service-client/1.0.0'
-		}
+		},
+		// if payload is larger than 1KB, will be sent as a gzipped body
+		// with content-encoding: gzip header
+		minCompressSizeBytes: 1024,
 	},
 	// this function is called to obtain webhook URLs
 	// for a given set of PGMB subscription IDs. These

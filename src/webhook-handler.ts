@@ -1,7 +1,12 @@
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
+import { promisify } from 'node:util'
+import { gzip } from 'node:zlib'
 import { createRetryHandler } from './retry-handler.ts'
 import type { IEventData, IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types.ts'
+import { getEnvNumber } from './utils.ts'
+
+const gzipPromise = promisify(gzip)
 
 /**
  * Create a handler that sends events to a webhook URL via HTTP POST.
@@ -16,7 +21,10 @@ export function createWebhookHandler<T extends IEventData>(
 			retriesS: [5 * 60, 30 * 60]
 		},
 		jsonifier = JSON,
-		serialiseEvent = createSimpleSerialiser(jsonifier)
+		serialiseEvent = createSimpleSerialiser(jsonifier),
+		minCompressSizeBytes
+		= getEnvNumber('PGMB_WEBHOOK_MIN_COMPRESS_SIZE_BYTES', 1024),
+		compress = gzipCompress
 	}: Partial<PgmbWebhookOpts<T>>
 ) {
 	const handler: IEventHandler = async(ev, { logger, extra }) => {
@@ -36,14 +44,21 @@ export function createWebhookHandler<T extends IEventData>(
 
 		const { body, contentType } = serialiseEvent(ev, logger)
 
+		const {
+			data: compBody,
+			contentEncoding
+		} = body.length >= minCompressSizeBytes
+			? await compress(body)
+			: { data: body }
 		const { status, statusText, body: res } = await fetch(url, {
 			method: 'POST',
 			headers: {
 				'content-type': contentType,
 				'idempotency-key': idempotencyKey,
+				...(contentEncoding ? { 'content-encoding': contentEncoding } : {}),
 				...headers
 			},
-			body,
+			body: compBody,
 			redirect: 'manual',
 			signal: AbortSignal.timeout(timeoutMs)
 		})
@@ -88,4 +103,14 @@ function createSimpleSerialiser(
 		}),
 		contentType: 'application/json'
 	})
+}
+
+async function gzipCompress(data: Uint8Array | string): Promise<{
+	data: Uint8Array | string
+	contentEncoding: string
+}> {
+	return {
+		data: await gzipPromise(data),
+		contentEncoding: 'gzip'
+	}
 }

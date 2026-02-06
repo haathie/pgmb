@@ -38,6 +38,19 @@ export type PgmbWebhookOpts<T extends IEventData> = {
 	splitBy?: ISplitFn<T>
 	jsonifier?: JSONifier
 	serialiseEvent?(ev: IReadEvent, logger: Logger): SerialisedEvent
+	/**
+	 * Minimum size in bytes for the payload to be compressed.
+	 * @default 1024
+	 */
+	minCompressSizeBytes?: number
+	/**
+	 * Compress the webhook payload before sending.
+	 * By default, uses gzip compression via the `zlib` library.
+	 */
+	compress?(data: Uint8Array | string): Promise<{
+		data: Uint8Array | string
+		contentEncoding: string
+	}>
 }
 
 export interface IEventData {

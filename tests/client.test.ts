@@ -3,6 +3,7 @@ import { Chance } from 'chance'
 import type { ErrorEvent } from 'eventsource'
 import { EventSource } from 'eventsource'
 import { readFile } from 'fs/promises'
+import { randomBytes } from 'node:crypto'
 import type { IncomingHttpHeaders, Server, ServerResponse } from 'node:http'
 import { createServer } from 'node:http'
 import {
@@ -15,6 +16,7 @@ import {
 	mock,
 } from 'node:test'
 import { setTimeout } from 'node:timers/promises'
+import { gunzipSync } from 'node:zlib'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
 import type {
@@ -87,7 +89,8 @@ describe('PGMB Client Tests', () => {
 			getWebhookInfo: () => webhookInfos,
 			webhookHandlerOpts: {
 				retryOpts: { retriesS: [1, 2] },
-				timeoutMs: 1_000
+				timeoutMs: 1_000,
+				minCompressSizeBytes: 128
 			}
 		})
 		await client.init()
@@ -1173,8 +1176,15 @@ describe('PGMB Client Tests', () => {
 					bodyChunks.push(chunk)
 				}
 
-				const body = Buffer.concat(bodyChunks).toString('utf-8')
-				responses.push({ body, headers: req.headers })
+				let body = Buffer.concat(bodyChunks)
+				if(req.headers['content-encoding'] === 'gzip') {
+					body = gunzipSync(body)
+				}
+
+				responses.push({
+					body: body.toString('utf-8'),
+					headers: req.headers
+				})
 				if(shouldFailNextWebhook) {
 					shouldFailNextWebhook = false
 					return res
@@ -1202,7 +1212,13 @@ describe('PGMB Client Tests', () => {
 			const { id: subId } = await client
 				.registerFireAndForgetHandler({ })
 			webhookInfos[subId] = [{ id: '1', url: webhookUrl }]
-			const ev = await insertEvent(pool)
+			const [ev] = await client.publish([
+				{
+					topic: 'test-topic-1',
+					// trigger gzip compression by making payload >128b
+					payload: { key: randomBytes(92).toString('hex') },
+				}
+			])
 
 			while(!responses.length) {
 				await setTimeout(100)
@@ -1210,6 +1226,7 @@ describe('PGMB Client Tests', () => {
 
 			const [{ headers, body }] = responses
 			assert.equal(headers['content-type'], 'application/json')
+			assert.equal(headers['content-encoding'], 'gzip')
 			assert.ok(headers['idempotency-key'])
 
 			assert.ok(body.includes(ev.id))
