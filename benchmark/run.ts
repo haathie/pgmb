@@ -1,7 +1,6 @@
 import { threadId, Worker, workerData } from 'worker_threads'
 import makeAmqpBenchmarkClient from './amqp.ts'
 import { benchmarkConsumption, benchmarkPublishing } from './base.ts'
-import makePgmbBenchmarkClient, { install as installPgmb } from './pgmb.ts'
 import makePgmb2BenchmarkClient, { install as installPgmb2 } from './pgmb.ts'
 import makePgmqBenchmarkClient, { install as installPgmq } from './pgmq.ts'
 import type { MakeBenchmarkClient } from './types.ts'
@@ -14,10 +13,6 @@ type Client = {
 const FILENAME = process.argv[1]
 
 const CLIENTS: { [client: string]: Client } = {
-	'pgmb': {
-		make: makePgmbBenchmarkClient,
-		install: installPgmb
-	},
 	'pgmb': {
 		make: makePgmb2BenchmarkClient,
 		install: installPgmb2

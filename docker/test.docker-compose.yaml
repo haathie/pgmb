@@ -16,3 +16,8 @@ services:
       - ../sql:/sql
     post_start:
       - command: sh /scripts/install-pgmb.sh postgres://postgres@localhost:5432/test
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4096m

@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
     "lint:fix": "eslint ./ --fix --ext .js,.ts,.jsx,.tsx",
-    "benchmark": "TZ=utc node --env-file ./.env.test src/benchmark/run.ts",
+    "benchmark": "TZ=utc node --env-file ./.env.test benchmark/run.ts",
     "pg:typegen": "pgtyped --config ./pgtyped.config.json"
   },
   "devDependencies": {

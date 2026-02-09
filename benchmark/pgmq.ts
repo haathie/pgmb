@@ -1,8 +1,8 @@
 import { exec as execCallback } from 'child_process'
 import { stat, writeFile } from 'fs/promises'
+import { setTimeout } from 'node:timers/promises'
 import { Client, Pool } from 'pg'
 import { promisify } from 'util'
-import { delay } from '../utils.ts'
 import type { BenchmarkConsumer, MakeBenchmarkClient } from './types.ts'
 
 const exec = promisify(execCallback)
@@ -83,7 +83,7 @@ const makePgmqBenchmarkClient: MakeBenchmarkClient = async({
 				await client.release()
 				// keep reading until we get no more messages
 				if(!rows.length) {
-					await delay(100)
+					await setTimeout(100)
 				}
 			}
 		}
