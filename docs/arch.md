@@ -122,6 +122,11 @@ Now that our `poll_for_events` function is prepared, we can call it to poll for 
 
 Subscriptions can also be automatically expired after a certain period of inactivity (useful for temporary consumers like HTTP SSE connections).
 
+##### Why not use WAL?
+
+Reading from WAL requires logical decoding, a replication slot, and would then need a separate implementation for scheduled event consumption. This seemed to be more complex to implement, and would also require more maintenance from the user (e.g. ensuring that the replication slot is healthy, handling WAL lag, etc).
+Furthermore, in initial tests with this approach, performance was much worse than the current approach of polling from a separate "unread_events" table -- about 5x slower consumption rates. This might be due to implementation error, or something inherent to the WAL approach but regardless, the current approach is performant enough for most use cases, and is simpler to maintain.
+
 #### Read Next Events
 
 Once events are polled and matched to subscriptions, the group can read the next events for their subscriptions using the `read_next_events` function.
