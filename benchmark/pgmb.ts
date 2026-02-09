@@ -1,55 +1,84 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { PGMBClient } from '../client/index.ts'
-import type { MakeBenchmarkClient } from './types.ts'
+import { assertSubscription, maintainEventsTable, pollForEvents, readNextEventsText, writeEvents } from '../src/index.ts'
+import type { BenchmarkConsumer, MakeBenchmarkClient } from './types.ts'
 
-const makePgmbBenchmarkClient: MakeBenchmarkClient = async({
+const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 	batchSize,
 	consumers,
 	publishers,
 	assertQueues,
-	logger
 }) => {
 	const uri = process.env.PG_URI
 	if(!uri) {
 		throw new Error('PG_URI is not set')
 	}
 
-	const poolSize = Math.max(1, publishers, consumers.length)
-	const pool = new Pool({
-		max: poolSize,
-		connectionString: uri,
-	})
-	const client = new PGMBClient({
-		pool,
-		logger,
-		consumers: consumers.map(({ queueName, onMessage }) => ({
-			name: queueName,
-			batchSize,
-			async onMessage({ msgs }) {
-				await onMessage(msgs.map(m => m.rawMessage))
+	const poolSize = Math.max(5, publishers, consumers.length)
+	const pool = new Pool({ max: poolSize, connectionString: uri })
+	const onMessageMap:
+		{ [subscriptionId: string]: BenchmarkConsumer['onMessage'] } = {}
+
+	await maintainEventsTable.run(undefined, pool)
+	const maintaintask = publishers ?
+		setInterval(
+			async() => {
+				await maintainEventsTable.run(undefined, pool)
+				console.log('Maintained events table')
 			},
-		})),
-	})
+			60_000
+		)
+		: undefined
 
 	for(const name of assertQueues) {
-		await client.assertQueue({ name })
-			.catch(() => {})
+		await assertSubscription
+			.run({ groupId: name, conditionsSql: 'e.topic = s.id' }, pool)
 	}
 
-	await client.listen()
+	for(const { queueName, onMessage } of consumers) {
+		onMessageMap[queueName] = onMessage
+	}
+
+	let closed = false
+	const run = async() => {
+		while(!closed) {
+			await Promise.all(
+				Object.entries(onMessageMap).map(async([queueName, onMessage]) => {
+					const rows = await readNextEventsText.run(
+						{
+							groupId: queueName,
+							chunkSize: batchSize,
+						},
+						pool
+					)
+
+					onMessage(rows.map(r => r.payload))
+				})
+			)
+		}
+	}
+
+	const task = consumers.length ? run() : undefined
 
 	return {
 		async close() {
-			await client.close()
+			closed = true
+			await task
 			await pool.end()
+			clearInterval(maintaintask)
 		},
 		publishers: Array.from({ length: publishers }, () => ({
 			async publish(queueName, msgs) {
-				await client.send(
-					queueName,
-					...msgs.map(m => ({ message: m })),
-				)
+				const payloads: string[] = []
+				const metadatas: (string | null)[] = []
+				const topics: string[] = []
+				for(const msg of msgs) {
+					payloads.push(`{"data":"${Buffer.from(msg.buffer, msg.byteOffset, msg.byteLength).toString('base64')}"}`)
+					metadatas.push(null)
+					topics.push(queueName)
+				}
+
+				await writeEvents.run({ payloads, topics, metadatas }, pool)
 			},
 		})),
 	}
@@ -63,22 +92,22 @@ export async function install(fresh?: boolean) {
 
 	const conn = new Client({ connectionString: uri })
 	await conn.connect()
+
+	if(fresh) {
+		await conn.query('DROP SCHEMA IF EXISTS pgmb CASCADE')
+	}
+
 	const { rowCount } = await conn.query(
 		'SELECT schema_name FROM information_schema.schemata'
 		+ " WHERE schema_name = 'pgmb'"
 	)
-
-	if(fresh && rowCount) {
-		console.log('Dropping existing pgmb schema...')
-		await conn.query('SELECT pgmb.uninstall()')
-	} else if(rowCount) {
-		console.log('pgmb schema already exists')
+	if(rowCount) {
 		await conn.end()
 		return false
 	}
 
 	await new Promise<void>((resolve, reject) => {
-		exec(`psql ${uri} -f ./sql/pgmb.sql`, (err, stdout, stderr) => {
+		exec(`psql ${uri} -f ./sql/pgmb.sql -1`, (err, stdout, stderr) => {
 			process.stdout.write(stdout)
 			process.stderr.write(stderr)
 			if(err) {
@@ -94,4 +123,4 @@ export async function install(fresh?: boolean) {
 	return true
 }
 
-export default makePgmbBenchmarkClient
+export default makePgmb2BenchmarkClient
