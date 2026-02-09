@@ -1,6 +1,6 @@
 import { exec } from 'child_process'
 import { Client, Pool } from 'pg'
-import { assertSubscription, maintainEventsTable, pollForEvents, readNextEventsText, writeEvents } from '../src/index.ts'
+import { assertGroup, assertSubscription, maintainEventsTable, readNextEventsText, writeEvents } from '../src/index.ts'
 import type { BenchmarkConsumer, MakeBenchmarkClient } from './types.ts'
 
 const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
@@ -31,8 +31,11 @@ const makePgmb2BenchmarkClient: MakeBenchmarkClient = async({
 		: undefined
 
 	for(const name of assertQueues) {
-		await assertSubscription
-			.run({ groupId: name, conditionsSql: 'e.topic = s.id' }, pool)
+		await assertGroup.run({ id: name }, pool)
+		await assertSubscription.run({
+			groupId: name,
+			conditionsSql: 's.group_id = e.topic',
+		}, pool)
 	}
 
 	for(const { queueName, onMessage } of consumers) {
