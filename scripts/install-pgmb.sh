@@ -17,7 +17,7 @@ done
 # check if schema exists
 if ! psql $PG_URI -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'pgmb';" | grep -q pgmb; then
 	echo "Installing pgmb..."
-	psql $PG_URI -f "../sql/pgmb.sql" -1
+	psql $PG_URI -f "../sql/pgmb.sql"
 	echo "pgmb installed successfully."
 else
 	echo "pgmb schema already exists, skipping installation."

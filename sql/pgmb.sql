@@ -111,36 +111,39 @@ CREATE TABLE IF NOT EXISTS events(
 	subscription_id subscription_id
 ) PARTITION BY RANGE (id);
 
-CREATE UNLOGGED TABLE IF NOT EXISTS unread_events (
-	event_id event_id PRIMARY KEY
-) WITH (
-	-- tune autovacuum for high insert & delete rates
-  autovacuum_vacuum_scale_factor = 0.01,
-  autovacuum_vacuum_threshold = 5000,
-  autovacuum_analyze_scale_factor = 0.005,
-  autovacuum_analyze_threshold = 1000,
-  autovacuum_vacuum_cost_delay = 0
-);
-
-
--- statement level trigger to insert new events into unread_events.
--- The "poll_for_events" function will read from this table, and
--- dispatch events to subscriptions.
-CREATE OR REPLACE FUNCTION mark_events_as_unread()
-RETURNS TRIGGER AS $$
+DO $$
 BEGIN
-	INSERT INTO unread_events(event_id)
-	SELECT e.id FROM NEW e;
-	RETURN NULL;
-END
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
-	SET search_path TO pgmb;
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_replication_slots WHERE slot_name = 'events_sub'
+	) THEN
+		SELECT pg_create_logical_replication_slot('events_sub', 'pgoutput');
+	END IF;
 
-CREATE TRIGGER mark_events_as_unread_trigger
-AFTER INSERT ON events
-REFERENCING NEW TABLE AS NEW
-FOR EACH STATEMENT
-EXECUTE FUNCTION mark_events_as_unread();
+	-- check if publication and replication slot for logical decoding
+	-- already exist, if not create them.
+	IF EXISTS (
+		SELECT 1 FROM pg_publication WHERE pubname = 'pgmb_events_pub'
+	) THEN
+		DROP PUBLICATION pgmb_events_pub;
+	END IF;
+
+	CREATE PUBLICATION pgmb_events_pub FOR TABLE events;
+END
+$$;
+
+CREATE FUNCTION get_unread_events(max_items INT)
+RETURNS SETOF event_id AS $$
+	-- https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html
+	-- offset by 14, header: ("I", txID (4b), oid (4b), "N"),
+	-- tuple data: (numCols (2b), type (1b)),
+	SELECT encode(substr(data, 14, 24), 'escape')::event_id
+	from pg_logical_slot_get_binary_changes(
+		'events_sub', null, max_items,
+		'proto_version', '4',
+		'publication_names', 'pgmb_events_pub'
+	)
+	WHERE get_byte(data, 0) = 0x49 -- I
+$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE;
 
 CREATE OR REPLACE FUNCTION get_time_partition_name(
 	table_id regclass,
@@ -411,7 +414,7 @@ BEGIN
 		SELECT 1 FROM pg_roles WHERE rolname = 'pgmb_reader'
 	) THEN
 		CREATE ROLE pgmb_reader NOLOGIN NOSUPERUSER NOCREATEDB
-	 	NOCREATEROLE NOINHERIT NOREPLICATION;
+	 	NOCREATEROLE NOINHERIT REPLICATION;
 		GRANT pgmb_reader TO CURRENT_USER;
 	END IF;
 END
@@ -422,7 +425,6 @@ GRANT USAGE, CREATE ON SCHEMA pgmb TO pgmb_reader;
 GRANT SELECT ON TABLE events TO pgmb_reader;
 GRANT SELECT ON TABLE config TO pgmb_reader;
 GRANT SELECT ON TABLE subscriptions TO pgmb_reader;
-GRANT SELECT, UPDATE, DELETE ON TABLE unread_events TO pgmb_reader;
 -- Grant insert-only access to "subscription_events"
 GRANT UPDATE, INSERT ON TABLE subscription_events TO pgmb_reader;
 
@@ -473,24 +475,12 @@ BEGIN
 		RETURN 0;
 	END IF;
 
-	WITH to_delete AS (
-		SELECT td.event_id
-		FROM unread_events td
-		WHERE td.event_id < create_event_id(NOW(), 0)
-		FOR UPDATE SKIP LOCKED
-		LIMIT chunk_size
-	),
-	deleted AS (
-		DELETE FROM unread_events re
-		USING to_delete td
-		WHERE re.event_id = td.event_id
-	)
 	SELECT
 		MAX(event_id),
 		MIN(event_id),
 		ARRAY_AGG(event_id)
 	INTO max_id, min_id, read_ids
-	FROM to_delete;
+	FROM get_unread_events(chunk_size) u(event_id);
 
 	IF max_id IS NULL THEN
 		RETURN 0;

@@ -277,6 +277,7 @@ describe('PGMB Client Tests', () => {
 		await client.registerFireAndForgetHandler({})
 		await client.readChanges()
 		await insertEvent(pool)
+		await setTimeout(500)
 		const [changeCount1] = await Promise.all([
 			client.readChanges(),
 			pollForEvents.run(undefined, pool),
@@ -585,7 +586,15 @@ describe('PGMB Client Tests', () => {
 		console.log('Inserted events and subs, starting poll...')
 
 		const now = Date.now()
-		const [{ count }] = await pollForEvents.run(undefined, pool)
+		let count = 0
+		while(Date.now() - now < 10_000) {
+			[{ count }] = await pollForEvents.run(undefined, pool)
+			if(count) {
+				break
+			}
+
+			await setTimeout(100)
+		}
 
 		const tt = Date.now() - now
 		console.log(
