@@ -43,12 +43,12 @@ $$ LANGUAGE sql STRICT STABLE PARALLEL SAFE SET SEARCH_PATH TO pgmb;
 INSERT INTO config(id, value) VALUES
 ('plugin_version', '0.2.0'),
 ('partition_retention_period', '60 minutes'),
-('future_intervals_to_create', '120 minutes'),
+('future_intervals_to_create', '3 hours'),
 ('partition_interval', '30 minutes'),
 ('poll_chunk_size', '10000'),
 ('pg_cron_poll_for_events_cron', '1 second'),
 -- every 30 minutes
-('pg_cron_partition_maintenance_cron', '*/30 * * * *');
+('pg_cron_partition_maintenance_cron', '0 * * * *');
 
 -- we'll create the events table next & its functions ---------------
 
@@ -211,6 +211,7 @@ DECLARE
 		hashtext('pgmb.maintain_tp.' || table_id::text);
 	ranges_to_create tstzrange[];
 	cur_range tstzrange;
+	max_retries constant int = 50;
 BEGIN
 	ASSERT partition_interval >= interval '1 minute',
 		'partition_interval must be at least 1 minute';
@@ -256,35 +257,45 @@ BEGIN
 
 	ranges_to_create := COALESCE(ranges_to_create, ARRAY[]::tstzrange[]);
 
-	-- go from now to future_interval
-	FOREACH cur_range IN ARRAY ranges_to_create LOOP
-		DECLARE
-			start_ev_id event_id := pgmb.create_event_id(lower(cur_range), 0);
-			end_ev_id event_id := pgmb.create_event_id(upper(cur_range), 0);
-			pt_name TEXT := pgmb.get_time_partition_name(table_id, lower(cur_range));
+	FOR i IN 1..max_retries LOOP
 		BEGIN
-			RAISE NOTICE 'creating partition "%". start: %, end: %',
-				pt_name, lower(cur_range), upper(cur_range);
+			-- go from now to future_interval
+			FOREACH cur_range IN ARRAY ranges_to_create LOOP
+				DECLARE
+					start_ev_id event_id := pgmb.create_event_id(lower(cur_range), 0);
+					end_ev_id event_id := pgmb.create_event_id(upper(cur_range), 0);
+					pt_name TEXT := pgmb.get_time_partition_name(table_id, lower(cur_range));
+				BEGIN
+					RAISE NOTICE 'creating partition "%". start: %, end: %',
+						pt_name, lower(cur_range), upper(cur_range);
 
-			EXECUTE FORMAT(
-				'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
-				pt_name, table_id, start_ev_id, end_ev_id
-			);
+					EXECUTE FORMAT(
+						'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
+						pt_name, table_id, start_ev_id, end_ev_id
+					);
 
-			IF additional_sql IS NOT NULL THEN
-				EXECUTE REPLACE(additional_sql, '$1', pt_name);
+					IF additional_sql IS NOT NULL THEN
+						EXECUTE REPLACE(additional_sql, '$1', pt_name);
+					END IF;
+				END;
+			END LOOP;
+
+			-- Drop old partitions
+			FOR p_info IN (
+				SELECT inhrelid::regclass AS child
+				FROM pg_catalog.pg_inherits
+				WHERE inhparent = table_id
+					AND inhrelid::regclass::text < oldest_pt_to_keep
+			) LOOP
+				EXECUTE format('DROP TABLE %I', p_info.child);
+			END LOOP;
+			EXIT;
+		EXCEPTION WHEN lock_not_available OR deadlock_detected THEN
+			IF i = max_retries THEN
+				RAISE;
 			END IF;
+			PERFORM pg_sleep(1);
 		END;
-	END LOOP;
-
-	-- Drop old partitions
-	FOR p_info IN (
-		SELECT inhrelid::regclass AS child
-		FROM pg_catalog.pg_inherits
-		WHERE inhparent = table_id
-			AND inhrelid::regclass::text < oldest_pt_to_keep
-	) LOOP
-		EXECUTE format('DROP TABLE %I', p_info.child);
 	END LOOP;
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER;

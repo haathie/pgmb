@@ -32,6 +32,7 @@ import {
 import {
 	maintainEventsTable,
 	pollForEvents,
+	readNextEvents,
 	removeExpiredSubscriptions,
 	updateConfigValue,
 	writeScheduledEvents,
@@ -1021,6 +1022,49 @@ describe('PGMB Client Tests', () => {
 		await setTimeout(client.pollEventsIntervalMs * 4)
 
 		assert.equal(handler.mock.callCount(), 3)
+	})
+
+	it('should not deadlock with concurrent ops', async() => {
+		// change setting to force more frequent partition maintenance,
+		// which is more likely to cause deadlocks
+		await updateConfigValue.run(
+			{ key: 'partition_interval', value: '1 minute' },
+			pool
+		)
+		await updateConfigValue.run(
+			{ key: 'future_intervals_to_create', value: '1 minute' },
+			pool
+		)
+		await updateConfigValue.run(
+			{ key: 'partition_retention_period', value: '1 day' },
+			pool
+		)
+
+		const evCount = 1000
+		let start = new Date()
+		for(let i = 0; i < 250; i++) {
+			await Promise.all([
+				await pool.query(
+					'select pgmb.maintain_events_table($1)',
+					[start]
+				),
+				readNextEvents.run({ groupId, chunkSize: 100 }, pool),
+				pollForEvents.run(undefined, pool),
+				writeScheduledEvents.run(
+					{
+						ts: Array.from({ length: evCount }, (_, i) => (
+							new Date(start.getTime() + i)
+						)),
+						topics: Array.from({ length: evCount }, () => 'test-topic'),
+						payloads: Array.from({ length: evCount }, () => ({ data: Math.random() })),
+						metadatas: Array.from({ length: evCount }, () => ({})),
+					},
+					pool
+				)
+			])
+
+			start = new Date(start.getTime() + 60 * 1000)
+		}
 	})
 
 	describe('SSE', () => {
