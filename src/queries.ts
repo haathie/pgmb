@@ -127,7 +127,7 @@ export interface IMarkSubscriptionsActiveQuery {
   result: IMarkSubscriptionsActiveResult;
 }
 
-const markSubscriptionsActiveIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":88,"b":92}]}],"statement":"UPDATE pgmb.subscriptions\nSET\n\tlast_active_at = NOW()\nWHERE id IN (SELECT * FROM unnest(:ids!::pgmb.subscription_id[]))"};
+const markSubscriptionsActiveIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":88,"b":92}]}],"statement":"UPDATE pgmb.subscriptions\nSET\n\tlast_active_at = NOW()\nWHERE id IN (SELECT * FROM unnest(:ids!::text[]))"};
 
 /**
  * Query generated from SQL:
@@ -135,7 +135,7 @@ const markSubscriptionsActiveIR: any = {"usedParamSet":{"ids":true},"params":[{"
  * UPDATE pgmb.subscriptions
  * SET
  * 	last_active_at = NOW()
- * WHERE id IN (SELECT * FROM unnest(:ids!::pgmb.subscription_id[]))
+ * WHERE id IN (SELECT * FROM unnest(:ids!::text[]))
  * ```
  */
 export const markSubscriptionsActive = new PreparedQuery<IMarkSubscriptionsActiveParams,IMarkSubscriptionsActiveResult>(markSubscriptionsActiveIR);
@@ -526,7 +526,7 @@ export interface IRemoveExpiredSubscriptionsQuery {
   result: IRemoveExpiredSubscriptionsResult;
 }
 
-const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activeIds":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":68,"b":76}]},{"name":"activeIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":219,"b":229}]}],"statement":"WITH deleted AS (\n\tDELETE FROM pgmb.subscriptions\n\tWHERE group_id = :groupId!\n\t\tAND expiry_interval IS NOT NULL\n\t\tAND pgmb.add_interval_imm(last_active_at, expiry_interval) < NOW()\n\t\tAND id NOT IN (select * from unnest(:activeIds!::pgmb.subscription_id[]))\n\tRETURNING id\n)\nSELECT COUNT(*) AS \"deleted!\" FROM deleted"};
+const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activeIds":true},"params":[{"name":"groupId","required":true,"transform":{"type":"scalar"},"locs":[{"a":68,"b":76}]},{"name":"activeIds","required":true,"transform":{"type":"scalar"},"locs":[{"a":219,"b":229}]}],"statement":"WITH deleted AS (\n\tDELETE FROM pgmb.subscriptions\n\tWHERE group_id = :groupId!\n\t\tAND expiry_interval IS NOT NULL\n\t\tAND pgmb.add_interval_imm(last_active_at, expiry_interval) < NOW()\n\t\tAND id NOT IN (select * from unnest(:activeIds!::text[]))\n\tRETURNING id\n)\nSELECT COUNT(*) AS \"deleted!\" FROM deleted"};
 
 /**
  * Query generated from SQL:
@@ -536,7 +536,7 @@ const removeExpiredSubscriptionsIR: any = {"usedParamSet":{"groupId":true,"activ
  * 	WHERE group_id = :groupId!
  * 		AND expiry_interval IS NOT NULL
  * 		AND pgmb.add_interval_imm(last_active_at, expiry_interval) < NOW()
- * 		AND id NOT IN (select * from unnest(:activeIds!::pgmb.subscription_id[]))
+ * 		AND id NOT IN (select * from unnest(:activeIds!::text[]))
  * 	RETURNING id
  * )
  * SELECT COUNT(*) AS "deleted!" FROM deleted

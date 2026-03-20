@@ -38,7 +38,7 @@ WHERE id IN :ids!;
 UPDATE pgmb.subscriptions
 SET
 	last_active_at = NOW()
-WHERE id IN (SELECT * FROM unnest(:ids!::pgmb.subscription_id[]));
+WHERE id IN (SELECT * FROM unnest(:ids!::text[]));
 
 /* @name pollForEvents */
 SELECT count AS "count!" FROM pgmb.poll_for_events() AS count;
@@ -145,7 +145,7 @@ WITH deleted AS (
 	WHERE group_id = :groupId!
 		AND expiry_interval IS NOT NULL
 		AND pgmb.add_interval_imm(last_active_at, expiry_interval) < NOW()
-		AND id NOT IN (select * from unnest(:activeIds!::pgmb.subscription_id[]))
+		AND id NOT IN (select * from unnest(:activeIds!::text[]))
 	RETURNING id
 )
 SELECT COUNT(*) AS "deleted!" FROM deleted;
