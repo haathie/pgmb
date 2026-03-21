@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@adiwajshing/eslint-config": "git+https://github.com/adiwajshing/eslint-config",
+    "@electric-sql/pglite": "^0.4.1",
     "@pgtyped/cli": "^2.4.3",
     "@types/amqplib": "^0.10.0",
     "@types/chance": "^1.1.6",
