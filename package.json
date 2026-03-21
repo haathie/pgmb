@@ -10,7 +10,7 @@
   "main": "lib/index.js",
   "repository": "https://github.com/haathie/pgmb",
   "scripts": {
-    "test": "TZ=UTC NODE_ENV=test node --env-file ./.env.test --test tests/*.test.ts",
+    "test": "node --env-file ./.test.env --test tests/*.test.ts",
     "prepare": "npm run build",
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint ./ --ext .js,.ts,.jsx,.tsx",
