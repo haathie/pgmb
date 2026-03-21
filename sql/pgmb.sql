@@ -206,10 +206,11 @@ DECLARE
 	ts_trunc timestamptz := date_bin(partition_interval, current_ts, '2000-1-1');
 	oldest_pt_to_keep text := pgmb
 		.get_time_partition_name(table_id, ts_trunc - retention_period);
-	p_info RECORD;
 	lock_key CONSTANT BIGINT :=
 		hashtext('pgmb.maintain_tp.' || table_id::text);
 	ranges_to_create tstzrange[];
+	partitions_to_drop regclass[];
+	p_to_drop regclass;
 	cur_range tstzrange;
 	max_retries constant int = 50;
 BEGIN
@@ -257,45 +258,44 @@ BEGIN
 
 	ranges_to_create := COALESCE(ranges_to_create, ARRAY[]::tstzrange[]);
 
-	FOR i IN 1..max_retries LOOP
+	SELECT ARRAY_AGG(inhrelid::regclass) INTO partitions_to_drop
+	FROM pg_catalog.pg_inherits
+	WHERE inhparent = table_id
+		AND inhrelid::regclass::text < oldest_pt_to_keep;
+	partitions_to_drop := COALESCE(partitions_to_drop, ARRAY[]::regclass[]);
+
+	-- check if nothing to do
+	IF
+		array_length(partitions_to_drop, 1) = 0
+		AND array_length(ranges_to_create, 1) = 0
+	THEN
+		RETURN;
+	END IF;
+
+	-- go from now to future_interval
+	FOREACH cur_range IN ARRAY ranges_to_create LOOP
+		DECLARE
+			start_ev_id event_id := pgmb.create_event_id(lower(cur_range), 0);
+			end_ev_id event_id := pgmb.create_event_id(upper(cur_range), 0);
+			pt_name TEXT := pgmb.get_time_partition_name(table_id, lower(cur_range));
 		BEGIN
-			-- go from now to future_interval
-			FOREACH cur_range IN ARRAY ranges_to_create LOOP
-				DECLARE
-					start_ev_id event_id := pgmb.create_event_id(lower(cur_range), 0);
-					end_ev_id event_id := pgmb.create_event_id(upper(cur_range), 0);
-					pt_name TEXT := pgmb.get_time_partition_name(table_id, lower(cur_range));
-				BEGIN
-					RAISE NOTICE 'creating partition "%". start: %, end: %',
-						pt_name, lower(cur_range), upper(cur_range);
+			RAISE NOTICE 'creating partition "%". start: %, end: %',
+				pt_name, lower(cur_range), upper(cur_range);
 
-					EXECUTE FORMAT(
-						'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
-						pt_name, table_id, start_ev_id, end_ev_id
-					);
+			EXECUTE FORMAT(
+				'CREATE TABLE %I PARTITION OF %I FOR VALUES FROM (%L) TO (%L)',
+				pt_name, table_id, start_ev_id, end_ev_id
+			);
 
-					IF additional_sql IS NOT NULL THEN
-						EXECUTE REPLACE(additional_sql, '$1', pt_name);
-					END IF;
-				END;
-			END LOOP;
-
-			-- Drop old partitions
-			FOR p_info IN (
-				SELECT inhrelid::regclass AS child
-				FROM pg_catalog.pg_inherits
-				WHERE inhparent = table_id
-					AND inhrelid::regclass::text < oldest_pt_to_keep
-			) LOOP
-				EXECUTE format('DROP TABLE %I', p_info.child);
-			END LOOP;
-			EXIT;
-		EXCEPTION WHEN lock_not_available OR deadlock_detected THEN
-			IF i = max_retries THEN
-				RAISE;
+			IF additional_sql IS NOT NULL THEN
+				EXECUTE REPLACE(additional_sql, '$1', pt_name);
 			END IF;
-			PERFORM pg_sleep(1);
 		END;
+	END LOOP;
+
+	-- Drop old partitions
+	FOREACH p_to_drop IN ARRAY partitions_to_drop LOOP
+		EXECUTE format('DROP TABLE %I', p_to_drop);
 	END LOOP;
 END;
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE SECURITY DEFINER;
@@ -810,20 +810,20 @@ END
 $$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
 SET search_path TO pgmb;
 
-CREATE OR REPLACE FUNCTION maintain_events_table(
+-- contains fn to maintain partitions for an append-only table, this
+-- can be used for both "events" and "subscription_events" tables.
+-- It trims old partitions that are outside the retention period, and creates new
+-- ones. Also ensures partitions aren't autovacuumed.
+CREATE FUNCTION maintain_append_only_table(
+	tbl regclass,
 	current_ts timestamptz DEFAULT NOW()
 )
 RETURNS VOID AS $$
-DECLARE
-	pi INTERVAL := get_config_value('partition_interval');
-	fic INTERVAL := get_config_value('future_intervals_to_create');
-	rp INTERVAL := get_config_value('partition_retention_period');
-BEGIN
-	PERFORM maintain_time_partitions_using_event_id(
-		'pgmb.events'::regclass,
-		partition_interval := pi,
-		future_interval := fic,
-		retention_period := rp,
+	SELECT maintain_time_partitions_using_event_id(
+		tbl,
+		partition_interval := get_config_value('partition_interval')::interval,
+		future_interval := get_config_value('future_intervals_to_create')::interval,
+		retention_period := get_config_value('partition_retention_period')::interval,
 		-- turn off autovacuum on the events table, since we're not
 		-- going to be updating/deleting rows from it.
 		-- Also set fillfactor to 100 since we're only inserting.
@@ -834,28 +834,28 @@ BEGIN
 		);',
 		current_ts := current_ts
 	);
-
-	PERFORM maintain_time_partitions_using_event_id(
-		'pgmb.subscription_events'::regclass,
-		partition_interval := pi,
-		future_interval := fic,
-		retention_period := rp,
-		-- turn off autovacuum on the events table, since we're not
-		-- going to be updating/deleting rows from it.
-		-- Also set fillfactor to 100 since we're only inserting.
-		additional_sql := 'ALTER TABLE $1 SET(
-			fillfactor = 100,
-			autovacuum_enabled = false,
-			toast.autovacuum_enabled = false
-		);',
-		current_ts := current_ts
-	);
-END;
-$$ LANGUAGE plpgsql VOLATILE PARALLEL UNSAFE
+$$ LANGUAGE sql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
 SET search_path TO pgmb;
 
--- create the initial partitions
-SELECT maintain_events_table();
+CREATE OR REPLACE PROCEDURE maintain_events_table(
+	current_ts timestamptz DEFAULT NOW()
+) AS $$
+BEGIN
+	SET search_path TO pgmb;
+	-- we commit after each maintainance function to release locks on the
+	-- partitions as soon as possible. This avoids blocking "poll_for_events",
+	-- & "read_next_events" functions, which when executing all concurrently,
+	-- may cause deadlocks due to lock contention on the partitions.
+	PERFORM maintain_append_only_table('events'::regclass, current_ts);
+	COMMIT;
+
+	PERFORM maintain_append_only_table('subscription_events'::regclass, current_ts);
+	COMMIT;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT maintain_append_only_table('events'::regclass);
+SELECT maintain_append_only_table('subscription_events'::regclass);
 
 -- setup pg_cron if it's available ----------------
 
@@ -882,7 +882,7 @@ BEGIN
 		PERFORM cron.schedule(
 			'pgmb_maintain_table_partitions',
 			get_config_value('pg_cron_partition_maintenance_cron'),
-			$CMD$ SELECT pgmb.maintain_events_table(); $CMD$
+			$CMD$ CALL pgmb.maintain_events_table(); $CMD$
 		);
 
 		RAISE LOG 'Scheduled pgmb partition maintenance job: %',

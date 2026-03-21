@@ -160,4 +160,4 @@ WHERE id = :key!::pgmb.config_type
 RETURNING 1 AS "updated!";
 
 /* @name maintainEventsTable */
-SELECT pgmb.maintain_events_table();
+CALL pgmb.maintain_events_table(COALESCE(:ts, NOW()));

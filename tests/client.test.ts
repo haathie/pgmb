@@ -326,6 +326,10 @@ describe('PGMB Client Tests', () => {
 		await client.end()
 
 		const initialPartCount = await getEventsPartitionCount()
+		const { rows: [{ ts }] } = await pool.query<{ ts: Date }>(
+			`select
+				NOW() + pgmb.get_config_value('partition_interval')::interval as ts`,
+		)
 
 		await Promise.all([
 			Array.from({ length: 5 }).map(() => insertEvent(pool)),
@@ -334,12 +338,7 @@ describe('PGMB Client Tests', () => {
 				{ groupId: client.groupId, activeIds: [] },
 				pool,
 			),
-			await pool.query(
-				`select pgmb.maintain_events_table(
-					current_ts := NOW()
-						+ pgmb.get_config_value('partition_interval')::interval
-				);`,
-			),
+			maintainEventsTable.run({ ts }, pool),
 		])
 
 		// check partitions exist
@@ -366,7 +365,7 @@ describe('PGMB Client Tests', () => {
 		await pool.query(
 			"UPDATE pgmb.config SET value = '1 minute' WHERE id = 'partition_interval';"
 		)
-		await maintainEventsTable.run(undefined, pool)
+		await maintainEventsTable.run({}, pool)
 
 		const initialPartCount2 = await getEventsPartitionCount()
 		assert.equal(initialPartCount2, initialPartCount)
@@ -376,7 +375,7 @@ describe('PGMB Client Tests', () => {
 			SET value = (value::interval + '30 minutes' + '2 minutes'::interval)::text
 			WHERE id = 'future_intervals_to_create';`
 		)
-		await maintainEventsTable.run(undefined, pool)
+		await maintainEventsTable.run({}, pool)
 
 		// check inserting events still works
 		await insertEvent(pool)
@@ -387,7 +386,7 @@ describe('PGMB Client Tests', () => {
 			WHERE id = 'future_intervals_to_create';`
 		)
 
-		await maintainEventsTable.run(undefined, pool)
+		await maintainEventsTable.run({}, pool)
 
 		// check inserting events still works
 		await writeScheduledEvents.run(
@@ -1042,12 +1041,9 @@ describe('PGMB Client Tests', () => {
 
 		const evCount = 1000
 		let start = new Date()
-		for(let i = 0; i < 250; i++) {
+		for(let i = 0; i < 500; i++) {
 			await Promise.all([
-				await pool.query(
-					'select pgmb.maintain_events_table($1)',
-					[start]
-				),
+				await maintainEventsTable.run({ ts: start }, pool),
 				readNextEvents.run({ groupId, chunkSize: 100 }, pool),
 				pollForEvents.run(undefined, pool),
 				writeScheduledEvents.run(

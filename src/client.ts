@@ -157,7 +157,7 @@ export class PgmbClient<
 		const isPgCronEnabled = pgCronRslt?.value === 'true'
 		if(!isPgCronEnabled) {
 			// maintain event table
-			await maintainEventsTable.run(undefined, this.client)
+			await maintainEventsTable.run({}, this.client)
 			this.logger.debug('maintained events table')
 
 			if(this.pollEventsIntervalMs) {
@@ -170,7 +170,7 @@ export class PgmbClient<
 			if(this.tableMaintenanceMs) {
 				this.#tableMaintainTask = this.#startLoop(
 					maintainEventsTable.run
-						.bind(maintainEventsTable, undefined, this.client),
+						.bind(maintainEventsTable, {}, this.client),
 					this.tableMaintenanceMs,
 				)
 			}

@@ -604,12 +604,12 @@ export const updateConfigValue = new PreparedQuery<IUpdateConfigValueParams,IUpd
 
 
 /** 'MaintainEventsTable' parameters type */
-export type IMaintainEventsTableParams = void;
+export interface IMaintainEventsTableParams {
+  ts?: DateOrString | null | void;
+}
 
 /** 'MaintainEventsTable' return type */
-export interface IMaintainEventsTableResult {
-  maintainEventsTable: undefined | null;
-}
+export type IMaintainEventsTableResult = void;
 
 /** 'MaintainEventsTable' query type */
 export interface IMaintainEventsTableQuery {
@@ -617,12 +617,12 @@ export interface IMaintainEventsTableQuery {
   result: IMaintainEventsTableResult;
 }
 
-const maintainEventsTableIR: any = {"usedParamSet":{},"params":[],"statement":"SELECT pgmb.maintain_events_table()"};
+const maintainEventsTableIR: any = {"usedParamSet":{"ts":true},"params":[{"name":"ts","required":false,"transform":{"type":"scalar"},"locs":[{"a":41,"b":43}]}],"statement":"CALL pgmb.maintain_events_table(COALESCE(:ts, NOW()))"};
 
 /**
  * Query generated from SQL:
  * ```
- * SELECT pgmb.maintain_events_table()
+ * CALL pgmb.maintain_events_table(COALESCE(:ts, NOW()))
  * ```
  */
 export const maintainEventsTable = new PreparedQuery<IMaintainEventsTableParams,IMaintainEventsTableResult>(maintainEventsTableIR);
