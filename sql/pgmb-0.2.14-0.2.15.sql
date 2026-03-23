@@ -130,6 +130,8 @@ RETURNS VOID AS $$
 $$ LANGUAGE sql VOLATILE PARALLEL UNSAFE SECURITY DEFINER
 SET search_path TO pgmb;
 
+DROP FUNCTION IF EXISTS maintain_events_table(timestamptz);
+
 CREATE OR REPLACE PROCEDURE maintain_events_table(
 	current_ts timestamptz DEFAULT NOW()
 ) AS $$
@@ -154,12 +156,10 @@ BEGIN
 		RETURN;
 	END IF;
 
-	SELECT cron.schedule(
+	PERFORM cron.schedule(
 		'pgmb_maintain_table_partitions',
 		get_config_value('pg_cron_partition_maintenance_cron'),
 		$CMD$ CALL pgmb.maintain_events_table(); $CMD$
 	);
 END
 $$;
-
-DROP FUNCTION IF EXISTS maintain_events_table(timestamptz);
