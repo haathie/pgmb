@@ -589,9 +589,11 @@ BEGIN
 	-- the new poll_for_events function will be created with
 	-- the pgmb_reader role, to avoid a bad "conditions_sql"
 	-- from having any destructive access to the database.
-	SET ROLE pgmb_reader;
 	EXECUTE proc_src;
-	RESET ROLE;
+	-- changing the owner will ensure that the function is executed with
+	-- the pgmb_reader's permissions.
+	-- https://www.postgresql.org/docs/current/sql-alterfunction.html
+	EXECUTE 'ALTER FUNCTION poll_for_events() OWNER TO pgmb_reader';
 END;
 $$ LANGUAGE plpgsql VOLATILE STRICT PARALLEL UNSAFE
 SET search_path TO pgmb
