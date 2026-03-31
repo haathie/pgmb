@@ -4,6 +4,8 @@ ALTER TYPE config_type ADD VALUE 'use_pg_cron';
 ALTER TYPE config_type ADD VALUE 'pg_cron_poll_for_events_cron';
 ALTER TYPE config_type ADD VALUE 'pg_cron_partition_maintenance_cron';
 
+COMMIT; -- prevents unsafe enum use
+
 INSERT INTO config(id, value) VALUES
 ('pg_cron_poll_for_events_cron', '1 second'),
 -- every 30 minutes
