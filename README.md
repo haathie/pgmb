@@ -18,7 +18,7 @@ Here are benchmarks of PGMB, PGMQ and AMQP. The benchmarks were run on an EC2 se
 | msgs published/s | 27321 ± 6493 | 21286 ± 6129 | 27,646 ± 356 |
 | msgs consumed/s | 16224 ± 10860 | 3201 ± 5061 | 27,463 ± 392 |
 
-Of course, these benchmarks are for fairly low powered machines, but these give out enough confidence that a Postgres queue can be used as a message broker for reasonably sized workloads. The folks at Tembo managed to squeeze out 30k messages per second, with a more powerful setup. You can find their benchmarks [here](https://hemming-in.rssing.com/chan-2212310/article8486.html?nocache=0)
+Of course, these benchmarks are for fairly low powered machines, but these give out enough confidence that a Postgres queue can be used as a message broker for reasonably sized workloads. The folks at Tembo (people behind PGMQ) managed to squeeze out 30k messages per second, with a more powerful setup. You can find their benchmarks [here](https://hemming-in.rssing.com/chan-2212310/article8486.html?nocache=0)
 
 Note: I'm not super sure why the PGMQ benchmarks are much lower, but I suspect it's due to the fact that it uses a serial ID for messages, has an additional index + I may have not configured it for max performance.
 
@@ -367,29 +367,34 @@ import express from 'express'
 
 const app = express()
 
-const handler = createSSERequestHandler.call(pgmb, {
-	// obtain subscription parameters based on the request,
-	// can throw errors if the request is invalid, unauthenticated
-	// or any other checks fail.
-	getSubscriptionOpts: req => (
-		// we'll listen to user-updated events for the user ID
-		// specified in the query param
-		createTopicalSubscriptionParams({
-			topics: ['user-updated'],
-			// the old row is stored in metadata->'old'
-			additionalFilters: { id: "e.metadata->'old'->>'id'" },
-			additionalParams: { id: req.query.id },
-		})
-	),
-	// upon reconnection, we'll replay at most 1000 events
-	maxReplayEvents: 1000,
-	// we'll only allow replaying events that are at most 5 minutes old
-	maxReplayIntervalMs: 5 * 60 * 1000,
-})
+const handler = createSSERequestHandler(
+	() => pgmb,
+	{
+		// obtain subscription parameters based on the request,
+		// can throw errors if the request is invalid, unauthenticated
+		// or any other checks fail.
+		getSubscriptionOpts: req => (
+			// we'll listen to user-updated events for the user ID
+			// specified in the query param
+			createTopicalSubscriptionParams({
+				topics: ['user-updated'],
+				// the old row is stored in metadata->'old'
+				additionalFilters: { id: "e.metadata->'old'->>'id'" },
+				additionalParams: { id: req.query.id },
+			})
+		),
+		// upon reconnection, we'll replay at most 1000 events
+		maxReplayEvents: 1000,
+		// we'll only allow replaying events that are at most 5 minutes old
+		maxReplayIntervalMs: 5 * 60 * 1000,
+	}
+)
 
 app.get('/sse', handler)
 app.listen(8000)
 ```
+
+Note: this is compatible with any HTTP server framework, not just Express.
 
 Now, on the client side, you can connect to this SSE endpoint as follows:
 

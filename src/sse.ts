@@ -7,24 +7,21 @@ import type { IEphemeralListener, IEvent, IEventData, SSERequestHandlerOpts } fr
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from './utils.ts'
 
 export function createSSERequestHandler<T extends IEventData>(
-	this: PgmbClient<T>,
+	getPgmb: (req: IncomingMessage) => PgmbClient<T>,
 	{
 		getSubscriptionOpts,
 		maxReplayEvents = 1000,
 		maxReplayIntervalMs = 5 * 60 * 1000,
-		jsonifier = JSON
-	}: SSERequestHandlerOpts,
+		jsonifier = JSON,
+		serialiseEvent = item => jsonifier.stringify(item.payload),
+	}: SSERequestHandlerOpts<T>,
 ) {
 	const replayEnabled = maxReplayEvents > 0
-	return handleSSERequest.bind(this)
-
-	async function handleSSERequest(
-		this: PgmbClient<T>,
-		req: IncomingMessage,
-		res: ServerResponse
-	) {
+	return async(req: IncomingMessage, res: ServerResponse) => {
 		let sub: IEphemeralListener<T> | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
+
+		const pgmb = getPgmb(req)
 
 		try {
 			assert(
@@ -44,7 +41,7 @@ export function createSSERequestHandler<T extends IEventData>(
 				)
 			}
 
-			sub = await this.registerFireAndForgetHandler({
+			sub = await pgmb.registerFireAndForgetHandler({
 				...await getSubscriptionOpts(req),
 				expiryInterval: `${maxReplayIntervalMs * 2} milliseconds`
 			})
@@ -60,15 +57,15 @@ export function createSSERequestHandler<T extends IEventData>(
 
 				eventsToReplay = await replayEvents.run(
 					{
-						groupId: this.groupId,
+						groupId: pgmb.groupId,
 						subscriptionId: sub.id,
 						fromEventId: fromEventId,
 						maxEvents: maxReplayEvents
 					},
-					this.client
+					pgmb.client
 				)
 
-				this.logger.trace(
+				pgmb.logger.trace(
 					{ subId: sub.id, count: eventsToReplay.length },
 					'got events to replay'
 				)
@@ -78,7 +75,7 @@ export function createSSERequestHandler<T extends IEventData>(
 				throw new Error('response already ended')
 			}
 		} catch(err) {
-			this.logger
+			pgmb.logger
 				.error({ subId: sub?.id, err }, 'error in sse subscription setup')
 
 			await sub?.throw(err).catch(() => { })
@@ -120,7 +117,7 @@ export function createSSERequestHandler<T extends IEventData>(
 				writeSseEvents(res, items)
 			}
 		} catch(err) {
-			this.logger.error({ err }, 'error in sse subscription')
+			pgmb.logger.error({ err }, 'error in sse subscription')
 			if(res.writableEnded) {
 				return
 			}
@@ -133,9 +130,10 @@ export function createSSERequestHandler<T extends IEventData>(
 		}
 	}
 
-	function writeSseEvents(res: ServerResponse, items: IEvent<T>[]) {
-		for(const { id, payload, topic } of items) {
-			const data = jsonifier.stringify(payload)
+	async function writeSseEvents(res: ServerResponse, items: IEvent<T>[]) {
+		for(const item of items) {
+			const { id, topic } = item
+			const data = await serialiseEvent(item)
 			if(!replayEnabled) {
 				// if replay is disabled, do not send an id field
 				res.write(`event: ${topic}\ndata: ${data}\n\n`)

@@ -23,6 +23,9 @@ export type GetWebhookInfoFn = (
 	subscriptionIds: string[]
 ) => Promise<{ [id: string]: WebhookInfo[] }> | { [id: string]: WebhookInfo[] }
 
+export type SerialiseReadEventFn<T extends IEventData = IEventData>
+	= (ev: IReadEvent<T>, logger: Logger) => SerialisedEvent
+
 export type PgmbWebhookOpts<T extends IEventData> = {
 	/**
 	 * Maximum time to wait for webhook request to complete
@@ -37,7 +40,7 @@ export type PgmbWebhookOpts<T extends IEventData> = {
 	retryOpts?: IRetryHandlerOpts | null
 	splitBy?: ISplitFn<T>
 	jsonifier?: JSONifier
-	serialiseEvent?(ev: IReadEvent, logger: Logger): SerialisedEvent
+	serialiseEvent?: SerialiseReadEventFn<T>
 	/**
 	 * Minimum size in bytes for the payload to be compressed.
 	 * @default 1024
@@ -233,7 +236,7 @@ export type IRetryEventPayload = {
 type SSESubscriptionOpts
 	= Pick<RegisterSubscriptionParams, 'conditionsSql' | 'params'>
 
-export type SSERequestHandlerOpts = {
+export type SSERequestHandlerOpts<T extends IEventData> = {
 	getSubscriptionOpts(req: IncomingMessage):
 		Promise<SSESubscriptionOpts> | SSESubscriptionOpts
 	/**
@@ -249,6 +252,11 @@ export type SSERequestHandlerOpts = {
 	maxReplayEvents?: number
 
 	jsonifier?: JSONifier
+	/**
+	 * custom function to serialise an event for sending to the SSE client.
+	 * By default, uses the provided `jsonifier` to stringify the event's payload.
+	 */
+	serialiseEvent?: (item: T) => string | Promise<string>
 }
 
 export type IRetryHandlerOpts = {

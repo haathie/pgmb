@@ -1079,8 +1079,8 @@ describe('PGMB Client Tests', () => {
 		})
 
 		beforeEach(async() => {
-			const handler = (createSSERequestHandler<TestEventData>).call(
-				client,
+			const handler = createSSERequestHandler<TestEventData>(
+				() => client,
 				{ getSubscriptionOpts: () => ({})	}
 			)
 			srv.on('request', (req, res) => {
@@ -1165,8 +1165,8 @@ describe('PGMB Client Tests', () => {
 			})
 			await client.init()
 
-			const handler = (createSSERequestHandler<TestEventData>).call(
-				client,
+			const handler = createSSERequestHandler<TestEventData>(
+				() => client,
 				{ getSubscriptionOpts: () => ({})	}
 			)
 			srv.removeAllListeners('request')

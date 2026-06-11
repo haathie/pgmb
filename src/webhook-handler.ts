@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import { createRetryHandler } from './retry-handler.ts'
-import type { IEventData, IEventHandler, IReadEvent, JSONifier, PgmbWebhookOpts, SerialisedEvent } from './types.ts'
-import { getEnvNumber } from './utils.ts'
+import type { IEventData, IEventHandler, IReadEvent, PgmbWebhookOpts } from './types.ts'
+import { createSimpleSerialiser, getEnvNumber } from './utils.ts'
 
 const gzipPromise = promisify(gzip)
 
@@ -27,7 +27,7 @@ export function createWebhookHandler<T extends IEventData>(
 		compress = gzipCompress
 	}: Partial<PgmbWebhookOpts<T>>
 ) {
-	const handler: IEventHandler = async(ev, { logger, extra }) => {
+	const handler: IEventHandler<T> = async(ev, { logger, extra }) => {
 		assert(
 			typeof extra === 'object'
 			&& extra !== null
@@ -91,18 +91,6 @@ function getIdempotencyKeyHeader(ev: IReadEvent) {
 	}
 
 	return hasher.digest('hex').slice(0, 16)
-}
-
-function createSimpleSerialiser(
-	jsonifier: JSONifier
-): ((ev: IReadEvent) => SerialisedEvent) {
-	return ev => ({
-		body: jsonifier.stringify({
-			items: ev.items
-				.map(({ id, payload, topic }) => ({ id, payload, topic }))
-		}),
-		contentType: 'application/json'
-	})
 }
 
 async function gzipCompress(data: Uint8Array | string): Promise<{

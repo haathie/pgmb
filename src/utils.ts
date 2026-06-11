@@ -1,5 +1,5 @@
 import assert from 'node:assert'
-import type { CreateTopicalSubscriptionOpts, IEventData, RegisterSubscriptionParams } from './types.ts'
+import type { CreateTopicalSubscriptionOpts, IEventData, JSONifier, RegisterSubscriptionParams, SerialiseReadEventFn } from './types.ts'
 
 /**
  * Extract the date from a message ID, same as the PG function
@@ -68,4 +68,14 @@ export function getEnvNumber(key: string, defaultValue = 0) {
 	}
 
 	return num
+}
+
+export function createSimpleSerialiser(jsonifier: JSONifier): SerialiseReadEventFn {
+	return ev => ({
+		body: jsonifier.stringify({
+			items: ev.items
+				.map(({ id, payload, topic }) => ({ id, payload, topic }))
+		}),
+		contentType: 'application/json'
+	})
 }
