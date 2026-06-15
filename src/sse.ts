@@ -6,18 +6,27 @@ import { replayEvents } from './queries.ts'
 import type { IEphemeralListener, IEvent, IEventData, SSERequestHandlerOpts } from './types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from './utils.ts'
 
-export function createSSERequestHandler<T extends IEventData>(
-	getPgmb: (req: IncomingMessage) => PgmbClient<T>,
+type MinimalRequest = Pick<
+	IncomingMessage,
+	'method' | 'headers'
+>
+
+export function createSSERequestHandler<
+	R extends MinimalRequest = IncomingMessage,
+	T extends IEventData = IEventData
+>(
+	getPgmb: (req: R) => PgmbClient<T>,
 	{
 		getSubscriptionOpts,
 		maxReplayEvents = 1000,
 		maxReplayIntervalMs = 5 * 60 * 1000,
 		jsonifier = JSON,
+		getEventIdToReplayFrom,
 		serialiseEvent = item => jsonifier.stringify(item.payload),
-	}: SSERequestHandlerOpts<T>,
+	}: SSERequestHandlerOpts<R, T>,
 ) {
 	const replayEnabled = maxReplayEvents > 0
-	return async(req: IncomingMessage, res: ServerResponse) => {
+	return async(req: R, res: ServerResponse) => {
 		let sub: IEphemeralListener<T> | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
 
@@ -29,7 +38,8 @@ export function createSSERequestHandler<T extends IEventData>(
 				'SSE only supports GET requests'
 			)
 			// validate last-event-id header
-			const fromEventId = req.headers['last-event-id']
+			const fromEventId = getEventIdToReplayFrom?.(req)
+				|| req.headers['last-event-id']
 			if(fromEventId) {
 				assert(replayEnabled, 'replay disabled on server')
 				assert(typeof fromEventId === 'string', 'invalid last-event-id header')
@@ -111,10 +121,10 @@ export function createSSERequestHandler<T extends IEventData>(
 
 		try {
 			// send replayed events first
-			writeSseEvents(res, eventsToReplay as IEvent<T>[])
+			await writeSseEvents(req, res, eventsToReplay as IEvent<T>[])
 
 			for await (const { items } of sub) {
-				writeSseEvents(res, items)
+				await writeSseEvents(req, res, items)
 			}
 		} catch(err) {
 			pgmb.logger.error({ err }, 'error in sse subscription')
@@ -130,10 +140,14 @@ export function createSSERequestHandler<T extends IEventData>(
 		}
 	}
 
-	async function writeSseEvents(res: ServerResponse, items: IEvent<T>[]) {
+	async function writeSseEvents(req: R, res: ServerResponse, items: IEvent<T>[]) {
 		for(const item of items) {
 			const { id, topic } = item
-			const data = await serialiseEvent(item)
+			const data = await serialiseEvent(item, req)
+			if(!data) {
+				continue
+			}
+
 			if(!replayEnabled) {
 				// if replay is disabled, do not send an id field
 				res.write(`event: ${topic}\ndata: ${data}\n\n`)

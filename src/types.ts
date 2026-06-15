@@ -1,5 +1,4 @@
 import type { IDatabaseConnection } from '@pgtyped/runtime'
-import type { IncomingMessage } from 'node:http'
 import type { Logger } from 'pino'
 import type { HeaderRecord } from 'undici-types/header.js'
 import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
@@ -236,9 +235,18 @@ export type IRetryEventPayload = {
 type SSESubscriptionOpts
 	= Pick<RegisterSubscriptionParams, 'conditionsSql' | 'params'>
 
-export type SSERequestHandlerOpts<T extends IEventData> = {
-	getSubscriptionOpts(req: IncomingMessage):
+export type SSERequestHandlerOpts<
+	R,
+	T extends IEventData
+> = {
+	getSubscriptionOpts(req: R):
 		Promise<SSESubscriptionOpts> | SSESubscriptionOpts
+	/**
+	 * If provided, will determine the event ID to replay from for an SSE
+	 * subscription based on the incoming request. Will fallback to the
+	 * `last-event-id` header if not provided, or undefined.
+ 	*/
+	getEventIdToReplayFrom?(req: R): string | undefined
 	/**
 	 * Maximum interval to replay events for an SSE subscription.
 	 * @default 5 minutes
@@ -255,8 +263,11 @@ export type SSERequestHandlerOpts<T extends IEventData> = {
 	/**
 	 * custom function to serialise an event for sending to the SSE client.
 	 * By default, uses the provided `jsonifier` to stringify the event's payload.
+	 * Return undefined to skip sending this event to the client.
 	 */
-	serialiseEvent?: (item: T) => string | Promise<string>
+	serialiseEvent?(
+		item: T, req: R
+	): string | undefined | Promise<string | undefined>
 }
 
 export type IRetryHandlerOpts = {

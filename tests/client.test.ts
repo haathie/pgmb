@@ -4,7 +4,7 @@ import type { ErrorEvent } from 'eventsource'
 import { EventSource } from 'eventsource'
 import { readFile } from 'fs/promises'
 import { randomBytes } from 'node:crypto'
-import type { IncomingHttpHeaders, Server, ServerResponse } from 'node:http'
+import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http'
 import { createServer } from 'node:http'
 import {
 	after,
@@ -1079,7 +1079,7 @@ describe('PGMB Client Tests', () => {
 		})
 
 		beforeEach(async() => {
-			const handler = createSSERequestHandler<TestEventData>(
+			const handler = createSSERequestHandler<IncomingMessage, TestEventData>(
 				() => client,
 				{ getSubscriptionOpts: () => ({})	}
 			)
@@ -1165,7 +1165,7 @@ describe('PGMB Client Tests', () => {
 			})
 			await client.init()
 
-			const handler = createSSERequestHandler<TestEventData>(
+			const handler = createSSERequestHandler<IncomingMessage, TestEventData>(
 				() => client,
 				{ getSubscriptionOpts: () => ({})	}
 			)
