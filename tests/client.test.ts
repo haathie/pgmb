@@ -19,6 +19,7 @@ import { setTimeout } from 'node:timers/promises'
 import { gunzipSync } from 'node:zlib'
 import { Pool, type PoolClient } from 'pg'
 import { pino } from 'pino'
+import { Webhook } from 'standardwebhooks'
 import type {
 	IEvent,
 	IEventHandler,	ITableMutationEventData,
@@ -56,6 +57,8 @@ type TestEventData = {
 >
 
 type ITestEvent = IEvent<TestEventData>
+
+type ITestHandler = IEventHandler<TestEventData, unknown>
 
 describe('PGMB Client Tests', () => {
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
@@ -755,7 +758,7 @@ describe('PGMB Client Tests', () => {
 
 	it('should not update cursor if previous checkpoint still active', async() => {
 		const cursor0 = await getGroupCursor()
-		const sub2Fn = mock.fn<IEventHandler<TestEventData>>(async() => { })
+		const sub2Fn = mock.fn<ITestHandler>(async() => { })
 
 		let resolveFirst: (() => void) | undefined
 
@@ -800,7 +803,7 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should replay full batch on reliable handler failure', async() => {
-		const sub2Fn = mock.fn<IEventHandler<TestEventData>>(async() => { })
+		const sub2Fn = mock.fn<ITestHandler>(async() => { })
 
 		let failed = false
 
@@ -899,8 +902,8 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should retry failed handlers', async() => {
-		const c1Mock = mock.fn<IEventHandler<TestEventData>>(async() => { })
-		const c2Mock = mock.fn<IEventHandler<TestEventData>>(async() => { })
+		const c1Mock = mock.fn<ITestHandler>(async() => { })
+		const c2Mock = mock.fn<ITestHandler>(async() => { })
 
 		let failedEvents: ITestEvent[] | undefined
 		let doneEvents: ITestEvent[] | undefined
@@ -989,7 +992,7 @@ describe('PGMB Client Tests', () => {
 	})
 
 	it('should split handler by user provided fn', async() => {
-		const handler = mock.fn<IEventHandler<TestEventData>>(async() => { })
+		const handler = mock.fn<ITestHandler>(async() => { })
 		await client.registerReliableHandler(
 			{
 				retryOpts: { retriesS: [1] },
@@ -1289,6 +1292,44 @@ describe('PGMB Client Tests', () => {
 			] = responses
 			assert.equal(b1, b2)
 			assert.equal(h1['idempotency-key'], h2['idempotency-key'])
+		})
+
+		it('should sign webhook correctly even when body is gzip-compressed', async() => {
+			const signingSecret = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo32Ocho1'
+			const { id: subId } = await client.registerFireAndForgetHandler({ })
+			webhookInfos[subId] = [{ id: '1', url: webhookUrl, signingSecret }]
+
+			// trigger gzip compression (payload > 128b threshold in test client)
+			const [ev] = await client.publish([
+				{
+					topic: 'test-topic-1',
+					payload: { key: randomBytes(92).toString('hex') },
+				}
+			])
+
+			while(!responses.length) {
+				await setTimeout(100)
+			}
+
+			const [{ headers, body }] = responses
+
+			// body should have been decompressed by the test server
+			assert.equal(headers['content-encoding'], 'gzip')
+			assert.ok(body.includes(ev.id))
+
+			// signature headers present
+			assert.ok(headers['webhook-id'])
+			assert.ok(headers['webhook-timestamp'])
+			assert.ok(headers['webhook-signature'])
+
+			// signature must verify against the UNCOMPRESSED body
+			const wh = new Webhook(signingSecret)
+			const verifyHeaders = {
+				'webhook-id': headers['webhook-id'] as string,
+				'webhook-timestamp': headers['webhook-timestamp'] as string,
+				'webhook-signature': headers['webhook-signature'] as string,
+			}
+			assert.doesNotThrow(() => wh.verify(body, verifyHeaders))
 		})
 	})
 

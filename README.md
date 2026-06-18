@@ -504,6 +504,71 @@ const pgmb = new PgmbClient({
 })
 ```
 
+### Signed Webhooks
+
+PGMB supports signed webhook payloads via the [Standard Webhooks](https://www.standardwebhooks.com) spec (HMAC-SHA256). This lets your webhook consumers verify that requests genuinely originated from your PGMB instance and have not been tampered with.
+
+To enable signing, install the `standardwebhooks` package and add a `signingSecret` to the objects returned by `getWebhookInfo`:
+
+```sh
+npm install standardwebhooks
+```
+
+```ts
+async getWebhookInfo(subIds) {
+	const { rows } = await pgmb.client.query(
+		`SELECT id, url, signing_secret as "signingSecret", pgmb_sub_id as "subId"
+		FROM webhook_subscriptions
+		WHERE pgmb_sub_id = ANY($1)`,
+		[subIds]
+	)
+	return rows.reduce((acc, row) => {
+		acc[row.subId] ||= []
+		acc[row.subId].push({
+			id: row.id,
+			url: row.url,
+			// optional: omit to disable signing for this endpoint
+			signingSecret: row.signingSecret,
+		})
+		return acc
+	}, {} as Record<string, WebhookInfo[]>)
+}
+```
+
+The secret can be any format accepted by the `standardwebhooks` library — a raw base64 string, or the `whsec_<base64>` prefixed format. Each endpoint should have its own unique secret.
+
+When a `signingSecret` is present, PGMB adds three headers to the request before sending:
+
+| Header | Value |
+| :--- | :--- |
+| `webhook-id` | The idempotency key for the request (stable across retries) |
+| `webhook-timestamp` | Unix timestamp (seconds) of when the request was signed |
+| `webhook-signature` | `v1,<base64 HMAC-SHA256 signature>` |
+
+The signature covers the uncompressed body, so it remains verifiable even when the payload is gzip-compressed in transit.
+
+On the receiving end, verify with the `standardwebhooks` library:
+
+```ts
+import { Webhook } from 'standardwebhooks'
+
+const wh = new Webhook(process.env.WEBHOOK_SECRET)
+
+app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+	try {
+		const payload = wh.verify(req.body.toString(), {
+			'webhook-id': req.headers['webhook-id'],
+			'webhook-timestamp': req.headers['webhook-timestamp'],
+			'webhook-signature': req.headers['webhook-signature'],
+		})
+		// payload is the verified, parsed body
+		res.sendStatus(200)
+	} catch (err) {
+		res.sendStatus(401)
+	}
+})
+```
+
 ## Configuring Knobs
 
 PGMB provides a number of configuration options to tune its behaviour (eg. how often to poll for events, read events, expire subscriptions, etc.). These can be configured via relevant env vars too, the names for which can be found [here](src/client.ts#L105)

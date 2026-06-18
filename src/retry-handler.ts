@@ -6,10 +6,13 @@ import type { IEvent, IEventData, IEventHandler, IFindEventsFn, IReadEvent, IRet
 
 const defaultFindEvents = findEvents.run.bind(findEvents)
 
-export function createRetryHandler<T extends IEventData>(
+export function createRetryHandler<
+	T extends IEventData,
+	E
+>(
 	{ retriesS }: IRetryHandlerOpts,
-	handler: IEventHandler<T>,
-): IEventHandler<T> {
+	handler: IEventHandler<T, E>,
+): IEventHandler<T, E> {
 	return async(ev, ctx) => {
 		const { name, client, subscriptionId, logger } = ctx
 

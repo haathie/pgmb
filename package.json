@@ -32,6 +32,7 @@
     "eslint": "^9.0.0",
     "eventsource": "^4.1.0",
     "pg": "^8.16.3",
+    "standardwebhooks": "^1.0.0",
     "typescript": "^5.0.0"
   },
   "files": [
@@ -50,5 +51,13 @@
   "dependencies": {
     "@pgtyped/runtime": "^2.4.2",
     "pino": "^9.0.0"
+  },
+  "peerDependencies": {
+    "standardwebhooks": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "standardwebhooks": {
+      "optional": true
+    }
   }
 }

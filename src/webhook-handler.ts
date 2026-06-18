@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import { createRetryHandler } from './retry-handler.ts'
-import type { IEventData, IEventHandler, IReadEvent, PgmbWebhookOpts } from './types.ts'
+import type { IEventData, IEventHandler, IReadEvent, PgmbWebhookOpts, WebhookInfo } from './types.ts'
 import { createSimpleSerialiser, getEnvNumber } from './utils.ts'
 
 const gzipPromise = promisify(gzip)
@@ -12,7 +12,10 @@ const gzipPromise = promisify(gzip)
  * Create a handler that sends events to a webhook URL via HTTP POST.
  * @param url Where to send the webhook requests
  */
-export function createWebhookHandler<T extends IEventData>(
+export function createWebhookHandler<
+	T extends IEventData,
+	W
+>(
 	{
 		timeoutMs = 5_000,
 		headers,
@@ -27,7 +30,9 @@ export function createWebhookHandler<T extends IEventData>(
 		compress = gzipCompress
 	}: Partial<PgmbWebhookOpts<T>>
 ) {
-	const handler: IEventHandler<T> = async(ev, { logger, extra }) => {
+	const handler: IEventHandler<T, WebhookInfo<W>> = async(
+		ev, { logger, extra }
+	) => {
 		assert(
 			typeof extra === 'object'
 			&& extra !== null
@@ -38,7 +43,7 @@ export function createWebhookHandler<T extends IEventData>(
 			),
 			'webhook handler requires extra.url parameter'
 		)
-		const { url } = extra
+		const { url, signingSecret } = extra
 		const idempotencyKey = getIdempotencyKeyHeader(ev)
 		logger = logger.child({ idempotencyKey })
 
@@ -56,6 +61,8 @@ export function createWebhookHandler<T extends IEventData>(
 				'content-type': contentType,
 				'idempotency-key': idempotencyKey,
 				...(contentEncoding ? { 'content-encoding': contentEncoding } : {}),
+				// Sign the uncompressed body if a signingSecret is provided
+				...signingSecret && await signWebhook(signingSecret, idempotencyKey, body),
 				...headers
 			},
 			body: compBody,
@@ -100,5 +107,21 @@ async function gzipCompress(data: Uint8Array | string): Promise<{
 	return {
 		data: await gzipPromise(data),
 		contentEncoding: 'gzip'
+	}
+}
+
+async function signWebhook(
+	secret: string,
+	msgId: string,
+	body: Uint8Array | string
+) {
+	const { Webhook } = await import('standardwebhooks')
+	const wh = new Webhook(secret)
+	const now = new Date()
+	const signature = wh.sign(msgId, now, body.toString())
+	return {
+		'webhook-id': msgId,
+		'webhook-timestamp': Math.floor(now.getTime() / 1000).toString(),
+		'webhook-signature': signature,
 	}
 }

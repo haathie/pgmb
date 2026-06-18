@@ -34,13 +34,17 @@ import type {
 	Pgmb2ClientOpts,
 	registerReliableHandlerParams,
 	RegisterSubscriptionParams,
+	WebhookInfo,
 } from './types.ts'
 import { getEnvNumber } from './utils.ts'
 import { createWebhookHandler } from './webhook-handler.ts'
 
-type IReliableListener<T extends IEventData> = {
+type IReliableListener<
+	T extends IEventData,
+	E
+> = {
  	type: 'reliable'
- 	handler: IEventHandler<T>
+ 	handler: IEventHandler<T, E>
  	removeOnEmpty?: boolean
  	extra?: unknown
  	splitBy?: ISplitFn<T>
@@ -55,9 +59,9 @@ type IFireAndForgetListener<T extends IEventData> = {
 	stream: IEphemeralListener<T>
 };
 
-type IListener<T extends IEventData> =
+type IListener<T extends IEventData, E> =
 	| IFireAndForgetListener<T>
-	| IReliableListener<T>;
+	| IReliableListener<T, E>;
 
 type Checkpoint = {
 	activeTasks: number
@@ -65,8 +69,8 @@ type Checkpoint = {
 	cancelled?: boolean
 };
 
-export type IListenerStore<T extends IEventData> = {
-	values: { [id: string]: IListener<T> }
+export type IListenerStore<T extends IEventData, E> = {
+	values: { [id: string]: IListener<T, E> }
 };
 
 export class PgmbClient<
@@ -86,9 +90,9 @@ export class PgmbClient<
 	readonly findEvents?: IFindEventsFn
 
 	readonly getWebhookInfo: GetWebhookInfoFn<W>
-	readonly webhookHandler: IEventHandler<T>
+	readonly webhookHandler: IEventHandler<T, WebhookInfo<W>>
 
-	readonly listeners: { [subId: string]: IListenerStore<T> } = {}
+	readonly listeners: { [subId: string]: IListenerStore<T, unknown> } = {}
 
 	readonly #webhookHandlerOpts: Partial<{ splitBy?: ISplitFn<T> }>
 
@@ -138,7 +142,7 @@ export class PgmbClient<
 		this.pollEventsIntervalMs = pollEventsIntervalMs
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 		this.maxActiveCheckpoints = maxActiveCheckpoints
-		this.webhookHandler = createWebhookHandler<T>(whHandlerOpts)
+		this.webhookHandler = createWebhookHandler(whHandlerOpts)
 		this.#webhookHandlerOpts = { splitBy: whSplitBy }
 		this.getWebhookInfo = getWebhookInfo
 		this.tableMaintenanceMs = tableMaintainanceMs
@@ -279,7 +283,7 @@ export class PgmbClient<
 			splitBy,
 			...opts
 		}: registerReliableHandlerParams<T>,
-		handler: IEventHandler<T>,
+		handler: IEventHandler<T, unknown>,
 	) {
 		const { id: subId } = await this.assertSubscription(opts)
 		if(retryOpts) {
@@ -414,7 +418,7 @@ export class PgmbClient<
 					queue: [],
 					extra: wh,
 					removeOnEmpty: true,
-					handler: this.webhookHandler,
+					handler: this.webhookHandler as IEventHandler<T, unknown>,
 					...this.#webhookHandlerOpts
 				}
 

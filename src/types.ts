@@ -16,6 +16,17 @@ export type SerialisedEvent = {
 export type WebhookInfo<T> = T & {
 	id: string
 	url: string | URL
+	/**
+	 * Optional signing secret for this webhook endpoint.
+	 * When provided, each request will be signed using the
+	 * Standard Webhooks spec (HMAC-SHA256).
+	 * Accepts any format supported by the `standardwebhooks` library
+	 * (e.g. raw base64 or the `whsec_...` prefixed format).
+	 *
+	 * Requires the `standardwebhooks` package to be installed:
+	 * `npm install standardwebhooks`
+	 */
+	signingSecret?: string
 }
 
 export type GetWebhookInfoFn<T> = (
@@ -214,17 +225,17 @@ export interface IEphemeralListener<T extends IEventData>
 	id: string
 }
 
-export type IEventHandlerContext = {
+export type IEventHandlerContext<E> = {
 	logger: Logger
 	client: PgClientLike
 	subscriptionId: string
 	/** registered name of the handler */
 	name: string
-	extra?: unknown
+	extra?: E
 }
 
-export type IEventHandler<T extends IEventData = IEventData>
-	= (item: IReadEvent<T>, ctx: IEventHandlerContext) => Promise<void>
+export type IEventHandler<T extends IEventData, E>
+	= (item: IReadEvent<T>, ctx: IEventHandlerContext<E>) => Promise<void>
 
 export type IRetryEventPayload = {
 	ids: string[]
