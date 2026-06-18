@@ -71,6 +71,7 @@ export type IListenerStore<T extends IEventData> = {
 
 export class PgmbClient<
 	T extends IEventData = IEventData,
+	W = {}
 > extends PGMBEventBatcher<T> {
 	readonly client: PgClientLike
 	readonly logger: Logger
@@ -84,7 +85,7 @@ export class PgmbClient<
 	readonly readNextEvents: IReadNextEventsFn
 	readonly findEvents?: IFindEventsFn
 
-	readonly getWebhookInfo: GetWebhookInfoFn
+	readonly getWebhookInfo: GetWebhookInfoFn<W>
 	readonly webhookHandler: IEventHandler<T>
 
 	readonly listeners: { [subId: string]: IListenerStore<T> } = {}
@@ -123,7 +124,7 @@ export class PgmbClient<
 		readNextEvents = defaultReadNextEvents.run.bind(defaultReadNextEvents),
 		findEvents,
 		...batcherOpts
-	}: Pgmb2ClientOpts<T>) {
+	}: Pgmb2ClientOpts<T, W>) {
 		super({
 			...batcherOpts,
 			logger,

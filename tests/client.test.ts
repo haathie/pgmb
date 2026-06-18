@@ -59,7 +59,7 @@ type ITestEvent = IEvent<TestEventData>
 
 describe('PGMB Client Tests', () => {
 	const pool = new Pool({ connectionString: process.env.PG_URI, max: 20 })
-	const webhookInfos: { [subId: string]: WebhookInfo[] } = {}
+	const webhookInfos: { [subId: string]: WebhookInfo<{}>[] } = {}
 
 	let client: PgmbClient<TestEventData>
 	let groupId: string

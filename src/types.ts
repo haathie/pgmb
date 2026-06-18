@@ -13,14 +13,14 @@ export type SerialisedEvent = {
 	contentType: string
 }
 
-export type WebhookInfo = {
+export type WebhookInfo<T> = T & {
 	id: string
 	url: string | URL
 }
 
-export type GetWebhookInfoFn = (
+export type GetWebhookInfoFn<T> = (
 	subscriptionIds: string[]
-) => Promise<{ [id: string]: WebhookInfo[] }> | { [id: string]: WebhookInfo[] }
+) => Promise<{ [id: string]: WebhookInfo<T>[] }> | { [id: string]: WebhookInfo<T>[] }
 
 export type SerialiseReadEventFn<T extends IEventData = IEventData>
 	= (ev: IReadEvent<T>, logger: Logger) => SerialisedEvent
@@ -94,7 +94,7 @@ export type IReadNextEventsFn = (parmas: IReadNextEventsParams, db: IDatabaseCon
 export type IFindEventsFn = (parmas: IFindEventsParams, db: IDatabaseConnection)
 	=> Promise<IFindEventsResult[]>
 
-export type Pgmb2ClientOpts<T extends IEventData> = {
+export type Pgmb2ClientOpts<T extends IEventData, W> = {
 	client: PgClientLike
 	/**
 	 * Globally unique identifier for this Pgmb2Client instance. All subs
@@ -143,7 +143,7 @@ export type Pgmb2ClientOpts<T extends IEventData> = {
 	 */
 	maxActiveCheckpoints?: number
 	webhookHandlerOpts?: Partial<PgmbWebhookOpts<T>>
-	getWebhookInfo?: GetWebhookInfoFn
+	getWebhookInfo?: GetWebhookInfoFn<W>
 	/**
 	 * Override the default readNextEvents implementation
 	 */
