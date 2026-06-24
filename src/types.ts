@@ -277,7 +277,7 @@ export type SSERequestHandlerOpts<
 	 * Return undefined to skip sending this event to the client.
 	 */
 	serialiseEvent?(
-		item: T, req: R
+		item: IEvent<T>, req: R
 	): string | undefined | Promise<string | undefined>
 }
 
