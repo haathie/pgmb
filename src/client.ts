@@ -14,6 +14,7 @@ import {
 	readNextEvents as defaultReadNextEvents,
 	releaseGroupLock,
 	removeExpiredSubscriptions,
+	replayEvents as defaultReplayEvents,
 	setGroupCursor,
 	writeEvents,
 } from './queries.ts'
@@ -30,6 +31,7 @@ import type {
 	IFindEventsFn,
 	IReadEvent,
 	IReadNextEventsFn,
+	IReplayEventsFn,
 	ISplitFn,
 	Pgmb2ClientOpts,
 	registerReliableHandlerParams,
@@ -87,6 +89,7 @@ export class PgmbClient<
 	readonly tableMaintenanceMs: number
 	readonly maxActiveCheckpoints: number
 	readonly readNextEvents: IReadNextEventsFn
+	readonly replayEvents: IReplayEventsFn
 	readonly findEvents?: IFindEventsFn
 
 	readonly getWebhookInfo: GetWebhookInfoFn<W>
@@ -126,6 +129,7 @@ export class PgmbClient<
 		} = {},
 		getWebhookInfo = () => ({}),
 		readNextEvents = defaultReadNextEvents.run.bind(defaultReadNextEvents),
+		replayEvents = defaultReplayEvents.run.bind(defaultReplayEvents),
 		findEvents,
 		...batcherOpts
 	}: Pgmb2ClientOpts<T, W>) {
@@ -147,6 +151,7 @@ export class PgmbClient<
 		this.getWebhookInfo = getWebhookInfo
 		this.tableMaintenanceMs = tableMaintainanceMs
 		this.readNextEvents = readNextEvents
+		this.replayEvents = replayEvents
 		this.findEvents = findEvents
 	}
 

@@ -43,6 +43,9 @@ WHERE id IN (SELECT * FROM unnest(:ids!::text[]));
 /* @name pollForEvents */
 SELECT count AS "count!" FROM pgmb.poll_for_events() AS count;
 
+/* @name GetNowEventId */
+SELECT pgmb.create_event_id(NOW(), 0) AS "id!";
+
 /* @name readNextEvents */
 SELECT
 	id AS "id!",

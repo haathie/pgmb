@@ -394,8 +394,6 @@ app.get('/sse', handler)
 app.listen(8000)
 ```
 
-Note: this is compatible with any HTTP server framework, not just Express.
-
 Now, on the client side, you can connect to this SSE endpoint as follows:
 
 ``` js
@@ -407,7 +405,10 @@ evtSource.addEventListener('user-updated', function(event) {
 })
 ```
 
-Note: in case an assertion with the "last-event-id" fails, PGMB will automatically close the SSE connection with a 204, which tells the client to not retry the connection.
+**Couple notes:**
+1. this is compatible with any HTTP server framework, not just Express.
+2. In case an assertion with the "last-event-id" fails (i.e. it is malformed, or too old), PGMB will automatically close the SSE connection with a 204, which tells the client to not retry the connection.
+3. Upon successful connection, if replay events are enabled, PGMB will send a dummy event with the current event ID, so that the client can know the last event ID to use for resumption in case of a disconnect. This is to handle the edge case where an event is received while the client is disconnected, but prior to the client disconnecting, the client had not yet received any event.
 
 ## Webhook Subscriptions
 

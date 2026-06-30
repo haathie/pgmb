@@ -2,7 +2,7 @@ import type { IDatabaseConnection } from '@pgtyped/runtime'
 import type { Logger } from 'pino'
 import type { HeaderRecord } from 'undici-types/header.js'
 import type { AbortableAsyncIterator } from './abortable-async-iterator.ts'
-import type { IAssertSubscriptionParams, IFindEventsParams, IFindEventsResult, IReadNextEventsParams, IReadNextEventsResult } from './queries.ts'
+import type { IAssertSubscriptionParams, IFindEventsParams, IFindEventsResult, IReadNextEventsParams, IReadNextEventsResult, IReplayEventsParams, IReplayEventsResult } from './queries.ts'
 import type { PgClientLike } from './query-types.ts'
 
 export type ISplitFn<T extends IEventData>
@@ -105,6 +105,9 @@ export type IReadNextEventsFn = (parmas: IReadNextEventsParams, db: IDatabaseCon
 export type IFindEventsFn = (parmas: IFindEventsParams, db: IDatabaseConnection)
 	=> Promise<IFindEventsResult[]>
 
+export type IReplayEventsFn = (parmas: IReplayEventsParams, db: IDatabaseConnection)
+	=> Promise<IReplayEventsResult[]>
+
 export type Pgmb2ClientOpts<T extends IEventData, W> = {
 	client: PgClientLike
 	/**
@@ -159,6 +162,8 @@ export type Pgmb2ClientOpts<T extends IEventData, W> = {
 	 * Override the default readNextEvents implementation
 	 */
 	readNextEvents?: IReadNextEventsFn
+
+	replayEvents?: IReplayEventsFn
 	/**
 	 * Override the default findEvents implementation
 	 */

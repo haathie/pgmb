@@ -2,7 +2,7 @@ import assert, { AssertionError } from 'node:assert'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { PgmbClient } from './client.ts'
 import type { IReplayEventsResult } from './queries.ts'
-import { replayEvents } from './queries.ts'
+import { getNowEventId } from './queries.ts'
 import type { IEphemeralListener, IEvent, IEventData, SSERequestHandlerOpts } from './types.ts'
 import { getCreateDateFromSubscriptionId, getDateFromMessageId } from './utils.ts'
 
@@ -29,14 +29,12 @@ export function createSSERequestHandler<
 	return async(req: R, res: ServerResponse) => {
 		let sub: IEphemeralListener<T> | undefined
 		let eventsToReplay: IReplayEventsResult[] = []
+		let minReplayCursor: string | undefined
 
 		const pgmb = getPgmb(req)
+		const { logger, groupId, client, replayEvents } = pgmb
 
 		try {
-			assert(
-				req.method?.toLowerCase() === 'get',
-				'SSE only supports GET requests'
-			)
 			// validate last-event-id header
 			const fromEventId = getEventIdToReplayFrom?.(req)
 				|| req.headers['last-event-id']
@@ -65,27 +63,32 @@ export function createSSERequestHandler<
 					'last-event-id is before subscription creation, cannot replay'
 				)
 
-				eventsToReplay = await replayEvents.run(
+				eventsToReplay = await replayEvents(
 					{
-						groupId: pgmb.groupId,
+						groupId: groupId,
 						subscriptionId: sub.id,
 						fromEventId: fromEventId,
 						maxEvents: maxReplayEvents
 					},
-					pgmb.client
+					client
 				)
 
-				pgmb.logger.trace(
+				logger.trace(
 					{ subId: sub.id, count: eventsToReplay.length },
 					'got events to replay'
 				)
+			}
+
+			if(!eventsToReplay?.length && replayEnabled) {
+				const [{ id }] = await getNowEventId.run(undefined, client)
+				minReplayCursor = id
 			}
 
 			if(res.writableEnded) {
 				throw new Error('response already ended')
 			}
 		} catch(err) {
-			pgmb.logger
+			logger
 				.error({ subId: sub?.id, err }, 'error in sse subscription setup')
 
 			await sub?.throw(err).catch(() => { })
@@ -122,12 +125,17 @@ export function createSSERequestHandler<
 		try {
 			// send replayed events first
 			await writeSseEvents(req, res, eventsToReplay as IEvent<T>[])
+			// send an empty event for "last-event-id" to be updated on the
+			// client side
+			if(minReplayCursor) {
+				res.write(`id: ${minReplayCursor}\nevent: latest-event-id\ndata: {}\n\n`)
+			}
 
 			for await (const { items } of sub) {
 				await writeSseEvents(req, res, items)
 			}
 		} catch(err) {
-			pgmb.logger.error({ err }, 'error in sse subscription')
+			logger.error({ err }, 'error in sse subscription')
 			if(res.writableEnded) {
 				return
 			}

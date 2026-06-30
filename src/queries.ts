@@ -166,6 +166,31 @@ const pollForEventsIR: any = {"usedParamSet":{},"params":[],"statement":"SELECT 
 export const pollForEvents = new PreparedQuery<IPollForEventsParams,IPollForEventsResult>(pollForEventsIR);
 
 
+/** 'GetNowEventId' parameters type */
+export type IGetNowEventIdParams = void;
+
+/** 'GetNowEventId' return type */
+export interface IGetNowEventIdResult {
+  id: string;
+}
+
+/** 'GetNowEventId' query type */
+export interface IGetNowEventIdQuery {
+  params: IGetNowEventIdParams;
+  result: IGetNowEventIdResult;
+}
+
+const getNowEventIdIR: any = {"usedParamSet":{},"params":[],"statement":"SELECT pgmb.create_event_id(NOW(), 0) AS \"id!\""};
+
+/**
+ * Query generated from SQL:
+ * ```
+ * SELECT pgmb.create_event_id(NOW(), 0) AS "id!"
+ * ```
+ */
+export const getNowEventId = new PreparedQuery<IGetNowEventIdParams,IGetNowEventIdResult>(getNowEventIdIR);
+
+
 /** 'ReadNextEvents' parameters type */
 export interface IReadNextEventsParams {
   chunkSize: number;
