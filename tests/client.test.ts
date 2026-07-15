@@ -1111,6 +1111,30 @@ describe('PGMB Client Tests', () => {
 			assert.deepEqual(client.listeners, {})
 		})
 
+		it('should preserve new lines in SSE data', async() => {
+			const expected = 'first line\nsecond line'
+			const handler = createSSERequestHandler<IncomingMessage, TestEventData>(
+				() => client,
+				{
+					getSubscriptionOpts: () => ({}),
+					serialiseEvent: () => expected,
+				}
+			)
+			srv.removeAllListeners('request')
+			srv.on('request', (req, res) => {
+				latestSrvRes = res
+				return handler(req, res)
+			})
+
+			const { es } = await openEs()
+			const task = waitForESEvent(es)
+			await insertEvent(pool)
+
+			const result = await task
+			assert.equal(result.data, expected)
+			es.close()
+		})
+
 		it('should handle receiving missing events over SSE', async() => {
 			const { es, res } = await openEs()
 			const firstEventRecv = waitForESEvent(es)

@@ -143,7 +143,7 @@ export function createSSERequestHandler<
 			// send error event
 			const message = err instanceof Error ? err.message : String(err)
 			const errData	= jsonifier.stringify({ message })
-			res.write(`event: error\ndata: ${errData}\nretry: 250\n\n`)
+			res.write(`event: error\n${formatSseData(errData)}\nretry: 250\n\n`)
 			res.end()
 		}
 	}
@@ -156,13 +156,22 @@ export function createSSERequestHandler<
 				continue
 			}
 
+			const sseData = formatSseData(data)
+
 			if(!replayEnabled) {
 				// if replay is disabled, do not send an id field
-				res.write(`event: ${topic}\ndata: ${data}\n\n`)
+				res.write(`event: ${topic}\n${sseData}\n\n`)
 				continue
 			}
 
-			res.write(`id: ${id}\nevent: ${topic}\ndata: ${data}\n\n`)
+			res.write(`id: ${id}\nevent: ${topic}\n${sseData}\n\n`)
 		}
 	}
+}
+
+function formatSseData(data: string) {
+	return data
+		.split(/\r\n|\r|\n/)
+		.map(line => `data: ${line}`)
+		.join('\n')
 }
