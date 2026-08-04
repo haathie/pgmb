@@ -124,7 +124,7 @@ SELECT
 	'pgmb-retry',
 	jsonb_build_object(
 		'ids',
-		:ids!::pgmb.event_id[],
+		:ids!::text[],
 		'retryNumber',
 		:retryNumber!::int,
 		'handlerName',
@@ -140,7 +140,7 @@ SELECT
 	payload AS "payload!",
 	metadata AS "metadata!"
 FROM pgmb.events
-WHERE id = ANY(:ids!::pgmb.event_id[]);
+WHERE id = ANY(:ids!::text[]);
 
 /* @name removeExpiredSubscriptions */
 WITH deleted AS (

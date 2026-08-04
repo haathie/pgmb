@@ -471,7 +471,7 @@ export interface IScheduleEventRetryQuery {
   result: IScheduleEventRetryResult;
 }
 
-const scheduleEventRetryIR: any = {"usedParamSet":{"delayInterval":true,"ids":true,"retryNumber":true,"handlerName":true,"subscriptionId":true},"params":[{"name":"delayInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":103,"b":117}]},{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":212,"b":216}]},{"name":"retryNumber","required":true,"transform":{"type":"scalar"},"locs":[{"a":255,"b":267}]},{"name":"handlerName","required":true,"transform":{"type":"scalar"},"locs":[{"a":294,"b":306}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":319,"b":334}]}],"statement":"INSERT INTO pgmb.events (id, topic, payload, subscription_id)\nSELECT\n\tpgmb.create_event_id(\n\t\tNOW() + (:delayInterval!::INTERVAL),\n\t\tpgmb.create_random_bigint()\n\t),\n\t'pgmb-retry',\n\tjsonb_build_object(\n\t\t'ids',\n\t\t:ids!::pgmb.event_id[],\n\t\t'retryNumber',\n\t\t:retryNumber!::int,\n\t\t'handlerName',\n\t\t:handlerName!::text\n\t),\n\t:subscriptionId!::pgmb.subscription_id\nRETURNING id AS \"id!\""};
+const scheduleEventRetryIR: any = {"usedParamSet":{"delayInterval":true,"ids":true,"retryNumber":true,"handlerName":true,"subscriptionId":true},"params":[{"name":"delayInterval","required":true,"transform":{"type":"scalar"},"locs":[{"a":103,"b":117}]},{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":212,"b":216}]},{"name":"retryNumber","required":true,"transform":{"type":"scalar"},"locs":[{"a":246,"b":258}]},{"name":"handlerName","required":true,"transform":{"type":"scalar"},"locs":[{"a":285,"b":297}]},{"name":"subscriptionId","required":true,"transform":{"type":"scalar"},"locs":[{"a":310,"b":325}]}],"statement":"INSERT INTO pgmb.events (id, topic, payload, subscription_id)\nSELECT\n\tpgmb.create_event_id(\n\t\tNOW() + (:delayInterval!::INTERVAL),\n\t\tpgmb.create_random_bigint()\n\t),\n\t'pgmb-retry',\n\tjsonb_build_object(\n\t\t'ids',\n\t\t:ids!::text[],\n\t\t'retryNumber',\n\t\t:retryNumber!::int,\n\t\t'handlerName',\n\t\t:handlerName!::text\n\t),\n\t:subscriptionId!::pgmb.subscription_id\nRETURNING id AS \"id!\""};
 
 /**
  * Query generated from SQL:
@@ -485,7 +485,7 @@ const scheduleEventRetryIR: any = {"usedParamSet":{"delayInterval":true,"ids":tr
  * 	'pgmb-retry',
  * 	jsonb_build_object(
  * 		'ids',
- * 		:ids!::pgmb.event_id[],
+ * 		:ids!::text[],
  * 		'retryNumber',
  * 		:retryNumber!::int,
  * 		'handlerName',
@@ -517,7 +517,7 @@ export interface IFindEventsQuery {
   result: IFindEventsResult;
 }
 
-const findEventsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":122,"b":126}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb.events\nWHERE id = ANY(:ids!::pgmb.event_id[])"};
+const findEventsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","required":true,"transform":{"type":"scalar"},"locs":[{"a":122,"b":126}]}],"statement":"SELECT\n\tid AS \"id!\",\n\ttopic AS \"topic!\",\n\tpayload AS \"payload!\",\n\tmetadata AS \"metadata!\"\nFROM pgmb.events\nWHERE id = ANY(:ids!::text[])"};
 
 /**
  * Query generated from SQL:
@@ -528,7 +528,7 @@ const findEventsIR: any = {"usedParamSet":{"ids":true},"params":[{"name":"ids","
  * 	payload AS "payload!",
  * 	metadata AS "metadata!"
  * FROM pgmb.events
- * WHERE id = ANY(:ids!::pgmb.event_id[])
+ * WHERE id = ANY(:ids!::text[])
  * ```
  */
 export const findEvents = new PreparedQuery<IFindEventsParams,IFindEventsResult>(findEventsIR);
