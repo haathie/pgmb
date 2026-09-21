@@ -156,6 +156,10 @@ export class PgmbClient<
 	}
 
 	async init() {
+		assert(
+			!this.#readTask,
+			'client already initialised, call end() before re-initialising',
+		)
 		this.#endAc = new AbortController()
 
 		if('connect' in this.client) {
