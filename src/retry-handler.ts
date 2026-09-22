@@ -70,6 +70,7 @@ export async function normaliseRetryEventsInReadEventMap<T extends IEventData>(
 
 			const retry = item.payload as IRetryEventPayload
 			if(!retry.ids?.length) {
+				i++
 				continue
 			}
 
