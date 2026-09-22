@@ -802,6 +802,112 @@ describe('PGMB Client Tests', () => {
 		assert.equal(sub2Fn.mock.callCount(), client.maxActiveCheckpoints + 1)
 	})
 
+	it('should log blocking handlers while max active checkpoints is reached', async() => {
+		const logs: { msg: string, [k: string]: unknown }[] = []
+		const logger = pino(
+			{ level: 'info' },
+			{ write: (line: string) => logs.push(JSON.parse(line)) },
+		)
+
+		// feed synthetic rows so checkpoints accumulate deterministically,
+		// without waiting on the poller
+		const state: { subId?: string } = {}
+		let reads = 0
+		const totalReads = 3
+
+		const testClient = new PgmbClient<TestEventData>({
+			client: pool,
+			logger,
+			groupId: `grp${Math.random().toString(36).substring(2, 15)}`,
+			readEventsIntervalMs: 50,
+			pollEventsIntervalMs: 0,
+			subscriptionMaintenanceMs: 0,
+			maxActiveCheckpoints: 2,
+			activeCheckpointsWarningMs: 150,
+			getWebhookInfo: () => ({}),
+			readNextEvents: async() => {
+				if(!state.subId || reads >= totalReads) {
+					return []
+				}
+
+				reads++
+				const id = `pm${String(reads).padStart(13, '0')}`
+				return [{
+					id,
+					topic: 'test-topic',
+					payload: { data: reads },
+					metadata: {},
+					subscriptionIds: [state.subId],
+					nextCursor: id,
+				}]
+			},
+		})
+		await testClient.init()
+
+		let release: (() => void) | undefined
+		const { subscriptionId } = await testClient.registerReliableHandler(
+			{ name: 'blocker' },
+			async() => {
+				if(release) {
+					return
+				}
+
+				await new Promise<void>((resolve) => {
+					release = resolve
+				})
+			},
+		)
+		state.subId = subscriptionId
+
+		try {
+			// let the checkpoints accumulate & the warning threshold elapse
+			await setTimeout(500)
+
+			const warnings = logs.filter(
+				l => l.msg.includes('blocking event processing')
+			)
+			assert(warnings.length >= 1, 'expected a blocking warning')
+
+			const payload = warnings[0]
+			assert.equal(payload.activeCheckpoints, 2)
+			assert.equal(payload.maxActiveCheckpoints, 2)
+
+			const blocking = payload.blockingHandlers as {
+				subscriptionId: string
+				handler: string
+				queuedItems: number
+				headEventIds: string[]
+			}[]
+			assert.equal(blocking.length, 1)
+			assert.equal(blocking[0].subscriptionId, subscriptionId)
+			assert.equal(blocking[0].handler, 'blocker')
+			assert(blocking[0].queuedItems >= 1)
+			assert(blocking[0].headEventIds.length >= 1)
+
+			// should keep logging every interval while still blocked
+			const warningsBefore = warnings.length
+			await setTimeout(400)
+			const warningsAfter = logs.filter(
+				l => l.msg.includes('blocking event processing')
+			).length
+			assert(warningsAfter > warningsBefore, 'expected repeated warnings')
+
+			assert(release)
+			release()
+
+			await setTimeout(400)
+			const releaseLogs = logs.filter(
+				l => l.msg.includes('event processing resumed')
+			)
+			assert.equal(releaseLogs.length, 1)
+			assert((releaseLogs[0].blockedMs as number) > 0)
+		} finally {
+			release?.()
+			await setTimeout(200)
+			await testClient.end()
+		}
+	})
+
 	it('should replay full batch on reliable handler failure', async() => {
 		const sub2Fn = mock.fn<ITestHandler>(async() => { })
 

@@ -156,6 +156,14 @@ export type Pgmb2ClientOpts<T extends IEventData, W> = {
 	 * @default 10
 	 */
 	maxActiveCheckpoints?: number
+	/**
+	 * If `maxActiveCheckpoints` is reached and stays reached for this long,
+	 * log a warning listing the reliable handlers that are currently blocking,
+	 * repeating every interval until the checkpoints are released.
+	 * Set to 0 to disable.
+	 * @default 30 seconds
+	 */
+	activeCheckpointsWarningMs?: number
 	webhookHandlerOpts?: Partial<PgmbWebhookOpts<T>>
 	getWebhookInfo?: GetWebhookInfoFn<W>
 	/**

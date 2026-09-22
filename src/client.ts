@@ -88,6 +88,7 @@ export class PgmbClient<
 	readonly subscriptionMaintenanceMs: number
 	readonly tableMaintenanceMs: number
 	readonly maxActiveCheckpoints: number
+	readonly activeCheckpointsWarningMs: number
 	readonly readNextEvents: IReadNextEventsFn
 	readonly replayEvents: IReplayEventsFn
 	readonly findEvents?: IFindEventsFn
@@ -111,6 +112,10 @@ export class PgmbClient<
 	#inMemoryCursor: string | null = null
 	#activeCheckpoints: Checkpoint[] = []
 
+	#activeCheckpointsBlockedSince?: number
+	#lastActiveCheckpointsWarnAt?: number
+	#activeCheckpointsBlockedWarned = false
+
 	constructor({
 		client,
 		groupId,
@@ -118,6 +123,8 @@ export class PgmbClient<
 		readEventsIntervalMs = getEnvNumber('PGMB_READ_EVENTS_INTERVAL_MS', 1000),
 		readChunkSize = getEnvNumber('PGMB_READ_CHUNK_SIZE', 1000),
 		maxActiveCheckpoints = getEnvNumber('PGMB_MAX_ACTIVE_CHECKPOINTS', 10),
+		activeCheckpointsWarningMs
+		= getEnvNumber('PGMB_ACTIVE_CHECKPOINTS_WARNING_S', 30) * 1000,
 		pollEventsIntervalMs = getEnvNumber('PGMB_POLL_EVENTS_INTERVAL_MS', 1000),
 		subscriptionMaintenanceMs
 		= getEnvNumber('PGMB_SUBSCRIPTION_MAINTENANCE_S', 60) * 1000,
@@ -146,6 +153,7 @@ export class PgmbClient<
 		this.pollEventsIntervalMs = pollEventsIntervalMs
 		this.subscriptionMaintenanceMs = subscriptionMaintenanceMs
 		this.maxActiveCheckpoints = maxActiveCheckpoints
+		this.activeCheckpointsWarningMs = activeCheckpointsWarningMs
 		this.webhookHandler = createWebhookHandler(whHandlerOpts)
 		this.#webhookHandlerOpts = { splitBy: whSplitBy }
 		this.getWebhookInfo = getWebhookInfo
@@ -381,8 +389,11 @@ export class PgmbClient<
 
 	async readChanges() {
 		if(this.#activeCheckpoints.length >= this.maxActiveCheckpoints) {
+			this.#trackActiveCheckpointsBlocked()
 			return 0
 		}
+
+		this.#trackActiveCheckpointsReleased()
 
 		const now = Date.now()
 		await this.#connectReadClient()
@@ -644,6 +655,93 @@ export class PgmbClient<
 
 		this.#activeCheckpoints = []
 		this.#inMemoryCursor = null
+	}
+
+	#getBlockingReliableHandlers() {
+		const blocking = []
+		for(const [subscriptionId, { values }] of Object.entries(this.listeners)) {
+			for(const [handler, lt] of Object.entries(values)) {
+				if(lt.type !== 'reliable' || !lt.queue.length) {
+					continue
+				}
+
+				const head = lt.queue[0]
+				const wh = lt.extra as WebhookInfo<unknown> | undefined
+				blocking.push({
+					subscriptionId,
+					handler,
+					queuedItems: lt.queue.length,
+					headEventIds: head.item.items.map(i => i.id),
+					retryNumber: head.item.retry?.retryNumber,
+					webhook: wh?.id ? { id: wh.id, url: wh.url } : undefined,
+				})
+			}
+		}
+
+		return blocking
+	}
+
+	/**
+	 * Tracks how long we've been stuck at `maxActiveCheckpoints`.
+	 * Once stuck for longer than `activeCheckpointsWarningMs`, logs the
+	 * reliable handlers that are currently blocking, repeating the log
+	 * every interval until released.
+	 */
+	#trackActiveCheckpointsBlocked() {
+		const warningMs = this.activeCheckpointsWarningMs
+		if(!warningMs) {
+			return
+		}
+
+		const now = Date.now()
+		this.#activeCheckpointsBlockedSince ??= now
+		if(now - this.#activeCheckpointsBlockedSince < warningMs) {
+			return
+		}
+
+		if(
+			this.#lastActiveCheckpointsWarnAt
+			&& now - this.#lastActiveCheckpointsWarnAt < warningMs
+		) {
+			return
+		}
+
+		this.#lastActiveCheckpointsWarnAt = now
+		this.#activeCheckpointsBlockedWarned = true
+		this.logger.warn(
+			{
+				blockedMs: now - this.#activeCheckpointsBlockedSince,
+				activeCheckpoints: this.#activeCheckpoints.length,
+				maxActiveCheckpoints: this.maxActiveCheckpoints,
+				blockingHandlers: this.#getBlockingReliableHandlers(),
+			},
+			'max active checkpoints reached, reliable handlers blocking event processing',
+		)
+	}
+
+	/**
+	 * Clears the blocked tracking state, logging the total time spent
+	 * blocked if a warning was previously emitted.
+	 */
+	#trackActiveCheckpointsReleased() {
+		if(this.#activeCheckpointsBlockedSince === undefined) {
+			return
+		}
+
+		const blockedMs = Date.now() - this.#activeCheckpointsBlockedSince
+		const warned = this.#activeCheckpointsBlockedWarned
+		this.#activeCheckpointsBlockedSince = undefined
+		this.#lastActiveCheckpointsWarnAt = undefined
+		this.#activeCheckpointsBlockedWarned = false
+
+		if(!warned) {
+			return
+		}
+
+		this.logger.info(
+			{ blockedMs },
+			'active checkpoints released, event processing resumed',
+		)
 	}
 
 	async #unlockAndReleaseReadClient() {
